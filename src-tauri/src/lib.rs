@@ -13,6 +13,8 @@ pub fn run() {
             commands::deps::install_claude_code,
             commands::deps::install_qmd,
             commands::deps::cancel_install,
+            commands::xcode::xcode_clt_status,
+            commands::xcode::xcode_clt_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

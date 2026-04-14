@@ -1,0 +1,329 @@
+//! Xcode Command Line Tools detection, install trigger, and background polling.
+//!
+//! `xcode_clt_status` — returns the current install state (not async).
+//! `xcode_clt_install` — spawns `xcode-select --install`, transitions state to
+//!   Installing, and starts a background poller that emits `xcode:progress`
+//!   events until the CLT directory appears or a 15-minute timeout fires.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Installation state of the Xcode Command Line Tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum XcodeCltState {
+    NotInstalled,
+    Installing,
+    Installed,
+}
+
+/// Progress event payload emitted on `xcode:progress`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XcodeProgress {
+    /// Unique install handle (UUID).
+    pub handle: String,
+    /// Human-readable status line.
+    pub line: String,
+    /// True on the final event for this handle.
+    pub finished: bool,
+    /// Non-None when the operation ended in an error.
+    pub error: Option<String>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Global state
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Internal state tracked across the install lifecycle.
+#[derive(Debug, Clone)]
+struct XcodeCltInternalState {
+    /// Current lifecycle phase.
+    phase: XcodeCltState,
+    /// Active install handle, if Installing.
+    handle: Option<String>,
+}
+
+impl Default for XcodeCltInternalState {
+    fn default() -> Self {
+        Self {
+            phase: XcodeCltState::NotInstalled,
+            handle: None,
+        }
+    }
+}
+
+static XCODE_STATE: std::sync::OnceLock<Arc<Mutex<XcodeCltInternalState>>> =
+    std::sync::OnceLock::new();
+
+fn xcode_state() -> &'static Arc<Mutex<XcodeCltInternalState>> {
+    XCODE_STATE.get_or_init(|| Arc::new(Mutex::new(XcodeCltInternalState::default())))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State helpers (public so integration tests can drive them)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reset global state to `NotInstalled` with no handle.
+/// Used by tests to avoid cross-test state pollution.
+pub fn reset_xcode_state() {
+    let mut s = xcode_state().lock().unwrap();
+    s.phase = XcodeCltState::NotInstalled;
+    s.handle = None;
+}
+
+/// Force global state to `Installing` with a given handle.
+/// Exposed for integration tests.
+pub fn set_xcode_state_installing(handle: String) {
+    let mut s = xcode_state().lock().unwrap();
+    s.phase = XcodeCltState::Installing;
+    s.handle = Some(handle);
+}
+
+fn set_xcode_state_installed() {
+    let mut s = xcode_state().lock().unwrap();
+    s.phase = XcodeCltState::Installed;
+    s.handle = None;
+}
+
+fn set_xcode_state_not_installed() {
+    let mut s = xcode_state().lock().unwrap();
+    s.phase = XcodeCltState::NotInstalled;
+    s.handle = None;
+}
+
+fn current_phase() -> XcodeCltState {
+    xcode_state().lock().unwrap().phase.clone()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Default CLT path
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn default_clt_dir() -> PathBuf {
+    PathBuf::from("/Library/Developer/CommandLineTools")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status impl (pure, no AppHandle — testable without a Tauri runtime)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Core status logic.  Checks global phase first (Installing wins), then
+/// probes the filesystem.  `clt_dir` is injectable for tests.
+pub fn xcode_clt_status_impl(clt_dir: &Path) -> XcodeCltState {
+    // Global phase takes precedence.
+    match current_phase() {
+        XcodeCltState::Installing => return XcodeCltState::Installing,
+        XcodeCltState::Installed => return XcodeCltState::Installed,
+        XcodeCltState::NotInstalled => {} // fall through to filesystem check
+    }
+
+    if clt_dir.is_dir() {
+        XcodeCltState::Installed
+    } else {
+        XcodeCltState::NotInstalled
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tauri command: xcode_clt_status
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Return the current Xcode CLT install state.
+///
+/// `clt_dir` overrides `/Library/Developer/CommandLineTools` — pass `None`
+/// in production, pass a temp-dir path in tests.
+#[tauri::command]
+pub fn xcode_clt_status(clt_dir: Option<String>) -> XcodeCltState {
+    let dir = clt_dir
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_clt_dir);
+    xcode_clt_status_impl(&dir)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Polling impl (async, injectable — returns Result for tests)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Poll `clt_dir` every `poll_interval_ms` milliseconds until it exists or
+/// `timeout_secs` elapses.
+///
+/// On success, transitions global state to Installed and returns
+/// `Ok(XcodeCltState::Installed)`.
+///
+/// On timeout, transitions global state back to NotInstalled and returns
+/// `Err("Xcode CLT installation timed out after N seconds")`.
+///
+/// `app` is `Option<AppHandle>` so tests can omit it without needing a Tauri
+/// runtime.
+pub async fn xcode_clt_poll_impl(
+    clt_dir: PathBuf,
+    _handle: String,
+    timeout_secs: u64,
+    poll_interval_ms: u64,
+) -> Result<XcodeCltState, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let interval = std::time::Duration::from_millis(poll_interval_ms);
+
+    loop {
+        if clt_dir.is_dir() {
+            set_xcode_state_installed();
+            return Ok(XcodeCltState::Installed);
+        }
+
+        if std::time::Instant::now() >= deadline {
+            set_xcode_state_not_installed();
+            return Err(format!(
+                "Xcode CLT installation timed out after {} seconds",
+                timeout_secs
+            ));
+        }
+
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// Same as `xcode_clt_poll_impl` but also emits Tauri progress events.
+async fn xcode_clt_poll_with_events(
+    app: AppHandle,
+    clt_dir: PathBuf,
+    handle: String,
+    timeout_secs: u64,
+    poll_interval_ms: u64,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let interval = std::time::Duration::from_millis(poll_interval_ms);
+
+    loop {
+        if clt_dir.is_dir() {
+            set_xcode_state_installed();
+            let _ = app.emit(
+                "xcode:progress",
+                XcodeProgress {
+                    handle: handle.clone(),
+                    line: "Xcode Command Line Tools installed successfully.".to_string(),
+                    finished: true,
+                    error: None,
+                },
+            );
+            return;
+        }
+
+        if std::time::Instant::now() >= deadline {
+            set_xcode_state_not_installed();
+            let _ = app.emit(
+                "xcode:progress",
+                XcodeProgress {
+                    handle: handle.clone(),
+                    line: String::new(),
+                    finished: true,
+                    error: Some(format!(
+                        "Xcode CLT installation timed out after {} seconds",
+                        timeout_secs
+                    )),
+                },
+            );
+            return;
+        }
+
+        let _ = app.emit(
+            "xcode:progress",
+            XcodeProgress {
+                handle: handle.clone(),
+                line: "Waiting for Xcode Command Line Tools to install…".to_string(),
+                finished: false,
+                error: None,
+            },
+        );
+
+        tokio::time::sleep(interval).await;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tauri command: xcode_clt_install
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Trigger the Xcode CLT install dialog and start background polling.
+///
+/// Returns the install handle so the frontend can correlate `xcode:progress`
+/// events.
+///
+/// `clt_dir` overrides `/Library/Developer/CommandLineTools`.  When `clt_dir`
+/// is `Some(...)` we assume we are running under tests and skip the real
+/// `xcode-select --install` invocation (which requires a GUI session and would
+/// block the test runner).
+#[tauri::command]
+pub async fn xcode_clt_install(
+    app: AppHandle,
+    clt_dir: Option<String>,
+) -> Result<String, String> {
+    let dir = clt_dir
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_clt_dir);
+
+    // Idempotency guards.
+    match current_phase() {
+        XcodeCltState::Installed => {
+            return Err("Xcode Command Line Tools are already installed.".to_string());
+        }
+        XcodeCltState::Installing => {
+            return Err("Xcode Command Line Tools installation is already in progress.".to_string());
+        }
+        XcodeCltState::NotInstalled => {}
+    }
+
+    let handle_id = Uuid::new_v4().to_string();
+
+    // In production (`clt_dir` is None) spawn the real installer.
+    // When `clt_dir` is Some we are in test mode — skip the process.
+    if clt_dir.is_none() {
+        Command::new("xcode-select")
+            .arg("--install")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn xcode-select: {}", e))?;
+    }
+
+    set_xcode_state_installing(handle_id.clone());
+
+    // Emit initial event.
+    let _ = app.emit(
+        "xcode:progress",
+        XcodeProgress {
+            handle: handle_id.clone(),
+            line: "Xcode Command Line Tools installation started. Follow the system dialog.".to_string(),
+            finished: false,
+            error: None,
+        },
+    );
+
+    // Background poller: 15-minute production timeout, 2-second poll interval.
+    let app_clone = app.clone();
+    let dir_clone = dir.clone();
+    let handle_clone = handle_id.clone();
+
+    tokio::spawn(async move {
+        xcode_clt_poll_with_events(
+            app_clone,
+            dir_clone,
+            handle_clone,
+            900, // 15 minutes
+            2_000,
+        )
+        .await;
+    });
+
+    Ok(handle_id)
+}
