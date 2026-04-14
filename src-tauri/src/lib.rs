@@ -15,6 +15,9 @@ pub fn run() {
             commands::deps::cancel_install,
             commands::xcode::xcode_clt_status,
             commands::xcode::xcode_clt_install,
+            commands::keychain::keychain_set,
+            commands::keychain::keychain_get,
+            commands::keychain::keychain_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
