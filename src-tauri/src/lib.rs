@@ -4,6 +4,24 @@ pub mod commands;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .setup(|app| {
+            use tauri::Emitter;
+            use tauri_plugin_deep_link::DeepLinkExt;
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let url_str = url.as_str();
+                    if let Some(callback) =
+                        commands::deep_link::parse_oauth_callback(url_str)
+                    {
+                        // Emit to all windows; TS side listens for "deep-link://received"
+                        let _ = handle.emit("deep-link://received", &callback);
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::deps::check_dep,
             commands::deps::install_homebrew,
