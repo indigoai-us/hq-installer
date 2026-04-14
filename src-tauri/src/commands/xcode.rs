@@ -253,25 +253,16 @@ async fn xcode_clt_poll_with_events(
 // Tauri command: xcode_clt_install
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Trigger the Xcode CLT install dialog and start background polling.
+/// Core install logic, injectable for tests.
 ///
-/// Returns the install handle so the frontend can correlate `xcode:progress`
-/// events.
-///
-/// `clt_dir` overrides `/Library/Developer/CommandLineTools`.  When `clt_dir`
-/// is `Some(...)` we assume we are running under tests and skip the real
-/// `xcode-select --install` invocation (which requires a GUI session and would
-/// block the test runner).
-#[tauri::command]
-pub async fn xcode_clt_install(
+/// `clt_dir`     — the CLT directory to watch (tests pass a TempDir path).
+/// `skip_spawn`  — when `true`, skips the real `xcode-select --install`
+///                 invocation.  Always `false` in production.
+pub async fn xcode_clt_install_impl(
     app: AppHandle,
-    clt_dir: Option<String>,
+    clt_dir: PathBuf,
+    skip_spawn: bool,
 ) -> Result<String, String> {
-    let dir = clt_dir
-        .as_deref()
-        .map(PathBuf::from)
-        .unwrap_or_else(default_clt_dir);
-
     // Idempotency guards.
     match current_phase() {
         XcodeCltState::Installed => {
@@ -285,9 +276,7 @@ pub async fn xcode_clt_install(
 
     let handle_id = Uuid::new_v4().to_string();
 
-    // In production (`clt_dir` is None) spawn the real installer.
-    // When `clt_dir` is Some we are in test mode — skip the process.
-    if clt_dir.is_none() {
+    if !skip_spawn {
         Command::new("xcode-select")
             .arg("--install")
             .stdout(Stdio::null())
@@ -311,7 +300,7 @@ pub async fn xcode_clt_install(
 
     // Background poller: 15-minute production timeout, 2-second poll interval.
     let app_clone = app.clone();
-    let dir_clone = dir.clone();
+    let dir_clone = clt_dir.clone();
     let handle_clone = handle_id.clone();
 
     tokio::spawn(async move {
@@ -326,4 +315,13 @@ pub async fn xcode_clt_install(
     });
 
     Ok(handle_id)
+}
+
+/// Trigger the Xcode CLT install dialog and start background polling.
+///
+/// Returns the install handle so the frontend can correlate `xcode:progress`
+/// events.
+#[tauri::command]
+pub async fn xcode_clt_install(app: AppHandle) -> Result<String, String> {
+    xcode_clt_install_impl(app, default_clt_dir(), false).await
 }

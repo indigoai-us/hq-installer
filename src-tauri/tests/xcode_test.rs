@@ -9,6 +9,7 @@ mod xcode_tests {
         xcode_clt_status_impl, XcodeCltState, reset_xcode_state, set_xcode_state_installing,
         xcode_clt_poll_impl,
     };
+    use serial_test::serial;
     use tempfile::TempDir;
     use tokio::runtime::Runtime;
 
@@ -16,6 +17,7 @@ mod xcode_tests {
     // Test 1: status → NotInstalled when CLT dir is absent
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
+    #[serial]
     fn xcode_clt_status_not_installed_when_dir_absent() {
         let dir = TempDir::new().unwrap();
         // Use a path that doesn't exist inside the temp dir.
@@ -36,6 +38,7 @@ mod xcode_tests {
     // Test 2: status → Installed when CLT dir exists
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
+    #[serial]
     fn xcode_clt_status_installed_when_dir_present() {
         let dir = TempDir::new().unwrap();
         let clt_dir = dir.path().join("CommandLineTools");
@@ -55,6 +58,7 @@ mod xcode_tests {
     // Test 3: status → Installing when installing flag is set (dir absent)
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
+    #[serial]
     fn xcode_clt_status_installing_when_flag_set() {
         let dir = TempDir::new().unwrap();
         let absent = dir.path().join("CommandLineTools");
@@ -76,6 +80,7 @@ mod xcode_tests {
     // Test 4: state machine transition NotInstalled → Installing
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
+    #[serial]
     fn xcode_clt_state_transitions_not_installed_to_installing() {
         let dir = TempDir::new().unwrap();
         let absent = dir.path().join("CommandLineTools");
@@ -104,6 +109,7 @@ mod xcode_tests {
     // Test 5: poller detects Installed when dir appears
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
+    #[serial]
     fn xcode_clt_poll_detects_installed_dir() {
         let rt = Runtime::new().unwrap();
 
@@ -144,6 +150,7 @@ mod xcode_tests {
     // Test 6: poller times out when dir never appears
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
+    #[serial]
     fn xcode_clt_poll_times_out_when_dir_never_appears() {
         let rt = Runtime::new().unwrap();
 
