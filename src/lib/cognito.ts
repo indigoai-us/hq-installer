@@ -1,0 +1,384 @@
+import {
+  CognitoIdentityProviderClient,
+  InitiateAuthCommand,
+  SignUpCommand,
+  ConfirmSignUpCommand,
+  GlobalSignOutCommand,
+  type InitiateAuthCommandOutput,
+} from "@aws-sdk/client-cognito-identity-provider";
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
+import { listen } from "@tauri-apps/api/event";
+
+// ---------------------------------------------------------------------------
+// Config (build-time env vars — read lazily so tests can stub import.meta.env)
+// ---------------------------------------------------------------------------
+
+function getUserPoolId(): string {
+  return import.meta.env.VITE_COGNITO_USER_POOL_ID as string;
+}
+
+function getClientId(): string {
+  return import.meta.env.VITE_COGNITO_CLIENT_ID as string;
+}
+
+function getCognitoDomain(): string {
+  return import.meta.env.VITE_COGNITO_DOMAIN as string;
+}
+
+/** Extract region from pool ID format: "us-east-1_XXXXX" → "us-east-1" */
+function regionFromPoolId(poolId: string): string {
+  const parts = poolId.split("_");
+  if (parts.length < 2) {
+    throw new Error(`Invalid Cognito User Pool ID: ${poolId}`);
+  }
+  return parts[0];
+}
+
+function makeClient(): CognitoIdentityProviderClient {
+  return new CognitoIdentityProviderClient({
+    region: regionFromPoolId(getUserPoolId()),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface CognitoTokens {
+  accessToken: string;
+  idToken: string;
+  refreshToken: string;
+  /** Unix timestamp in milliseconds when the access/id tokens expire */
+  expiresAt: number;
+}
+
+export interface CurrentUser {
+  sub: string;
+  email: string;
+  tokens: CognitoTokens;
+}
+
+// ---------------------------------------------------------------------------
+// Keychain helpers
+// ---------------------------------------------------------------------------
+
+const KC_SERVICE = "cognito";
+
+async function storeTokens(tokens: CognitoTokens): Promise<void> {
+  await Promise.all([
+    invoke("keychain_set", {
+      service: KC_SERVICE,
+      account: "access_token",
+      secret: tokens.accessToken,
+    }),
+    invoke("keychain_set", {
+      service: KC_SERVICE,
+      account: "id_token",
+      secret: tokens.idToken,
+    }),
+    invoke("keychain_set", {
+      service: KC_SERVICE,
+      account: "refresh_token",
+      secret: tokens.refreshToken,
+    }),
+    invoke("keychain_set", {
+      service: KC_SERVICE,
+      account: "expires_at",
+      secret: String(tokens.expiresAt),
+    }),
+  ]);
+}
+
+async function loadTokens(): Promise<CognitoTokens | null> {
+  try {
+    const [accessToken, idToken, refreshToken, expiresAtStr] =
+      await Promise.all([
+        invoke<string>("keychain_get", {
+          service: KC_SERVICE,
+          account: "access_token",
+        }),
+        invoke<string>("keychain_get", {
+          service: KC_SERVICE,
+          account: "id_token",
+        }),
+        invoke<string>("keychain_get", {
+          service: KC_SERVICE,
+          account: "refresh_token",
+        }),
+        invoke<string>("keychain_get", {
+          service: KC_SERVICE,
+          account: "expires_at",
+        }),
+      ]);
+
+    if (!accessToken || !idToken || !refreshToken || !expiresAtStr) {
+      return null;
+    }
+
+    return {
+      accessToken,
+      idToken,
+      refreshToken,
+      expiresAt: Number(expiresAtStr),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function clearTokens(): Promise<void> {
+  await Promise.allSettled([
+    invoke("keychain_delete", { service: KC_SERVICE, account: "access_token" }),
+    invoke("keychain_delete", { service: KC_SERVICE, account: "id_token" }),
+    invoke("keychain_delete", { service: KC_SERVICE, account: "refresh_token" }),
+    invoke("keychain_delete", { service: KC_SERVICE, account: "expires_at" }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Token helpers
+// ---------------------------------------------------------------------------
+
+function isExpired(tokens: CognitoTokens): boolean {
+  // Consider tokens expired if within 30 seconds of expiry
+  return Date.now() >= tokens.expiresAt - 30_000;
+}
+
+function expiresAtFromSeconds(expiresIn: number): number {
+  return Date.now() + expiresIn * 1000;
+}
+
+function tokensFromAuthResult(
+  result: InitiateAuthCommandOutput["AuthenticationResult"],
+  existingRefreshToken?: string
+): CognitoTokens {
+  if (!result?.AccessToken || !result?.IdToken) {
+    throw new Error("Cognito auth result missing tokens");
+  }
+  return {
+    accessToken: result.AccessToken,
+    idToken: result.IdToken,
+    refreshToken: result.RefreshToken ?? existingRefreshToken ?? "",
+    expiresAt: expiresAtFromSeconds(result.ExpiresIn ?? 3600),
+  };
+}
+
+/** Decode an idToken payload without verifying signature */
+function decodeIdToken(idToken: string): Record<string, unknown> {
+  const parts = idToken.split(".");
+  if (parts.length < 2) {
+    throw new Error("Invalid idToken format");
+  }
+  // Add padding if needed
+  const payload = parts[1];
+  const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+  return JSON.parse(atob(padded)) as Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Sign up a new user with email and password.
+ * The user will receive a verification code at their email.
+ */
+export async function signUp(email: string, password: string): Promise<void> {
+  const client = makeClient();
+  await client.send(
+    new SignUpCommand({
+      ClientId: getClientId(),
+      Username: email,
+      Password: password,
+      UserAttributes: [{ Name: "email", Value: email }],
+    })
+  );
+}
+
+/**
+ * Confirm sign-up with the verification code sent to the user's email.
+ */
+export async function confirmSignUp(
+  email: string,
+  code: string
+): Promise<void> {
+  const client = makeClient();
+  await client.send(
+    new ConfirmSignUpCommand({
+      ClientId: getClientId(),
+      Username: email,
+      ConfirmationCode: code,
+    })
+  );
+}
+
+/**
+ * Sign in with email and password.
+ * Tokens are cached in the Tauri keychain.
+ */
+export async function signIn(
+  email: string,
+  password: string
+): Promise<CognitoTokens> {
+  const client = makeClient();
+  const response = await client.send(
+    new InitiateAuthCommand({
+      AuthFlow: "USER_PASSWORD_AUTH",
+      ClientId: getClientId(),
+      AuthParameters: {
+        USERNAME: email,
+        PASSWORD: password,
+      },
+    })
+  );
+
+  const tokens = tokensFromAuthResult(response.AuthenticationResult);
+  await storeTokens(tokens);
+  return tokens;
+}
+
+/**
+ * Refresh the current session using the stored refresh token.
+ * Updates keychain with new tokens, preserving the existing refresh token
+ * if Cognito does not return a new one.
+ */
+export async function refreshSession(): Promise<CognitoTokens> {
+  const stored = await loadTokens();
+  if (!stored?.refreshToken) {
+    throw new Error("No refresh token available — please sign in again");
+  }
+
+  const client = makeClient();
+  const response = await client.send(
+    new InitiateAuthCommand({
+      AuthFlow: "REFRESH_TOKEN_AUTH",
+      ClientId: getClientId(),
+      AuthParameters: {
+        REFRESH_TOKEN: stored.refreshToken,
+      },
+    })
+  );
+
+  const tokens = tokensFromAuthResult(
+    response.AuthenticationResult,
+    stored.refreshToken
+  );
+  await storeTokens(tokens);
+  return tokens;
+}
+
+/**
+ * Get the currently authenticated user.
+ * Automatically refreshes tokens if they are expired.
+ * Returns null if no session exists.
+ */
+export async function getCurrentUser(): Promise<CurrentUser | null> {
+  let tokens = await loadTokens();
+  if (!tokens) return null;
+
+  if (isExpired(tokens)) {
+    try {
+      tokens = await refreshSession();
+    } catch {
+      await clearTokens();
+      return null;
+    }
+  }
+
+  const payload = decodeIdToken(tokens.idToken);
+  return {
+    sub: payload["sub"] as string,
+    email: payload["email"] as string,
+    tokens,
+  };
+}
+
+/**
+ * Sign in via GitHub OAuth using the Cognito hosted UI.
+ * Opens the browser, waits for the deep-link callback, then exchanges
+ * the authorization code for tokens.
+ */
+export async function signInWithGitHub(): Promise<CognitoTokens> {
+  const redirectUri = "hq-installer://callback";
+  const authUrl =
+    `${getCognitoDomain()}/oauth2/authorize` +
+    `?identity_provider=GitHub` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    `&response_type=code` +
+    `&client_id=${getClientId()}` +
+    `&scope=openid%20email%20profile`;
+
+  await open(authUrl);
+
+  // Wait for the deep-link callback
+  const code = await new Promise<string>((resolve, reject) => {
+    listen<{ url: string }>("deep-link://received", (event) => {
+      try {
+        const url = new URL(event.payload.url);
+        const code = url.searchParams.get("code");
+        if (!code) {
+          reject(new Error("No authorization code in callback URL"));
+          return;
+        }
+        resolve(code);
+      } catch (err) {
+        reject(err);
+      }
+    }).catch(reject);
+  });
+
+  // Exchange code for tokens
+  const tokenResponse = await fetch(`${getCognitoDomain()}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: getClientId(),
+      code,
+      redirect_uri: redirectUri,
+    }).toString(),
+  });
+
+  if (!tokenResponse.ok) {
+    throw new Error(
+      `Token exchange failed: ${tokenResponse.status} ${tokenResponse.statusText}`
+    );
+  }
+
+  const data = (await tokenResponse.json()) as {
+    access_token: string;
+    id_token: string;
+    refresh_token: string;
+    expires_in: number;
+  };
+
+  const tokens: CognitoTokens = {
+    accessToken: data.access_token,
+    idToken: data.id_token,
+    refreshToken: data.refresh_token,
+    expiresAt: expiresAtFromSeconds(data.expires_in),
+  };
+
+  await storeTokens(tokens);
+  return tokens;
+}
+
+/**
+ * Sign out the current user globally (revokes all sessions).
+ * Clears tokens from the keychain.
+ */
+export async function signOut(): Promise<void> {
+  const tokens = await loadTokens();
+  if (tokens?.accessToken) {
+    const client = makeClient();
+    try {
+      await client.send(
+        new GlobalSignOutCommand({ AccessToken: tokens.accessToken })
+      );
+    } catch {
+      // Best-effort — clear local tokens regardless
+    }
+  }
+  await clearTokens();
+}
