@@ -308,6 +308,27 @@ function stripTopLevelDir(entryName: string): string {
   return entryName.slice(slash + 1);
 }
 
+/**
+ * Resolve an untrusted relative path against targetDir, guarding against
+ * path-traversal attacks (e.g. entries containing "..").
+ * Returns null if the resolved path would escape targetDir.
+ */
+function safeJoin(targetDir: string, relative: string): string | null {
+  // Normalise the relative portion by collapsing any ".." segments
+  const segments = relative.split("/");
+  const safe: string[] = [];
+  for (const seg of segments) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      // Attempted traversal — reject the whole entry
+      return null;
+    }
+    safe.push(seg);
+  }
+  if (safe.length === 0) return null;
+  return `${targetDir}/${safe.join("/")}`;
+}
+
 async function extractTarball(
   compressedBytes: Uint8Array,
   targetDir: string,
@@ -331,9 +352,10 @@ async function extractTarball(
   for (const entry of entries) {
     const relative = stripTopLevelDir(entry.name);
     if (!relative || relative === "./" || relative.endsWith("/")) {
-      // Directory entry — create it
+      // Name-based directory entry — create it if non-trivial
       if (relative && relative !== "./") {
-        const dirPath = `${targetDir}/${relative}`.replace(/\/+$/, "");
+        const dirPath = safeJoin(targetDir, relative.replace(/\/+$/, ""));
+        if (!dirPath) continue; // path traversal attempt — skip
         await mkdir(dirPath, { recursive: true });
       }
       continue;
@@ -341,13 +363,15 @@ async function extractTarball(
 
     const isDir = entry.typeflag === "5";
     if (isDir) {
-      const dirPath = `${targetDir}/${relative}`;
+      const dirPath = safeJoin(targetDir, relative);
+      if (!dirPath) continue; // path traversal attempt — skip
       await mkdir(dirPath, { recursive: true });
       continue;
     }
 
     // Regular file
-    const filePath = `${targetDir}/${relative}`;
+    const filePath = safeJoin(targetDir, relative);
+    if (!filePath) continue; // path traversal attempt — skip
 
     // Ensure parent directory exists
     const lastSlash = filePath.lastIndexOf("/");

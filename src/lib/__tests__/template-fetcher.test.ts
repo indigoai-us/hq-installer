@@ -321,4 +321,84 @@ describe("fetchAndExtract", () => {
       },
     );
   });
+
+  // -------------------------------------------------------------------------
+  it("path traversal: entries with '..' segments are silently skipped", async () => {
+    // Build a tar where one entry attempts to escape the target directory
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "safe.txt", content: "safe" },
+      { name: "../../../etc/passwd", content: "root:x:0:0" },
+    ]);
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/target");
+
+    // Only the safe file should have been written
+    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+    expect(writePaths.some((p) => p.endsWith("safe.txt"))).toBe(true);
+    // The traversal path must never have been written
+    expect(writePaths.every((p) => !p.includes("passwd"))).toBe(true);
+    expect(writePaths.every((p) => !p.includes("etc"))).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  it("mid-stream cancellation: AbortSignal aborted during stream read throws non-retriable error", async () => {
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "big-file.ts", content: "x".repeat(1000) },
+    ]);
+
+    const controller = new AbortController();
+
+    // Build a stream that aborts the controller when it starts delivering data
+    let chunkIdx = 0;
+    const chunks = [tarGzBytes];
+    const stream = new ReadableStream<Uint8Array>({
+      pull(streamController) {
+        if (chunkIdx === 0) {
+          // Abort before delivering any data
+          controller.abort();
+        }
+        if (chunkIdx < chunks.length) {
+          streamController.enqueue(chunks[chunkIdx++]);
+        } else {
+          streamController.close();
+        }
+      },
+    });
+
+    const tarballResponse = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers({ "content-length": String(tarGzBytes.length) }),
+      body: stream,
+      arrayBuffer: async () => tarGzBytes.buffer,
+      json: async () => ({}),
+      text: async () => "",
+    } as unknown as Response;
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(tarballResponse);
+
+    await expect(
+      fetchAndExtract("/tmp/target", undefined, undefined, controller.signal),
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(TemplateFetchError);
+      expect((err as TemplateFetchError).retriable).toBe(false);
+      expect((err as TemplateFetchError).message).toContain("cancel");
+      return true;
+    });
+  });
 });
