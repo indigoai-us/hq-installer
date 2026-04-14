@@ -20,6 +20,8 @@ pub fn run() {
             commands::keychain::keychain_delete,
             commands::git::git_init,
             commands::git::git_probe_user,
+            commands::process::spawn_process,
+            commands::process::cancel_process,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
