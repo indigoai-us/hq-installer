@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+/* Monochrome zinc theme — no purple */
+:root {
+  --background: #09090b;
+  --foreground: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: #09090b; /* zinc-950 */
+  color: white;
+  font-family: system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

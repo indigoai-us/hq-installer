@@ -1,0 +1,24 @@
+# Tauri
+src-tauri/target/
+
+# Node
+node_modules/
+dist/
+.pnpm-store/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# OS
+.DS_Store
+Thumbs.db
