@@ -3,8 +3,13 @@ import { describe, it, expect } from "vitest";
 import App from "./App";
 
 describe("App", () => {
-  it("renders without crashing", () => {
+  it("renders HQ Installer heading", () => {
     render(<App />);
     expect(screen.getByText(/HQ Installer/i)).toBeTruthy();
+  });
+
+  it("renders Get Started button", () => {
+    render(<App />);
+    expect(screen.getByRole("button", { name: /Get Started/i })).toBeTruthy();
   });
 });
