@@ -93,6 +93,23 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/notarize.sh
 
+      - name: Publish updater manifest to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: us-east-1
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/hq-installer_${VERSION}_universal.dmg"
+          # Generate signature for the DMG
+          SIG=$(pnpm tauri signer sign "$DMG" | grep -oP '(?<=Content: ).*')
+          pnpm tsx scripts/publish-updater-manifest.ts \
+            --version "$VERSION" \
+            --notes "Release $GITHUB_REF_NAME" \
+            --signature "$SIG" \
+            --dmg "$DMG"
+
       - name: Delete build keychain
         if: always()
         run: |

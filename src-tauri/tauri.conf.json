@@ -48,6 +48,10 @@
       "desktop": {
         "schemes": ["hq-installer"]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk=",
+      "endpoints": ["https://updates.hq-installer.getindigo.ai/latest.json"]
     }
   }
 }
