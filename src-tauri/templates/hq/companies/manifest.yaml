@@ -1,0 +1,8 @@
+# HQ Companies Manifest
+#
+# Each company entry below maps a slug to its resources: repos, workers,
+# knowledge, services, and infrastructure routing.
+#
+# Add a company with `/newcompany <slug>`.
+
+companies: {}

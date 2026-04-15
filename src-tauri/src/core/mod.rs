@@ -8,3 +8,4 @@
 pub mod deps;
 pub mod platform;
 pub mod runner;
+pub mod scaffold;

@@ -6,3 +6,4 @@
 
 pub mod deps;
 pub mod platform;
+pub mod scaffold;

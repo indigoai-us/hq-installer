@@ -18,6 +18,8 @@ pub fn run() {
             commands::deps::dep_registry,
             commands::deps::check_deps,
             commands::deps::install_dep,
+            commands::scaffold::scaffold_hq,
+            commands::scaffold::template_file_count,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

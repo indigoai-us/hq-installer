@@ -18,7 +18,9 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 which = "6"
-tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["process", "io-util", "rt", "rt-multi-thread", "macros", "sync", "fs"] }
+include_dir = "0.7"
+tempfile = "3"
 
 [profile.dev]
 incremental = true
