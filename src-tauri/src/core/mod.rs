@@ -5,4 +5,6 @@
 //!
 //! See `docs/hq-install-spec.md` for the canonical behavior contract.
 
+pub mod deps;
 pub mod platform;
+pub mod runner;
