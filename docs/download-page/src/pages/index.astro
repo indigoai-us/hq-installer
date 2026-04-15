@@ -1,0 +1,461 @@
+---
+import { fetchLatestRelease, formatBytes, formatDate } from "../lib/release.ts";
+
+// Runs on every ISR revalidation (hourly). Rendered HTML is cached by
+// Vercel — fresh visitors get a cache hit until the TTL expires.
+const release = await fetchLatestRelease();
+
+const aarch64Url = release?.dmgAarch64?.browserDownloadUrl ?? null;
+const x64Url = release?.dmgX64?.browserDownloadUrl ?? null;
+const aarch64Size = release?.dmgAarch64 ? formatBytes(release.dmgAarch64.size) : null;
+const x64Size = release?.dmgX64 ? formatBytes(release.dmgX64.size) : null;
+const releaseDate = release ? formatDate(release.publishedAt) : null;
+---
+
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="HQ — Personal OS for orchestrating work across companies, workers, and AI. Download the native macOS installer." />
+    <meta name="theme-color" content="#0a0e1a" />
+    <title>HQ — Download</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='50' font-size='48'>HQ</text></svg>" />
+    <link rel="canonical" href="https://hq.getindigo.ai" />
+    <meta property="og:title" content="HQ — Download" />
+    <meta property="og:description" content="Personal OS for orchestrating work across companies, workers, and AI." />
+    <meta property="og:type" content="website" />
+  </head>
+  <body>
+    <main class="root">
+      <header class="hero">
+        <div class="logo">HQ</div>
+        <h1>Your own personal OS for getting things done.</h1>
+        <p class="tagline">
+          Orchestrate work across companies, workers, and AI — from one place,
+          on your machine, with Claude Code driving.
+        </p>
+      </header>
+
+      <section class="download-card" aria-labelledby="download-heading">
+        <h2 id="download-heading">Download HQ Installer</h2>
+
+        {release ? (
+          <div class="release-meta">
+            <span class="tag">{release.tag}</span>
+            <span class="published">Released {releaseDate}</span>
+          </div>
+        ) : (
+          <div class="release-meta release-meta--pending">
+            <span class="tag tag--pending">coming soon</span>
+            <span class="published">The first public release is being prepared.</span>
+          </div>
+        )}
+
+        <div class="buttons" id="buttons">
+          <a
+            id="btn-aarch64"
+            class="btn btn-primary"
+            href={aarch64Url ?? "#"}
+            data-arch="aarch64"
+            aria-disabled={!aarch64Url}
+            data-state={aarch64Url ? "ready" : "pending"}
+          >
+            <span class="btn-arch">Apple Silicon</span>
+            <span class="btn-os">macOS · M1 / M2 / M3 / M4</span>
+            {aarch64Size && <span class="btn-size">{aarch64Size}</span>}
+          </a>
+
+          <a
+            id="btn-x64"
+            class="btn btn-secondary"
+            href={x64Url ?? "#"}
+            data-arch="x64"
+            aria-disabled={!x64Url}
+            data-state={x64Url ? "ready" : "pending"}
+          >
+            <span class="btn-arch">Intel Mac</span>
+            <span class="btn-os">macOS · x86_64</span>
+            {x64Size && <span class="btn-size">{x64Size}</span>}
+          </a>
+        </div>
+
+        <p class="os-hint" id="os-hint" aria-live="polite"></p>
+
+        <p class="also">
+          Also available for:
+          <span class="soon">Windows (soon)</span> ·
+          <span class="soon">Linux (soon)</span>
+        </p>
+
+        <p class="security-note">
+          Signed with Indigo's Apple Developer ID and notarized by Apple.
+          No Gatekeeper warnings.
+        </p>
+      </section>
+
+      <section class="devs" aria-labelledby="devs-heading">
+        <h3 id="devs-heading">For developers</h3>
+        <p>
+          Comfortable in a terminal? Skip the installer and bootstrap HQ with
+          one command:
+        </p>
+        <pre class="code"><code>npx create-hq</code></pre>
+      </section>
+
+      <footer class="footer">
+        <p>
+          {release ? (
+            <a href={release.htmlUrl}>View all releases on GitHub →</a>
+          ) : (
+            <a href="https://github.com/indigoai-us/hq-installer">View the source on GitHub →</a>
+          )}
+        </p>
+        <p class="copyright">© 2026 Indigo. HQ is open source.</p>
+      </footer>
+    </main>
+
+    <script is:inline>
+      // OS detection — client-side only. Runs after HTML is cached, so
+      // ISR doesn't need to re-render per-visitor. We enhance the
+      // already-rendered download buttons with an emphasized state +
+      // an inline hint above the buttons.
+      (function () {
+        try {
+          const ua = navigator.userAgent || "";
+          // navigator.platform is deprecated in the spec but still the
+          // only cross-browser path for OS detection on Safari, where
+          // navigator.userAgentData does not exist. We keep both.
+          /** @type {{ platform?: string }} */
+          const nav = /** @type {unknown} */ (navigator);
+          const platform = nav.platform || "";
+
+          const isMac = /Mac/i.test(platform) || /Mac/i.test(ua);
+          const isWindows = /Win/i.test(platform) || /Windows/i.test(ua);
+          const isLinux = /Linux/i.test(platform) || /Linux/i.test(ua);
+
+          // Modern AS Macs report "MacIntel" in platform, but we can
+          // still infer Apple Silicon via the "Mac OS X" token in UA
+          // combined with a WebKit device memory probe. Browsers try
+          // to hide this — fallback is to highlight aarch64 since that's
+          // ~80% of new Macs sold and the safer default.
+          const isAppleSilicon = (() => {
+            if (!isMac) return false;
+            // Chrome 91+ ships navigator.userAgentData — arm64 reports
+            // architecture "arm" here.
+            const uaData = /** @type {{architecture?: string}} */ (
+              /** @type {unknown} */ (navigator).userAgentData
+            );
+            if (uaData && uaData.architecture) {
+              return uaData.architecture === "arm";
+            }
+            // Fallback: default to aarch64 for any Mac newer than 2020.
+            return true;
+          })();
+
+          const hint = document.getElementById("os-hint");
+          const btnA = document.getElementById("btn-aarch64");
+          const btnX = document.getElementById("btn-x64");
+
+          if (isMac) {
+            if (isAppleSilicon) {
+              btnA && btnA.classList.add("btn-featured");
+              hint && (hint.textContent = "Detected: macOS on Apple Silicon — the top button is the one you want.");
+            } else {
+              btnX && btnX.classList.add("btn-featured");
+              hint && (hint.textContent = "Detected: macOS on Intel — use the Intel Mac button.");
+            }
+          } else if (isWindows) {
+            hint && (hint.textContent = "Detected: Windows. Native installer coming soon — for now, try npx create-hq.");
+            btnA && btnA.classList.add("btn-dim");
+            btnX && btnX.classList.add("btn-dim");
+          } else if (isLinux) {
+            hint && (hint.textContent = "Detected: Linux. Native installer coming soon — for now, try npx create-hq.");
+            btnA && btnA.classList.add("btn-dim");
+            btnX && btnX.classList.add("btn-dim");
+          }
+        } catch {
+          // Silently no-op on any runtime error — the static HTML still
+          // works fine without JS.
+        }
+      })();
+    </script>
+
+    <style>
+      :root {
+        --bg: #070b14;
+        --bg-elev: #0e1526;
+        --fg: #e2e8f5;
+        --fg-muted: #8893b0;
+        --accent: #6ea8ff;
+        --accent-glow: #6ea8ff33;
+        --border: #1a2540;
+        --warn: #ffa657;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
+          system-ui, sans-serif;
+        font-feature-settings: "cv11", "ss01";
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .root {
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 56px 24px 80px;
+      }
+
+      /* ── Hero ───────────────────────────────────────── */
+      .hero {
+        text-align: center;
+        margin-bottom: 48px;
+      }
+
+      .logo {
+        font-weight: 900;
+        font-size: 32px;
+        letter-spacing: 4px;
+        color: var(--accent);
+        margin-bottom: 24px;
+        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+      }
+
+      .hero h1 {
+        font-size: 34px;
+        line-height: 1.15;
+        margin: 0 0 20px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .tagline {
+        font-size: 17px;
+        color: var(--fg-muted);
+        line-height: 1.55;
+        margin: 0 auto;
+        max-width: 520px;
+      }
+
+      /* ── Download card ──────────────────────────────── */
+      .download-card {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 32px 28px 28px;
+        margin-bottom: 32px;
+      }
+
+      .download-card h2 {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--fg-muted);
+        margin: 0 0 12px;
+      }
+
+      .release-meta {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 20px;
+        font-size: 13px;
+        color: var(--fg-muted);
+      }
+
+      .tag {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 999px;
+        background: var(--accent-glow);
+        color: var(--accent);
+        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .tag--pending {
+        background: #2a1f0e;
+        color: var(--warn);
+      }
+
+      /* ── Buttons ────────────────────────────────────── */
+      .buttons {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .btn {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 18px 20px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        text-decoration: none;
+        color: var(--fg);
+        background: transparent;
+        transition: border-color 150ms, background 150ms, transform 150ms;
+      }
+
+      .btn:hover {
+        border-color: var(--accent);
+        background: #0a1220;
+      }
+
+      .btn:active {
+        transform: translateY(1px);
+      }
+
+      .btn[aria-disabled="true"] {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+
+      .btn-featured {
+        border-color: var(--accent);
+        background: #0c1628;
+        box-shadow: 0 0 0 4px var(--accent-glow);
+      }
+
+      .btn-dim {
+        opacity: 0.5;
+      }
+
+      .btn-arch {
+        font-weight: 600;
+        font-size: 16px;
+        flex: 1;
+      }
+
+      .btn-os {
+        font-size: 13px;
+        color: var(--fg-muted);
+      }
+
+      .btn-size {
+        font-size: 12px;
+        color: var(--fg-muted);
+        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+      }
+
+      .os-hint {
+        margin: 16px 0 0;
+        font-size: 13px;
+        color: var(--accent);
+        min-height: 18px;
+      }
+
+      .also {
+        margin: 24px 0 8px;
+        font-size: 13px;
+        color: var(--fg-muted);
+      }
+
+      .soon {
+        color: var(--fg-muted);
+      }
+
+      .security-note {
+        margin: 14px 0 0;
+        font-size: 12px;
+        color: var(--fg-muted);
+        line-height: 1.5;
+      }
+
+      /* ── Dev path ───────────────────────────────────── */
+      .devs {
+        background: transparent;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        padding: 20px 22px;
+        margin-bottom: 48px;
+      }
+
+      .devs h3 {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--fg-muted);
+        margin: 0 0 10px;
+      }
+
+      .devs p {
+        margin: 0 0 14px;
+        font-size: 14px;
+        color: var(--fg-muted);
+        line-height: 1.5;
+      }
+
+      .code {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin: 0;
+        overflow-x: auto;
+        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+        font-size: 13px;
+        color: var(--fg);
+        user-select: all;
+      }
+
+      /* ── Footer ─────────────────────────────────────── */
+      .footer {
+        text-align: center;
+        font-size: 13px;
+        color: var(--fg-muted);
+      }
+
+      .footer a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      .footer a:hover {
+        text-decoration: underline;
+      }
+
+      .copyright {
+        margin-top: 12px;
+        font-size: 11px;
+      }
+
+      /* ── Responsive ─────────────────────────────────── */
+      @media (max-width: 480px) {
+        .root {
+          padding: 32px 16px 60px;
+        }
+        .hero h1 {
+          font-size: 26px;
+        }
+        .download-card {
+          padding: 24px 20px;
+        }
+        .btn {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 6px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .btn {
+          transition: none;
+        }
+      }
+    </style>
+  </body>
+</html>
