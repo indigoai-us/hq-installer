@@ -18,14 +18,14 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
       expect(pkg.scripts).toHaveProperty("build");
     });
 
-    it("CI workflow exists and covers typecheck, lint, test, and cargo check steps", () => {
+    it("CI workflow exists and covers typecheck, lint, test, and cargo test steps", () => {
       const ciPath = join(repoRoot, ".github/workflows/ci.yml");
       expect(existsSync(ciPath)).toBe(true);
       const ci = readFileSync(ciPath, "utf-8");
       expect(ci).toContain("typecheck");
       expect(ci).toContain("lint");
       expect(ci).toContain("pnpm test");
-      expect(ci).toContain("cargo check");
+      expect(ci).toContain("cargo test");
     });
 
     it("TypeScript config exists", () => {

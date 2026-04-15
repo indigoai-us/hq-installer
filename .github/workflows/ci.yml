@@ -28,7 +28,7 @@ jobs:
       - run: pnpm test
 
   rust:
-    name: Rust (cargo check)
+    name: Rust (cargo test)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,5 +36,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
-      - run: cargo check
+      - run: cargo test
         working-directory: src-tauri
