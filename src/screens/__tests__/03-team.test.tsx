@@ -176,9 +176,11 @@ describe("TeamSetup screen (03-team.tsx)", () => {
       expect(url).toContain("/api/installer/register-company");
       expect((options as RequestInit).method?.toUpperCase()).toBe("POST");
 
-      // Body: new snake_case Cognito contract
+      // Body: new snake_case contract. cognito_sub is NOT sent — the hq-ops
+      // handler extracts it from the verified JWT sub claim instead, so a
+      // client cannot spoof the owning user.
       const body = JSON.parse((options as RequestInit).body as string);
-      expect(body.cognito_sub).toBe(MOCK_SUB);
+      expect(body.cognito_sub).toBeUndefined();
       expect(body.company_slug).toBe("acme");
       expect(body.company_name).toBe("Acme Corp");
       expect(body.plan_tier).toBe("free");

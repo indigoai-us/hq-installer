@@ -54,6 +54,9 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
         throw new Error("No active session — please sign in again");
       }
 
+      // cognito_sub is NOT in the body — the hq-ops handler extracts it from
+      // the verified JWT sub claim, so a client can't spoof ownership. We still
+      // call getCurrentUser() to obtain the idToken for the Authorization header.
       const res = await fetch(`${getApiBase()}/api/installer/register-company`, {
         method: "POST",
         headers: {
@@ -61,7 +64,6 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
           Authorization: `Bearer ${user.tokens.idToken}`,
         },
         body: JSON.stringify({
-          cognito_sub: user.sub,
           company_slug: teamSlug,
           company_name: teamName,
           // Plan selection UI lives downstream in hq-ops billing — first-run
