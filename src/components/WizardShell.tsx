@@ -5,7 +5,10 @@ import React from "react";
 import { ProgressIndicator } from "./ProgressIndicator";
 
 function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  // Use truthiness check — `in` operator returns true even when the value is undefined,
+  // which incorrectly classifies a browser env where code defines the property as undefined.
+  // __TAURI_INTERNALS__ is the Tauri 2 global; __TAURI__ was Tauri 1 (do not use).
+  return typeof window !== "undefined" && !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 }
 
 interface WizardShellProps {
