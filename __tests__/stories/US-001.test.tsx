@@ -45,9 +45,9 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
   });
 
   describe("Monochrome React app rendering", () => {
-    it("renders HQ Installer heading without errors", () => {
+    it("renders Set up HQ heading without errors", () => {
       render(<App />);
-      expect(screen.getByText(/HQ Installer/i)).toBeTruthy();
+      expect(screen.getByText(/Set up HQ/i)).toBeTruthy();
     });
 
     it("renders monochrome zinc dark background (no purple classes)", () => {
@@ -64,17 +64,15 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
       ).toBeTruthy();
     });
 
-    it("renders Learn More secondary button", () => {
+    it("renders wizard overview steps list", () => {
       render(<App />);
-      expect(
-        screen.getByRole("button", { name: /Learn More/i })
-      ).toBeTruthy();
+      expect(screen.getByText(/Setup steps/i)).toBeTruthy();
     });
 
-    it("renders workspace setup subtitle text", () => {
+    it("renders telemetry opt-in label", () => {
       render(<App />);
       expect(
-        screen.getByText(/Setting up your workspace/i)
+        screen.getByText(/sharing anonymous usage telemetry/i)
       ).toBeTruthy();
     });
   });

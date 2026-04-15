@@ -3,9 +3,9 @@ import { describe, it, expect } from "vitest";
 import App from "./App";
 
 describe("App", () => {
-  it("renders HQ Installer heading", () => {
+  it("renders Set up HQ heading", () => {
     render(<App />);
-    expect(screen.getByText(/HQ Installer/i)).toBeTruthy();
+    expect(screen.getByText(/Set up HQ/i)).toBeTruthy();
   });
 
   it("renders Get Started button", () => {

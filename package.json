@@ -12,18 +12,19 @@
     "lint": "eslint src --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sync-templates": "tsx scripts/sync-templates.ts"
+    "sync-templates": "tsx scripts/sync-templates.ts",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1030.0",
     "@aws-sdk/client-s3": "^3.1030.0",
     "@aws-sdk/s3-request-presigner": "^3.1030.0",
-    "@tauri-apps/plugin-updater": "^2",
     "@base-ui/react": "^1.4.0",
     "@fontsource-variable/geist": "^5.2.8",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-fs": "^2.5.0",
     "@tauri-apps/plugin-shell": "^2",
+    "@tauri-apps/plugin-updater": "^2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fflate": "^0.8.2",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6",
