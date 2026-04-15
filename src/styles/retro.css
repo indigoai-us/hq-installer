@@ -1,0 +1,167 @@
+/* Retro-TUI aesthetic — translated from create-hq-tui ASCII art to GUI.
+ *
+ * Palette: cool blues / cyans on near-black, with high-contrast mono text
+ * for the "terminal" feel. All animations must respect prefers-reduced-motion.
+ *
+ * Conventions:
+ *   --retro-bg-*     — background layers (darker → lighter)
+ *   --retro-fg-*     — foreground text (dim → bright)
+ *   --retro-accent-* — cool-blue to cyan gradient stops
+ *   --retro-glow-*   — subtle rgba for window pulse / hover halo
+ */
+
+:root {
+  --retro-bg-0: #05070c;
+  --retro-bg-1: #0a0e18;
+  --retro-bg-2: #111725;
+  --retro-bg-3: #1a2237;
+
+  --retro-fg-dim: #5b6478;
+  --retro-fg-mid: #8e9aaf;
+  --retro-fg-bright: #d8e1f2;
+
+  --retro-accent-0: #1a3a8a; /* deep cool blue */
+  --retro-accent-1: #2f6cff; /* mid blue */
+  --retro-accent-2: #49c7ff; /* light cyan */
+  --retro-accent-3: #89e6ff; /* highlight cyan */
+
+  --retro-glow-window: rgba(73, 199, 255, 0.55);
+  --retro-glow-halo: rgba(73, 199, 255, 0.18);
+
+  --retro-font-mono:
+    "Berkeley Mono", "JetBrains Mono", "SF Mono", ui-monospace,
+    "Menlo", "Consolas", monospace;
+}
+
+/* ---------- Block letter gradient for the Indigo HQ heading ---------- */
+.retro-heading-block {
+  font-family: var(--retro-font-mono);
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  background: linear-gradient(
+    90deg,
+    var(--retro-accent-0) 0%,
+    var(--retro-accent-1) 35%,
+    var(--retro-accent-2) 70%,
+    var(--retro-accent-3) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 24px var(--retro-glow-halo);
+}
+
+/* ---------- Building windows pulse animation ---------- */
+@keyframes retro-window-pulse {
+  0%, 100% { opacity: 0.85; filter: drop-shadow(0 0 0 transparent); }
+  50%      { opacity: 1.0; filter: drop-shadow(0 0 6px var(--retro-glow-window)); }
+}
+
+.retro-window {
+  animation: retro-window-pulse 3.2s ease-in-out infinite;
+  fill: var(--retro-accent-2);
+}
+
+.retro-window--slow {
+  animation-duration: 4.6s;
+  animation-delay: 0.4s;
+}
+
+.retro-window--fast {
+  animation-duration: 2.4s;
+  animation-delay: 0.8s;
+}
+
+/* ---------- Scanning row ---------- */
+.retro-scan-row {
+  font-family: var(--retro-font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 12px;
+  border-left: 2px solid var(--retro-bg-3);
+}
+
+.retro-scan-row--installed {
+  border-left-color: var(--retro-accent-2);
+}
+
+.retro-scan-row--missing {
+  border-left-color: #ff5c6c;
+}
+
+.retro-scan-row--scanning {
+  border-left-color: var(--retro-fg-mid);
+}
+
+.retro-scan-glyph {
+  text-align: center;
+}
+
+.retro-scan-glyph--ok    { color: var(--retro-accent-3); }
+.retro-scan-glyph--miss  { color: #ff7684; }
+.retro-scan-glyph--wait  { color: var(--retro-fg-mid); }
+
+/* ---------- Primary CTA ---------- */
+.retro-cta-primary {
+  font-family: var(--retro-font-mono);
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 14px 28px;
+  background: linear-gradient(
+    90deg,
+    var(--retro-accent-1) 0%,
+    var(--retro-accent-2) 100%
+  );
+  color: var(--retro-bg-0);
+  border: 1px solid var(--retro-accent-3);
+  box-shadow: 0 0 22px var(--retro-glow-halo);
+  cursor: pointer;
+  transition: transform 120ms ease-out, box-shadow 180ms ease-out;
+}
+
+.retro-cta-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  background: var(--retro-bg-3);
+  color: var(--retro-fg-mid);
+  border-color: var(--retro-bg-3);
+  box-shadow: none;
+}
+
+.retro-cta-primary:enabled:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 32px var(--retro-glow-window);
+}
+
+.retro-cta-secondary {
+  font-family: var(--retro-font-mono);
+  font-size: 12px;
+  color: var(--retro-fg-mid);
+  text-decoration: underline;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.retro-cta-secondary:hover {
+  color: var(--retro-accent-3);
+}
+
+/* ---------- Reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .retro-window,
+  .retro-window--slow,
+  .retro-window--fast {
+    animation: none;
+    opacity: 1;
+  }
+
+  .retro-cta-primary:enabled:hover {
+    transform: none;
+  }
+}
