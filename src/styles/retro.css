@@ -152,6 +152,183 @@
   color: var(--retro-accent-3);
 }
 
+/* ---------- Install wizard: dep row ---------- */
+.retro-install-row {
+  font-family: var(--retro-font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--retro-bg-3);
+  background: color-mix(in oklab, var(--retro-bg-1) 70%, transparent);
+}
+.retro-install-row--installing {
+  border-left-color: var(--retro-accent-2);
+  background: color-mix(in oklab, var(--retro-bg-2) 80%, transparent);
+}
+.retro-install-row--done {
+  border-left-color: var(--retro-accent-3);
+}
+.retro-install-row--failed {
+  border-left-color: #ff5c6c;
+}
+.retro-install-row--skipped {
+  border-left-color: var(--retro-fg-dim);
+  opacity: 0.7;
+}
+
+.retro-install-glyph {
+  width: 20px;
+  text-align: center;
+}
+.retro-install-glyph--pending  { color: var(--retro-fg-dim); }
+.retro-install-glyph--running  { color: var(--retro-accent-3); }
+.retro-install-glyph--ok       { color: var(--retro-accent-3); }
+.retro-install-glyph--miss     { color: #ff7684; }
+.retro-install-glyph--skip     { color: var(--retro-fg-mid); }
+
+.retro-row-action {
+  font-family: var(--retro-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  background: var(--retro-bg-2);
+  color: var(--retro-fg-bright);
+  border: 1px solid var(--retro-bg-3);
+  cursor: pointer;
+  transition: background 120ms ease-out, border-color 180ms ease-out;
+}
+.retro-row-action:hover {
+  background: var(--retro-bg-3);
+  border-color: var(--retro-accent-2);
+}
+.retro-row-action--retry {
+  color: var(--retro-accent-3);
+}
+.retro-row-action--skip {
+  color: var(--retro-fg-mid);
+}
+
+/* ---------- Install wizard: progress bar ---------- */
+.retro-progress {
+  height: 10px;
+  background: var(--retro-bg-2);
+  border: 1px solid var(--retro-bg-3);
+  position: relative;
+  overflow: hidden;
+}
+.retro-progress-fill {
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--retro-accent-1) 0%,
+    var(--retro-accent-2) 80%,
+    var(--retro-accent-3) 100%
+  );
+  transition: width 260ms ease-out;
+  box-shadow: 0 0 10px var(--retro-glow-halo);
+}
+
+/* ---------- Install wizard: live log panel ---------- */
+.retro-log-panel {
+  border: 1px solid var(--retro-bg-3);
+  background: #020305;
+  padding: 0;
+  font-family: var(--retro-font-mono);
+  box-shadow: inset 0 0 20px rgba(73, 199, 255, 0.05);
+}
+.retro-log-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--retro-bg-3) transparent;
+}
+.retro-log-empty {
+  color: var(--retro-fg-dim);
+  font-size: 12px;
+  margin: 0;
+  text-align: center;
+  padding: 12px 0;
+}
+.retro-log-line {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  word-break: break-all;
+}
+.retro-log-line--stdout  { color: var(--retro-fg-mid); }
+.retro-log-line--stderr  { color: #f5c060; }
+.retro-log-line--system  { color: var(--retro-accent-3); }
+.retro-log-line--error   { color: #ff7684; }
+.retro-log-prefix {
+  color: var(--retro-fg-dim);
+  flex-shrink: 0;
+}
+.retro-log-text {
+  white-space: pre-wrap;
+}
+
+/* ---------- Install wizard: Node manual modal ---------- */
+.retro-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.retro-modal-card {
+  max-width: 480px;
+  width: 90vw;
+  background: var(--retro-bg-1);
+  border: 1px solid var(--retro-accent-1);
+  box-shadow: 0 0 40px var(--retro-glow-halo);
+  padding: 24px;
+  font-family: var(--retro-font-mono);
+}
+.retro-modal-title {
+  font-family: var(--retro-font-mono);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: var(--retro-accent-3);
+  font-size: 18px;
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+}
+.retro-modal-body {
+  color: var(--retro-fg-mid);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 16px 0;
+}
+.retro-modal-hint {
+  color: var(--retro-fg-dim);
+  font-size: 11px;
+  background: var(--retro-bg-2);
+  padding: 8px 10px;
+  border-left: 2px solid var(--retro-accent-1);
+  margin: 0 0 16px 0;
+  word-break: break-all;
+}
+.retro-modal-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.retro-cta-primary--secondary {
+  background: var(--retro-bg-3);
+  color: var(--retro-fg-bright);
+  border-color: var(--retro-accent-1);
+  box-shadow: none;
+}
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   .retro-window,
@@ -163,5 +340,9 @@
 
   .retro-cta-primary:enabled:hover {
     transform: none;
+  }
+
+  .retro-progress-fill {
+    transition: none;
   }
 }

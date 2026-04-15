@@ -124,6 +124,20 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
+// Tauri event listener mock — the Install wizard subscribes to
+// `dep-install:<dep-id>` events. jsdom has no backend, so `listen` is a
+// no-op that returns a no-op unsubscribe function.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
+}));
+
+// Shell plugin — used by NodeManualModal to open nodejs.org in the system
+// browser. The real package exports `open(path, openWith?)`.
+vi.mock("@tauri-apps/plugin-shell", () => ({
+  open: vi.fn(async () => {}),
+}));
+
 // Clipboard API is absent in jsdom — provide a minimal stub so the
 // "copy CLI command" path in Welcome doesn't throw.
 Object.defineProperty(navigator, "clipboard", {
