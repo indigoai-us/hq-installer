@@ -40,6 +40,7 @@ pub fn run() {
             commands::git::git_probe_user,
             commands::process::spawn_process,
             commands::process::cancel_process,
+            commands::template::fetch_template,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
