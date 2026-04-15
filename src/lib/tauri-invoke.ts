@@ -3,8 +3,37 @@
 // Types mirror the `serde` shapes in `src-tauri/src/core/*.rs` — keep them
 // in sync with the Rust source or the runtime will silently deserialize to
 // `undefined`.
+//
+// # E2E mock hook (US-012)
+//
+// In dev builds, `window.__HQ_E2E__.invoke` is an optional command table
+// that wdio specs can install via `e2e/fixtures/mock-backends.ts`. When the
+// hook exists and has a handler for the current command, we use it in
+// place of the real Tauri bridge. In production builds this code is
+// dead-code eliminated because `import.meta.env.DEV` folds to `false`.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+
+interface E2EWindow {
+  __HQ_E2E__?: {
+    invoke: Record<string, (args: unknown) => unknown>;
+  };
+}
+
+/**
+ * Invoke wrapper that consults `window.__HQ_E2E__.invoke` first in dev
+ * builds. Used only by the typed command helpers in this file.
+ */
+async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (import.meta.env.DEV && typeof window !== "undefined") {
+    const hook = (window as unknown as E2EWindow).__HQ_E2E__;
+    const handler = hook?.invoke?.[cmd];
+    if (handler) {
+      return Promise.resolve(handler(args) as T);
+    }
+  }
+  return tauriInvoke<T>(cmd, args);
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Platform (mirrors core::platform)
