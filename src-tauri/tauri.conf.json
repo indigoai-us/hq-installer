@@ -13,9 +13,11 @@
     "windows": [
       {
         "title": "HQ Installer",
-        "width": 900,
-        "height": 640,
-        "resizable": false,
+        "width": 960,
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
         "transparent": false,
         "decorations": true
       }
@@ -27,12 +29,24 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Install HQ without opening a terminal",
+    "longDescription": "HQ Installer is a native macOS app that walks non-technical users through installing HQ: system dependency checks, template scaffolding, optional cloud sync, and handoff to Claude Code.",
+    "copyright": "Copyright © 2026 Indigo. All rights reserved.",
+    "publisher": "Indigo",
+    "homepage": "https://github.com/indigoai-us/hq-installer",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "entitlements.plist",
+      "exceptionDomain": "",
+      "frameworks": []
+    }
   }
 }

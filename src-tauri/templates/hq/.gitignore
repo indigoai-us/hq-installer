@@ -1,0 +1,21 @@
+# Editor + OS cruft
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Runtime
+node_modules/
+workspace/threads/*.json
+workspace/reports/*.json
+!workspace/reports/.gitkeep
+!workspace/threads/.gitkeep
+
+# Secrets (never commit)
+.env
+.env.*
+*.pem
+companies/*/settings/**/credentials.json
+
+# Sync artifacts
+.hq-sync-state/

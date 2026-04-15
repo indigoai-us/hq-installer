@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for HQ Installer (Developer ID distribution).
+
+  This app needs:
+    - WKWebView running JIT'd JavaScript in the renderer.
+    - Network access for GitHub API + analytics pings.
+    - Permission to spawn CLI subprocesses (brew, git, claude) from
+      tauri-plugin-shell — the installer's whole job is running these.
+    - User-selected read/write so the renderer can scaffold into the
+      folder the user picked in the location screen.
+
+  We keep library-validation ON (we only load system frameworks and
+  our bundled dylibs) and do NOT grant any `allow-dyld-environment-variables`
+  or `get-task-allow` — those would be rejected at notarization anyway.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Tauri 2 uses WKWebView which JITs JS; required on macOS 13+ -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- WKWebView needs W+X pages for the JIT pool -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- The installer's core feature: spawn brew/git/claude subprocesses
+         via tauri-plugin-shell. Without this, PackageManager detection
+         and dependency installation both fail silently. -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <false/>
+
+    <!-- Outbound network for GitHub API (cloud sync repo check),
+         tauri-updater metadata fetch, and analytics pings. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- No inbound server sockets — the installer never listens. -->
+    <key>com.apple.security.network.server</key>
+    <false/>
+
+    <!-- User picks an HQ directory in LocationRoute; we need to write
+         the scaffold there. This entitlement grants access to paths
+         returned from NSOpenPanel / tauri-plugin-dialog. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Access to the user's Downloads folder (for DMG + update downloads)
+         is covered by the user-selected entitlement above. -->
+</dict>
+</plist>

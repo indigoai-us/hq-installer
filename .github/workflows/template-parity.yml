@@ -1,0 +1,62 @@
+name: template-parity
+
+on:
+  schedule:
+    # Nightly at 06:00 UTC — well after any reasonable upstream release time.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "src-tauri/templates/**"
+      - "scripts/check-template-parity.sh"
+      - ".github/workflows/template-parity.yml"
+
+jobs:
+  diff-embedded-template:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure parity script is executable
+        run: chmod +x scripts/check-template-parity.sh
+
+      - name: Run parity check
+        id: parity
+        run: |
+          set +e
+          scripts/check-template-parity.sh
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 0 ]; then
+            echo "result=sync" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$code" -eq 1 ]; then
+            echo "result=drift" >> "$GITHUB_OUTPUT"
+            # Drift is a "please look at this" signal, not a hard CI failure
+            # on scheduled runs — fail only on pull_request so accidental
+            # template edits are caught before merge.
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+              exit 1
+            else
+              exit 0
+            fi
+          else
+            echo "result=tooling_failure" >> "$GITHUB_OUTPUT"
+            exit 2
+          fi
+
+      - name: Summarize drift
+        if: steps.parity.outputs.result == 'drift'
+        run: |
+          {
+            echo "## Template drift detected"
+            echo ""
+            echo "The embedded HQ template in \`src-tauri/templates/hq/\` has drifted"
+            echo "from the latest upstream \`create-hq\` release."
+            echo ""
+            echo "Run \`scripts/check-template-parity.sh\` locally for the diff and"
+            echo "open a PR titled \`chore: sync embedded template to <tag>\` once you've"
+            echo "reviewed the changes."
+          } >> "$GITHUB_STEP_SUMMARY"

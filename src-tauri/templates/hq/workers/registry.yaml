@@ -1,0 +1,8 @@
+# HQ Workers Registry
+#
+# Index of every worker available in this HQ. Shared workers live under
+# `workers/public/`; company-scoped workers live under `companies/{co}/workers/`.
+#
+# Add a worker with `/newworker`.
+
+workers: {}

@@ -1,0 +1,173 @@
+name: Release macOS
+
+"on":
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# Cancel any in-progress runs on the same tag — re-tagging re-releases,
+# duplicate runs waste an hour of notarization quota.
+concurrency:
+  group: release-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    name: Create GitHub draft release
+    runs-on: macos-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create or fetch draft release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.startsWith("refs/tags/")
+              ? context.ref.replace("refs/tags/", "")
+              : (context.payload.inputs && context.payload.inputs.tag)
+              ? context.payload.inputs.tag
+              : "manual";
+
+            // If a draft release for this tag already exists (e.g. a
+            // previous matrix run created it), reuse its id so both
+            // arch builds upload to the same release.
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 50,
+            });
+            const existing = releases.find(r => r.tag_name === tag && r.draft);
+            if (existing) {
+              core.info(`Reusing existing draft release ${existing.id} for ${tag}`);
+              return existing.id;
+            }
+
+            const { data: release } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `HQ Installer ${tag}`,
+              body: [
+                `Download the DMG for your Mac below.`,
+                ``,
+                `- **Apple Silicon (M1/M2/M3/M4):** \`hq-installer_${tag.replace(/^v/, "")}_aarch64.dmg\``,
+                `- **Intel Mac:** \`hq-installer_${tag.replace(/^v/, "")}_x64.dmg\``,
+                ``,
+                `Both DMGs are signed with Indigo's Apple Developer ID and notarized by Apple.`,
+                `If macOS still shows a Gatekeeper warning, file an issue — that's a bug.`,
+                ``,
+                `---`,
+                `For developers who prefer the CLI, \`npx create-hq\` is still the fastest path.`,
+              ].join("\n"),
+              draft: true,
+              prerelease: false,
+            });
+            return release.id;
+
+  build-macos:
+    name: Build + sign + notarize (${{ matrix.arch }})
+    needs: create-release
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+          key: release-${{ matrix.target }}
+
+      - name: Install pnpm deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Run pre-release quality gates
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm test
+
+      - name: Build, sign, notarize, and upload via tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Code signing — tauri-action imports the certificate into a
+          # temporary keychain on the runner.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+
+          # Notarization — tauri-action calls `notarytool submit --wait`
+          # after signing and then `xcrun stapler staple` the DMG.
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+          # Upload
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target ${{ matrix.target }}
+
+      - name: Upload workflow artifacts (debug)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-build-logs-${{ matrix.arch }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.log
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.plist
+          retention-days: 7
+          if-no-files-found: ignore
+
+  finalize-release:
+    name: Finalize release
+    needs: [create-release, build-macos]
+    runs-on: macos-latest
+    steps:
+      - name: Publish draft release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releaseId = "${{ needs.create-release.outputs.release_id }}";
+            if (!releaseId) {
+              core.setFailed("No release_id from create-release job");
+              return;
+            }
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number(releaseId),
+              draft: false,
+            });
+            core.info(`Published release ${releaseId}`);

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import App from "../../src/App";
 
 const repoRoot = process.cwd(); // vitest runs from repo root
@@ -18,14 +18,14 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
       expect(pkg.scripts).toHaveProperty("build");
     });
 
-    it("CI workflow exists and covers typecheck, lint, test, and cargo check steps", () => {
+    it("CI workflow exists and covers typecheck, lint, test, and cargo test steps", () => {
       const ciPath = join(repoRoot, ".github/workflows/ci.yml");
       expect(existsSync(ciPath)).toBe(true);
       const ci = readFileSync(ciPath, "utf-8");
       expect(ci).toContain("typecheck");
       expect(ci).toContain("lint");
       expect(ci).toContain("pnpm test");
-      expect(ci).toContain("cargo check");
+      expect(ci).toContain("cargo test");
     });
 
     it("TypeScript config exists", () => {
@@ -44,38 +44,30 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
     });
   });
 
-  describe("Monochrome React app rendering", () => {
-    it("renders HQ Installer heading without errors", () => {
+  describe("App boots without errors", () => {
+    // US-001 only needs to prove the React shell renders cleanly; the
+    // Welcome-route UI contract (INDIGO HQ heading, CTAs, system scan)
+    // is exercised by US-006's test suite.
+    it("mounts the app root and shows the welcome route", async () => {
       render(<App />);
-      expect(screen.getByText(/HQ Installer/i)).toBeTruthy();
+      expect(screen.getByTestId("welcome-route")).toBeTruthy();
+      // Let SystemScan's async effects settle so no state updates
+      // escape the test's act() boundary.
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("welcome-cta-primary")
+        ).not.toBeDisabled();
+      });
     });
 
-    it("renders monochrome zinc dark background (no purple classes)", () => {
+    it("contains no legacy purple accent classes", async () => {
       const { container } = render(<App />);
-      const html = container.innerHTML;
-      expect(html).not.toMatch(/purple-/);
-      expect(html).toContain("bg-zinc-950");
-    });
-
-    it("renders Get Started primary button", () => {
-      render(<App />);
-      expect(
-        screen.getByRole("button", { name: /Get Started/i })
-      ).toBeTruthy();
-    });
-
-    it("renders Learn More secondary button", () => {
-      render(<App />);
-      expect(
-        screen.getByRole("button", { name: /Learn More/i })
-      ).toBeTruthy();
-    });
-
-    it("renders workspace setup subtitle text", () => {
-      render(<App />);
-      expect(
-        screen.getByText(/Setting up your workspace/i)
-      ).toBeTruthy();
+      expect(container.innerHTML).not.toMatch(/purple-/);
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("welcome-cta-primary")
+        ).not.toBeDisabled();
+      });
     });
   });
 });
