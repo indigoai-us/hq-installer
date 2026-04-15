@@ -36,6 +36,11 @@
     ],
     "resources": {
       "../templates": "templates"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": null
     }
   },
   "plugins": {
