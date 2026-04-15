@@ -465,7 +465,7 @@ describe("TeamSetup screen (03-team.tsx)", () => {
 
   // -------------------------------------------------------------------------
   describe("Tauri environment compatibility", () => {
-    it("renders without errors when Tauri APIs are mocked", () => {
+    it("renders cleanly when Tauri APIs are mocked", () => {
       expect(() => {
         render(<TeamSetup onNext={vi.fn()} />);
       }).not.toThrow();

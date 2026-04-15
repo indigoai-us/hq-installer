@@ -284,7 +284,7 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
 
   // ── 7. Tauri environment compatibility ────────────────────────────────────
 
-  it("renders without errors when Tauri APIs are mocked", () => {
+  it("renders cleanly when Tauri APIs are mocked", () => {
     expect(() => {
       render(<TemplateFetch targetDir="/tmp/hq" />);
     }).not.toThrow();

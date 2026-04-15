@@ -496,7 +496,7 @@ describe("GitInit screen (08-git-init.tsx)", () => {
 
   // ── 10. Tauri environment compatibility ───────────────────────────────────
 
-  it("renders without errors when Tauri APIs are mocked", () => {
+  it("renders cleanly when Tauri APIs are mocked", () => {
     expect(() => {
       render(<GitInit installPath="/tmp/hq" />);
     }).not.toThrow();

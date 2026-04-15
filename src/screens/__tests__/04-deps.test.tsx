@@ -703,7 +703,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
   // -------------------------------------------------------------------------
   describe("Tauri environment compatibility", () => {
-    it("renders without errors when Tauri APIs are mocked", () => {
+    it("renders cleanly when Tauri APIs are mocked", () => {
       expect(() => {
         render(<DepsInstall onNext={vi.fn()} />);
       }).not.toThrow();
