@@ -265,20 +265,44 @@ function parseTar(buf: Uint8Array): TarEntry[] {
     const size = readOctal(headerStart + 124, 12);
     const typeflag = String.fromCharCode(buf[headerStart + 156]);
 
-    // GNU/POSIX long name extension: type 'L' = long link, 'K' = long link name
+    // GNU long-name extension: type 'L' = long filename, 'K' = long link name
     if (typeflag === "L" || typeflag === "K") {
-      // The data block contains the real filename
       pos += 512;
       const nameBytes = buf.slice(pos, pos + size);
       pendingLongName = new TextDecoder().decode(nameBytes).replace(/\0/g, "");
-      // Advance past data blocks
       pos += Math.ceil(size / 512) * 512;
+      continue;
+    }
+
+    // PAX extended headers: 'g' = global (skip), 'x' = local (parse path)
+    if (typeflag === "g") {
+      // Global PAX header — skip data block entirely
+      pos += 512;
+      pos += Math.ceil(size / 512) * 512;
+      continue;
+    }
+    if (typeflag === "x") {
+      // Local PAX header — parse "path=..." field if present
+      pos += 512;
+      const paxData = new TextDecoder().decode(buf.slice(pos, pos + size));
+      pos += Math.ceil(size / 512) * 512;
+      const pathMatch = paxData.match(/\d+ path=([^\n]+)/);
+      if (pathMatch) {
+        pendingLongName = pathMatch[1];
+      }
       continue;
     }
 
     pos += 512; // advance past header
 
-    const actualName = pendingLongName ?? name;
+    // USTAR prefix field (bytes 345–499): combine with name when no GNU/PAX
+    // long-name override is pending and the tar uses the USTAR split.
+    const magic = readString(headerStart + 257, 6);
+    const usesUstar = magic.startsWith("ustar");
+    const ustarPrefix = usesUstar ? readString(headerStart + 345, 155) : "";
+    const baseName = ustarPrefix ? `${ustarPrefix}/${name}` : name;
+
+    const actualName = pendingLongName ?? baseName;
     pendingLongName = null;
 
     const dataBlocks = Math.ceil(size / 512) * 512;

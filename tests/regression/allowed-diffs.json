@@ -1,0 +1,25 @@
+{
+  "comment": "Known intentional differences between installer extraction and canonical tar extraction. Update this file when introducing planned divergences — every entry requires a rationale.",
+  "version": "1.0.0",
+  "excludedGlobs": [
+    "**/.DS_Store",
+    "**/node_modules/**",
+    "**/target/**",
+    "**/.git/**",
+    "**/.gitkeep"
+  ],
+  "excludedPaths": [],
+  "rationale": {
+    "**/.gitkeep": "Empty placeholder files — content hash always identical so comparison is meaningless; present in both trees.",
+    "**/.DS_Store": "macOS metadata — not committed, never part of the canonical template.",
+    "**/node_modules/**": "Runtime dependencies — not in the template tarball.",
+    "**/target/**": "Rust build artefacts — not in the template tarball.",
+    "**/.git/**": "Git internals — excluded from tree walks by default."
+  },
+  "knownLimitations": [
+    {
+      "area": "executable bits",
+      "description": "File mode bits (+x) are not compared. Tauri's plugin-fs writeFile API does not accept a mode parameter, so the installer always creates files with the platform's default umask. Executable scripts in the HQ template will lose their +x bit after installer extraction. This is a known limitation — track separately if it becomes a user-visible issue."
+    }
+  ]
+}
