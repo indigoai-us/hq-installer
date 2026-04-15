@@ -1,14 +1,18 @@
 // 03-team.tsx — US-014
-// Team create/join screen.
+// Team create screen.
+//
+// NOTE: The "Join team" mode is temporarily hidden — the hq-ops
+// /api/installer/join-team endpoint does not exist yet. For the first end-to-end
+// integration we only support creating a new company. Invite/join will land in
+// a follow-up US.
 
 import React, { useState } from "react";
 import { setTeam } from "@/lib/wizard-state";
+import { getCurrentUser } from "@/lib/cognito";
 
 interface TeamSetupProps {
   onNext?: () => void;
 }
-
-type Mode = "create" | "join";
 
 function getApiBase(): string {
   const base = (import.meta.env.VITE_API_BASE_URL as string) || "";
@@ -28,17 +32,11 @@ function slugify(s: string): string {
 }
 
 export function TeamSetup({ onNext }: TeamSetupProps) {
-  const [mode, setMode] = useState<Mode>("create");
-
-  // Create mode state
   const [teamName, setTeamName] = useState("");
   const [teamSlug, setTeamSlug] = useState("");
   // Tracks whether the user has manually edited the slug; once true, we stop
   // auto-syncing it from teamName.
   const [slugDirty, setSlugDirty] = useState(false);
-
-  // Join mode state
-  const [inviteCode, setInviteCode] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,22 +46,50 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
     setError(null);
     setLoading(true);
     try {
+      // Pull the Cognito IdToken + caller's sub from the keychain. Screen 02
+      // (sign-in) runs before this one, so a session should always exist; the
+      // null-check is defensive in case the user manually clears tokens.
+      const user = await getCurrentUser();
+      if (!user) {
+        throw new Error("No active session — please sign in again");
+      }
+
       const res = await fetch(`${getApiBase()}/api/installer/register-company`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: teamName, slug: teamSlug }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.tokens.idToken}`,
+        },
+        body: JSON.stringify({
+          cognito_sub: user.sub,
+          company_slug: teamSlug,
+          company_name: teamName,
+          // Plan selection UI lives downstream in hq-ops billing — first-run
+          // installer always creates a `free`-tier company.
+          plan_tier: "free",
+        }),
       });
+
       if (!res.ok) {
         throw new Error(`Failed to create team (${res.status})`);
       }
-      const data = await res.json() as {
-        teamId: string;
-        companyId: string;
-        slug: string;
-        name: string;
-        joinedViaInvite: boolean;
+
+      // hq-ops returns { team_id, company_id, created_at }. The wizard-state
+      // TeamMetadata type wants a richer shape, so we reassemble it by mixing
+      // API-returned IDs with the local form values.
+      const data = (await res.json()) as {
+        team_id: string;
+        company_id: string;
+        created_at: string;
       };
-      setTeam(data);
+
+      setTeam({
+        teamId: data.team_id,
+        companyId: data.company_id,
+        slug: teamSlug,
+        name: teamName,
+        joinedViaInvite: false,
+      });
       onNext?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create team");
@@ -72,74 +98,9 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
     }
   }
 
-  async function handleJoin(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await fetch(`${getApiBase()}/api/installer/join-team`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ inviteCode }),
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to join team (${res.status})`);
-      }
-      const data = await res.json() as {
-        teamId: string;
-        companyId: string;
-        slug: string;
-        name: string;
-        joinedViaInvite: boolean;
-      };
-      setTeam(data);
-      onNext?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to join team");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <div className="flex flex-col gap-6 max-w-sm">
-      <h1 className="text-2xl font-medium text-white">Set up your team</h1>
-
-      {/* Mode tabs */}
-      <div className="flex gap-1 bg-white/5 border border-white/10 rounded-full p-1">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "create"}
-          onClick={() => {
-            setMode("create");
-            setError(null);
-          }}
-          className={`flex-1 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            mode === "create"
-              ? "bg-white text-black"
-              : "text-zinc-400 hover:text-white"
-          }`}
-        >
-          Create team
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "join"}
-          onClick={() => {
-            setMode("join");
-            setError(null);
-          }}
-          className={`flex-1 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            mode === "join"
-              ? "bg-white text-black"
-              : "text-zinc-400 hover:text-white"
-          }`}
-        >
-          Join team
-        </button>
-      </div>
+      <h1 className="text-2xl font-medium text-white">Create your team</h1>
 
       {/* Error */}
       {error && (
@@ -151,68 +112,43 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
         </div>
       )}
 
-      {/* Create mode */}
-      {mode === "create" && (
-        <form onSubmit={handleCreate} className="flex flex-col gap-4">
-          <input
-            type="text"
-            aria-label="Team name"
-            placeholder="Team name"
-            value={teamName}
-            onChange={(e) => {
-              const v = e.target.value;
-              setTeamName(v);
-              if (!slugDirty) setTeamSlug(slugify(v));
-            }}
-            required
-            className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-          />
-          <input
-            type="text"
-            aria-label="Slug"
-            placeholder="slug"
-            value={teamSlug}
-            onChange={(e) => {
-              setTeamSlug(slugify(e.target.value));
-              setSlugDirty(true);
-            }}
-            required
-            className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-50"
-          >
-            {loading ? "Creating…" : "Create team"}
-          </button>
-        </form>
-      )}
+      <form onSubmit={handleCreate} className="flex flex-col gap-4">
+        <input
+          type="text"
+          aria-label="Team name"
+          placeholder="Team name"
+          value={teamName}
+          onChange={(e) => {
+            const v = e.target.value;
+            setTeamName(v);
+            if (!slugDirty) setTeamSlug(slugify(v));
+          }}
+          required
+          className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+        />
+        <input
+          type="text"
+          aria-label="Slug"
+          placeholder="slug"
+          value={teamSlug}
+          onChange={(e) => {
+            setTeamSlug(slugify(e.target.value));
+            setSlugDirty(true);
+          }}
+          required
+          className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+        />
+        <button
+          type="submit"
+          disabled={loading}
+          className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-50"
+        >
+          {loading ? "Creating…" : "Create team"}
+        </button>
+      </form>
 
-      {/* Join mode */}
-      {mode === "join" && (
-        <form onSubmit={handleJoin} className="flex flex-col gap-4">
-          <input
-            type="text"
-            aria-label="Invite code"
-            placeholder="Invite code"
-            value={inviteCode}
-            onChange={(e) => setInviteCode(e.target.value)}
-            required
-            className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-50"
-          >
-            {loading ? "Joining…" : "Join team"}
-          </button>
-        </form>
-      )}
-
-      {/* Escape hatch — advance the wizard without creating or joining a team.
-          Downstream screens tolerate missing team state. */}
+      {/* Escape hatch — advance the wizard without creating a team. Downstream
+          screens tolerate missing team state. */}
       <button
         type="button"
         onClick={() => onNext?.()}

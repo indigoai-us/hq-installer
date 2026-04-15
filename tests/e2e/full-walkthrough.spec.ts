@@ -11,6 +11,11 @@ const TAURI_MOCK_SCRIPT = `
 (function() {
   const callbacks = new Map();
   const listeners = new Map(); // event -> [handlerId, ...]
+  // Stateful keychain store — keyed by "\${service}:\${account}". Required by
+  // cognito.ts loadTokens(), which reads access_token / id_token / refresh_token /
+  // expires_at separately. A no-op keychain broke screen 03's getCurrentUser()
+  // because handleCreate throws "No active session" when any token is missing.
+  const keychainStore = new Map();
 
   function transformCallback(fn, once) {
     const id = Math.floor(Math.random() * 0xFFFFFFFF);
@@ -117,12 +122,23 @@ const TAURI_MOCK_SCRIPT = `
       return null;
     }
 
-    // Keychain
-    if (cmd === 'keychain_set' || cmd === 'keychain_delete') {
+    // Keychain — stateful per-service/account store. cognito.ts splits tokens
+    // across 4 rows (access_token, id_token, refresh_token, expires_at) and
+    // loadTokens() returns null if ANY row is missing — so we have to actually
+    // persist what sign-in writes.
+    if (cmd === 'keychain_set') {
+      const { service, account, secret } = args || {};
+      keychainStore.set(service + ':' + account, secret);
+      return null;
+    }
+    if (cmd === 'keychain_delete') {
+      const { service, account } = args || {};
+      keychainStore.delete(service + ':' + account);
       return null;
     }
     if (cmd === 'keychain_get') {
-      return null;
+      const { service, account } = args || {};
+      return keychainStore.get(service + ':' + account) || null;
     }
 
     // Claude Code launch
@@ -205,17 +221,17 @@ test.describe('HQ Installer walkthrough', () => {
     await setupCognitoMock(page);
     await setupGithubReleasesMock(page);
 
-    // Mock the team registration API
+    // Mock the team registration API — snake_case contract matches hq-ops
+    // /api/installer/register-company which returns { team_id, company_id, created_at }.
+    // 03-team.tsx reassembles TeamMetadata from response IDs + local form state.
     await page.route('**/api/installer/register-company', (route) => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          teamId: 'team-e2e-123',
-          companyId: 'company-e2e-123',
-          slug: 'e2e-test',
-          name: 'E2E Test Team',
-          joinedViaInvite: false,
+          team_id: 'team-e2e-123',
+          company_id: 'company-e2e-123',
+          created_at: new Date().toISOString(),
         }),
       });
     });
@@ -239,10 +255,15 @@ test.describe('HQ Installer walkthrough', () => {
     await page.getByRole('button', { name: /^sign in$/i }).click();
 
     // ── Screen 3: TeamSetup — create team ──────────────────────────────────
-    await expect(page.getByRole('heading', { name: /set up your team/i })).toBeVisible();
+    // Heading is "Create your team" after the Join-team mode was removed in the
+    // hq-ops register-company contract cut-over.
+    await expect(page.getByRole('heading', { name: /create your team/i })).toBeVisible();
     await page.getByLabel('Team name').fill('E2E Test Team');
+    // Slug auto-fills from the team name — clear + retype to override so the
+    // explicit value lands in the POST body instead of "e2e-test-team".
+    await page.getByLabel('Slug').clear();
     await page.getByLabel('Slug').fill('e2e-test');
-    await page.getByRole('button', { name: /create team/i }).click();
+    await page.getByRole('button', { name: /^create team$/i }).click();
 
     // ── Screen 4: DepsInstall — deps auto-detected as installed ────────────
     await expect(page.getByText(/homebrew/i)).toBeVisible();
