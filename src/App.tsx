@@ -1,7 +1,11 @@
-import { useState } from "react";
-import { createWizardRouter } from "@/lib/wizard-router";
+import { useEffect, useState } from "react";
+import { createWizardRouter, getStepValidity } from "@/lib/wizard-router";
 import { WizardShell } from "@/components/WizardShell";
-import { getWizardState, setTelemetryEnabled } from "@/lib/wizard-state";
+import {
+  getWizardState,
+  setTelemetryEnabled,
+  subscribeWizardState,
+} from "@/lib/wizard-state";
 import { Welcome } from "@/screens/01-welcome";
 import { CognitoAuth } from "@/screens/02-cognito-auth";
 import { TeamSetup } from "@/screens/03-team";
@@ -17,6 +21,13 @@ import { Summary } from "@/screens/11-summary";
 function App() {
   const [router] = useState(() => createWizardRouter());
   const [, forceRender] = useState(0);
+
+  // Re-render whenever the wizard-state singleton mutates so canGoNext
+  // (which depends on installPath, etc.) reflects the latest state.
+  useEffect(
+    () => subscribeWizardState(() => forceRender((n) => n + 1)),
+    [],
+  );
 
   function handleNext() {
     router.next();
@@ -35,6 +46,10 @@ function App() {
   // Re-read wizard state on each render (not useState — singleton)
   const wizardState = getWizardState();
   const { currentStep } = router;
+  // Combine router-level navigation rule with per-step prerequisite check
+  // so the WizardShell's Next button refuses to advance past steps that
+  // have unfulfilled requirements (e.g. step 6 without an install path).
+  const canGoNext = router.canGoNext && getStepValidity(currentStep, wizardState);
 
   function renderStep() {
     switch (currentStep) {
@@ -101,7 +116,7 @@ function App() {
         onNext={handleNext}
         onBack={handleBack}
         canGoBack={router.canGoBack}
-        canGoNext={router.canGoNext}
+        canGoNext={canGoNext}
       >
         {renderStep()}
       </WizardShell>

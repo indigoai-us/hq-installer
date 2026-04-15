@@ -1,5 +1,5 @@
-pub mod deep_link;
 pub mod deps;
+pub mod directory;
 pub mod git;
 pub mod keychain;
 pub mod process;

@@ -1,0 +1,23 @@
+# Standalone workspace — isolated from src-tauri so dev deps don't bleed
+# into the shipping installer binary.
+[workspace]
+
+[package]
+name = "hq-installer-e2e-agent-browser"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "hq-installer-e2e"
+path = "src/main.rs"
+
+[dependencies]
+agent-browser-provider-tauri = { path = "../../../../public/tauri-agent-browser/crates/agent-browser-provider-tauri" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+base64 = "0.22"
+rand = "0.8"

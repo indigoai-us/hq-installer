@@ -3,7 +3,10 @@
 
 import { useState } from "react";
 import { personalize } from "../lib/personalize-writer";
-import type { PersonalizationAnswers } from "../lib/personalize-writer";
+import type {
+  CompanySeed,
+  PersonalizationAnswers,
+} from "../lib/personalize-writer";
 import { IdentityForm } from "../components/forms/IdentityForm";
 import { StarterProjectPicker } from "../components/forms/StarterProjectPicker";
 import { CustomizationForm } from "../components/forms/CustomizationForm";
@@ -34,6 +37,11 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
   const [name, setName] = useState("");
   const [about, setAbout] = useState("");
   const [goals, setGoals] = useState("");
+  // Optional list of companies the user wants HQ to scaffold under companies/.
+  // Stored as a parallel array (not in IdentityForm) so we can keep the form
+  // component reusable. Each row is fully optional — empty rows are dropped on
+  // submit so users can leave the section blank.
+  const [companies, setCompanies] = useState<CompanySeed[]>([]);
 
   // Step 2 — Starter project
   const [starterProject, setStarterProject] =
@@ -66,6 +74,19 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
     setCustomizations((prev) => ({ ...prev, [key]: value }));
   }
 
+  // --- Companies list helpers (Step 1, optional section) ---
+  function addCompanyRow() {
+    setCompanies((prev) => [...prev, { name: "", website: "" }]);
+  }
+  function updateCompanyRow(index: number, patch: Partial<CompanySeed>) {
+    setCompanies((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    );
+  }
+  function removeCompanyRow(index: number) {
+    setCompanies((prev) => prev.filter((_, i) => i !== index));
+  }
+
   // Strip characters that are unsafe in filesystem paths so the name can be
   // used as a directory under knowledge/. Replaces sequences of unsafe chars
   // with a single space and collapses internal whitespace.
@@ -86,12 +107,22 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
       return;
     }
 
+    // Drop empty/whitespace-only company rows and normalize website blanks
+    // back to undefined so the writer doesn't emit empty `website:` lines.
+    const cleanedCompanies: CompanySeed[] = companies
+      .map((c) => ({
+        name: c.name.trim(),
+        website: c.website?.trim() ? c.website.trim() : undefined,
+      }))
+      .filter((c) => c.name.length > 0);
+
     const answers: PersonalizationAnswers = {
       name: safeName,
       about: about.trim(),
       goals: goals.trim(),
       starterProject,
       customizations: Object.keys(customizations).length > 0 ? customizations : undefined,
+      companies: cleanedCompanies.length > 0 ? cleanedCompanies : undefined,
     };
 
     setSubmitting(true);
@@ -174,6 +205,64 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
             goals={goals}
             onChange={handleIdentityChange}
           />
+
+          {/* Optional companies list — scaffolds companies/{slug}/ for each row */}
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-white">
+                Companies <span className="text-zinc-500 font-normal">(optional)</span>
+              </label>
+              <p className="text-xs text-zinc-500">
+                List companies you want HQ to scaffold. Website is optional.
+              </p>
+            </div>
+
+            {companies.length > 0 && (
+              <div className="flex flex-col gap-2">
+                {companies.map((row, i) => (
+                  <div key={i} className="flex gap-2 items-center">
+                    <input
+                      type="text"
+                      aria-label={`Company ${i + 1} name`}
+                      placeholder="Company name"
+                      value={row.name}
+                      onChange={(e) =>
+                        updateCompanyRow(i, { name: e.target.value })
+                      }
+                      className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+                    />
+                    <input
+                      type="url"
+                      aria-label={`Company ${i + 1} website`}
+                      placeholder="https://example.com"
+                      value={row.website ?? ""}
+                      onChange={(e) =>
+                        updateCompanyRow(i, { website: e.target.value })
+                      }
+                      className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Remove company ${i + 1}`}
+                      onClick={() => removeCompanyRow(i)}
+                      className="w-8 h-8 rounded-full text-zinc-500 hover:text-white hover:bg-white/10 transition-colors flex items-center justify-center text-lg"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={addCompanyRow}
+              className="self-start text-xs text-zinc-400 hover:text-white transition-colors px-3 py-1.5 rounded-full border border-white/10 hover:border-white/25"
+            >
+              + Add company
+            </button>
+          </div>
+
           <div className="flex gap-3">
             <button
               type="button"

@@ -40,6 +40,12 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
     }
 
     setSelectedPath(picked);
+    // Publish to wizard-state immediately so the shell's Next button
+    // (gated by getStepValidity) becomes enabled as soon as a path exists.
+    // The Continue button below is still required for the HQ-detected
+    // graft/overwrite branch — it just no longer needs to be the only path
+    // forward.
+    setInstallPath(picked);
     setIsHq(false);
     setHqMode(null);
     setNewDirectory(false);

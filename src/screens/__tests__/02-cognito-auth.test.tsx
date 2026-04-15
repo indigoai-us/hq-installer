@@ -16,13 +16,6 @@ import { CognitoAuth } from "../02-cognito-auth.js";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("@tauri-apps/plugin-shell", () => ({
-  open: vi.fn().mockResolvedValue(undefined),
-}));
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
-  emit: vi.fn().mockResolvedValue(undefined),
-}));
 
 // ---------------------------------------------------------------------------
 // Cognito module mock — isolate the screen from real AWS calls
@@ -31,7 +24,6 @@ vi.mock("../../lib/cognito.js", () => ({
   signIn: vi.fn(),
   signUp: vi.fn(),
   confirmSignUp: vi.fn(),
-  signInWithGitHub: vi.fn(),
   getCurrentUser: vi.fn(),
   signOut: vi.fn(),
   refreshSession: vi.fn(),
@@ -46,7 +38,6 @@ import * as cognito from "../../lib/cognito.js";
 const mockSignIn = vi.mocked(cognito.signIn);
 const mockSignUp = vi.mocked(cognito.signUp);
 const mockConfirmSignUp = vi.mocked(cognito.confirmSignUp);
-const mockSignInWithGitHub = vi.mocked(cognito.signInWithGitHub);
 
 const MOCK_TOKENS: cognito.CognitoTokens = {
   accessToken: "mock-access-token",
@@ -409,70 +400,11 @@ describe("CognitoAuth screen (02-cognito-auth.tsx)", () => {
   });
 
   // -------------------------------------------------------------------------
-  describe("GitHub OAuth button", () => {
-    it("renders a 'Sign in with GitHub' button", () => {
+  describe("no GitHub auth", () => {
+    it("does NOT render a 'Sign in with GitHub' button (not in spec)", () => {
       render(<CognitoAuth onNext={vi.fn()} />);
       const btn = screen.queryByRole("button", { name: /github/i });
-      expect(btn).not.toBeNull();
-      expect(btn?.textContent?.toLowerCase()).toContain("github");
-    });
-
-    it("calls signInWithGitHub from cognito.ts when the GitHub button is clicked", async () => {
-      const user = userEvent.setup();
-      mockSignInWithGitHub.mockResolvedValueOnce(MOCK_TOKENS);
-      render(<CognitoAuth onNext={vi.fn()} />);
-
-      const btn = screen.queryByRole("button", { name: /github/i });
-      expect(btn).not.toBeNull();
-      await user.click(btn!);
-
-      await waitFor(() => {
-        expect(mockSignInWithGitHub).toHaveBeenCalledTimes(1);
-      });
-    });
-
-    it("calls onNext after successful GitHub sign-in", async () => {
-      const user = userEvent.setup();
-      const onNext = vi.fn();
-      mockSignInWithGitHub.mockResolvedValueOnce(MOCK_TOKENS);
-      render(<CognitoAuth onNext={onNext} />);
-
-      const btn = screen.queryByRole("button", { name: /github/i });
-      await user.click(btn!);
-
-      await waitFor(() => {
-        expect(onNext).toHaveBeenCalledTimes(1);
-      });
-    });
-
-    it("renders an error message when signInWithGitHub rejects", async () => {
-      const user = userEvent.setup();
-      mockSignInWithGitHub.mockRejectedValueOnce(
-        new Error("GitHub OAuth cancelled")
-      );
-      render(<CognitoAuth onNext={vi.fn()} />);
-
-      const btn = screen.queryByRole("button", { name: /github/i });
-      await user.click(btn!);
-
-      await waitFor(() => {
-        const alert = screen.queryByRole("alert");
-        const errorText = screen.queryByText(/error|failed|cancelled|cancel/i);
-        expect(alert || errorText).not.toBeNull();
-      });
-    });
-
-    it("does NOT call onNext when signInWithGitHub rejects", async () => {
-      const user = userEvent.setup();
-      const onNext = vi.fn();
-      mockSignInWithGitHub.mockRejectedValueOnce(new Error("OAuth error"));
-      render(<CognitoAuth onNext={onNext} />);
-
-      const btn = screen.queryByRole("button", { name: /github/i });
-      await user.click(btn!);
-
-      await waitFor(() => expect(mockSignInWithGitHub).toHaveBeenCalled());
-      expect(onNext).not.toHaveBeenCalled();
+      expect(btn).toBeNull();
     });
   });
 
@@ -531,7 +463,7 @@ describe("CognitoAuth screen (02-cognito-auth.tsx)", () => {
     it("primary buttons use rounded-full class", () => {
       const { container } = render(<CognitoAuth onNext={vi.fn()} />);
       const buttons = container.querySelectorAll("button");
-      // At least one button (the GitHub / primary submit) must have rounded-full
+      // At least one button (the primary submit) must have rounded-full
       const hasRoundedFull = Array.from(buttons).some((btn) =>
         btn.className.includes("rounded-full")
       );
@@ -542,18 +474,6 @@ describe("CognitoAuth screen (02-cognito-auth.tsx)", () => {
   // -------------------------------------------------------------------------
   describe("Tauri environment mocks", () => {
     it("renders without errors when @tauri-apps/api/core invoke is mocked", () => {
-      expect(() => {
-        render(<CognitoAuth onNext={vi.fn()} />);
-      }).not.toThrow();
-    });
-
-    it("renders without errors when @tauri-apps/plugin-shell open is mocked", () => {
-      expect(() => {
-        render(<CognitoAuth onNext={vi.fn()} />);
-      }).not.toThrow();
-    });
-
-    it("renders without errors when @tauri-apps/api/event listen is mocked", () => {
       expect(() => {
         render(<CognitoAuth onNext={vi.fn()} />);
       }).not.toThrow();

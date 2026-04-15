@@ -36,21 +36,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   ),
 }));
 
-// Track listen callbacks so tests can fire them
-type ListenCallback = (event: { payload: unknown }) => void;
-const listenCallbacks = new Map<string, ListenCallback>();
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (event: string, handler: ListenCallback) => {
-    listenCallbacks.set(event, handler);
-    return () => { listenCallbacks.delete(event); };
-  }),
-}));
-
-vi.mock("@tauri-apps/plugin-shell", () => ({
-  open: vi.fn(async () => undefined),
-}));
-
 // Mock the AWS SDK
 let mockSendImpl: (command: unknown) => Promise<unknown> = async () => ({});
 
@@ -81,10 +66,6 @@ vi.mock("@aws-sdk/client-cognito-identity-provider", () => {
   };
 });
 
-// Mock fetch for token exchange
-const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
-
 // ---------------------------------------------------------------------------
 // Import module under test AFTER all mocks are registered
 // ---------------------------------------------------------------------------
@@ -95,11 +76,9 @@ import {
   confirmSignUp,
   refreshSession,
   getCurrentUser,
-  signInWithGitHub,
   type CognitoTokens,
 } from "../cognito.js";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-shell";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -139,8 +118,6 @@ async function seedKeychain(tokens: CognitoTokens) {
 
 beforeEach(() => {
   fakeKeychain.clear();
-  listenCallbacks.clear();
-  mockFetch.mockReset();
   vi.clearAllMocks();
 
   // Default AWS send: return empty object (overridden per-test as needed)
@@ -357,61 +334,3 @@ describe("confirmSignUp", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// signInWithGitHub
-// ---------------------------------------------------------------------------
-
-describe("signInWithGitHub", () => {
-  it("opens hosted UI, exchanges code, stores tokens", async () => {
-    // Set up mock fetch response
-    const githubIdToken = makeIdToken("github-sub", "github@example.com");
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        access_token: "gh-access",
-        id_token: githubIdToken,
-        refresh_token: "gh-refresh",
-        expires_in: 3600,
-      }),
-    });
-
-    // Start the signInWithGitHub promise — it will block on the listen callback
-    const signInPromise = signInWithGitHub();
-
-    // Allow the open + listen calls to register
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Fire the deep-link event
-    const callbackUrl =
-      "hq-installer://callback?code=auth-code-abc&state=xyz";
-    const handler = listenCallbacks.get("deep-link://received");
-    expect(handler).toBeDefined();
-    handler!({ payload: { url: callbackUrl } });
-
-    const tokens = await signInPromise;
-
-    // Verify browser was opened with correct URL
-    expect(open).toHaveBeenCalledWith(
-      expect.stringContaining("identity_provider=GitHub")
-    );
-    expect(open).toHaveBeenCalledWith(
-      expect.stringContaining("client_id=test-client-id")
-    );
-
-    // Verify token exchange fetch
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://auth.example.com/oauth2/token",
-      expect.objectContaining({ method: "POST" })
-    );
-    const fetchBody = (mockFetch.mock.calls[0][1] as RequestInit).body as string;
-    expect(fetchBody).toContain("code=auth-code-abc");
-    expect(fetchBody).toContain("grant_type=authorization_code");
-
-    // Verify tokens returned and stored
-    expect(tokens.accessToken).toBe("gh-access");
-    expect(tokens.idToken).toBe(githubIdToken);
-    expect(fakeKeychain.get("access_token")).toBe("gh-access");
-    expect(fakeKeychain.get("refresh_token")).toBe("gh-refresh");
-  });
-});

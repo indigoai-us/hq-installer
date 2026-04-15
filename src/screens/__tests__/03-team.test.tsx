@@ -155,6 +155,8 @@ describe("TeamSetup screen (03-team.tsx)", () => {
       expect(slugField).not.toBeNull();
 
       await user.type(nameField!, "Acme Corp");
+      // Slug auto-fills from the name; user clears + retypes to override.
+      await user.clear(slugField!);
       await user.type(slugField!, "acme");
 
       const submitBtn =
@@ -191,6 +193,8 @@ describe("TeamSetup screen (03-team.tsx)", () => {
         screen.queryByLabelText(/identifier/i);
 
       await user.type(nameField!, "Acme Corp");
+      // Slug auto-fills from the name; user clears + retypes to override.
+      await user.clear(slugField!);
       await user.type(slugField!, "acme");
 
       const submitBtn =
@@ -226,6 +230,8 @@ describe("TeamSetup screen (03-team.tsx)", () => {
         screen.queryByLabelText(/identifier/i);
 
       await user.type(nameField!, "Acme Corp");
+      // Slug auto-fills from the name; user clears + retypes to override.
+      await user.clear(slugField!);
       await user.type(slugField!, "acme");
 
       const submitBtn =
@@ -259,6 +265,8 @@ describe("TeamSetup screen (03-team.tsx)", () => {
         screen.queryByLabelText(/identifier/i);
 
       await user.type(nameField!, "Acme Corp");
+      // Slug auto-fills from the name; user clears + retypes to override.
+      await user.clear(slugField!);
       await user.type(slugField!, "acme");
 
       const submitBtn =
@@ -288,6 +296,8 @@ describe("TeamSetup screen (03-team.tsx)", () => {
         screen.queryByLabelText(/identifier/i);
 
       await user.type(nameField!, "Bad Corp");
+      // Slug auto-fills from the name; user clears + retypes to override.
+      await user.clear(slugField!);
       await user.type(slugField!, "bad");
 
       const submitBtn =
@@ -321,6 +331,8 @@ describe("TeamSetup screen (03-team.tsx)", () => {
         screen.queryByLabelText(/identifier/i);
 
       await user.type(nameField!, "Bad Corp");
+      // Slug auto-fills from the name; user clears + retypes to override.
+      await user.clear(slugField!);
       await user.type(slugField!, "bad");
 
       const submitBtn =

@@ -5,12 +5,30 @@ import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 // Public types
 // ---------------------------------------------------------------------------
 
+export interface CompanySeed {
+  /** Display name of the company (e.g. "Indigo"). Becomes the slug source. */
+  name: string;
+  /** Optional marketing site URL — captured into the company manifest. */
+  website?: string;
+}
+
 export interface PersonalizationAnswers {
   name: string;
   about: string;
   goals: string;
   starterProject: "personal-assistant" | "social-media" | "code-worker";
   customizations?: Record<string, string>;
+  /** Optional list of companies the user wants scaffolded under companies/. */
+  companies?: CompanySeed[];
+}
+
+/** "Indigo Test" → "indigo-test" — same rule as the team-setup screen. */
+function slugifyCompany(s: string): string {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 export interface PersonalizeOptions {
@@ -110,7 +128,7 @@ export async function personalize(
   baseDir: string,
   options?: PersonalizeOptions,
 ): Promise<void> {
-  const { name, about, goals, starterProject, customizations } = answers;
+  const { name, about, goals, starterProject, customizations, companies } = answers;
 
   // -----------------------------------------------------------------------
   // 1. Load and render profile.md
@@ -172,4 +190,38 @@ export async function personalize(
   const workersDir = `${baseDir}/companies/personal/workers`;
   await mkdir(workersDir, { recursive: true });
   await writeTextFile(`${workersDir}/.gitkeep`, "");
+
+  // -----------------------------------------------------------------------
+  // 7. Scaffold user-supplied companies (optional)
+  // -----------------------------------------------------------------------
+  // Each company gets the standard HQ skeleton: knowledge/, settings/,
+  // workers/, projects/ + a company.yaml capturing display name + website.
+  // We dedupe by slug so duplicate names don't collide on disk.
+  if (companies && companies.length > 0) {
+    const seen = new Set<string>();
+    for (const co of companies) {
+      const displayName = co.name.trim();
+      if (!displayName) continue;
+      const slug = slugifyCompany(displayName);
+      if (!slug || seen.has(slug)) continue;
+      seen.add(slug);
+
+      const coBase = `${baseDir}/companies/${slug}`;
+      for (const sub of ["knowledge", "settings", "workers", "projects"]) {
+        const subDir = `${coBase}/${sub}`;
+        await mkdir(subDir, { recursive: true });
+        await writeTextFile(`${subDir}/.gitkeep`, "");
+      }
+
+      // Minimal company.yaml — downstream tooling can enrich it later.
+      const websiteLine = co.website?.trim()
+        ? `website: ${co.website.trim()}\n`
+        : "";
+      const yaml =
+        `name: ${displayName}\n` +
+        `slug: ${slug}\n` +
+        websiteLine;
+      await writeTextFile(`${coBase}/company.yaml`, yaml);
+    }
+  }
 }

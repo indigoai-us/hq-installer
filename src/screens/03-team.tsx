@@ -18,12 +18,24 @@ function getApiBase(): string {
   return base;
 }
 
+/** "Indigo Test" → "indigo-test" */
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export function TeamSetup({ onNext }: TeamSetupProps) {
   const [mode, setMode] = useState<Mode>("create");
 
   // Create mode state
   const [teamName, setTeamName] = useState("");
   const [teamSlug, setTeamSlug] = useState("");
+  // Tracks whether the user has manually edited the slug; once true, we stop
+  // auto-syncing it from teamName.
+  const [slugDirty, setSlugDirty] = useState(false);
 
   // Join mode state
   const [inviteCode, setInviteCode] = useState("");
@@ -147,7 +159,11 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
             aria-label="Team name"
             placeholder="Team name"
             value={teamName}
-            onChange={(e) => setTeamName(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setTeamName(v);
+              if (!slugDirty) setTeamSlug(slugify(v));
+            }}
             required
             className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
           />
@@ -156,7 +172,10 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
             aria-label="Slug"
             placeholder="slug"
             value={teamSlug}
-            onChange={(e) => setTeamSlug(e.target.value)}
+            onChange={(e) => {
+              setTeamSlug(slugify(e.target.value));
+              setSlugDirty(true);
+            }}
             required
             className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
           />
@@ -191,6 +210,16 @@ export function TeamSetup({ onNext }: TeamSetupProps) {
           </button>
         </form>
       )}
+
+      {/* Escape hatch — advance the wizard without creating or joining a team.
+          Downstream screens tolerate missing team state. */}
+      <button
+        type="button"
+        onClick={() => onNext?.()}
+        className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors self-center"
+      >
+        Skip for now
+      </button>
     </div>
   );
 }

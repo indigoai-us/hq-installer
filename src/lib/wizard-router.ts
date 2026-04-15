@@ -1,6 +1,8 @@
 // wizard-router.ts — US-012
 // Wizard navigation state machine
 
+import type { WizardState } from "./wizard-state";
+
 export interface WizardStep {
   index: number;
   id: string;
@@ -23,6 +25,29 @@ export const WIZARD_STEPS: WizardStep[] = [
 
 /** Step indices (1-based) where back navigation is blocked */
 export const AUTH_GATED_STEPS: number[] = [3];
+
+/**
+ * Per-step "is the user allowed to advance" check, evaluated against the
+ * current wizard state. Returning false should disable the global Next
+ * button in WizardShell so users can't skip required prerequisites.
+ *
+ * Most screens self-gate (they call `onNext()` themselves once internal
+ * conditions are met) — this exists for the few screens where the global
+ * Next chrome could otherwise leapfrog over a required action. Add new
+ * cases here as more screens get hard prerequisites.
+ */
+export function getStepValidity(
+  step: number,
+  state: Readonly<WizardState>,
+): boolean {
+  switch (step) {
+    // Step 6 (Configure / DirectoryPicker): must have picked an install path.
+    case 6:
+      return state.installPath !== null && state.installPath.length > 0;
+    default:
+      return true;
+  }
+}
 
 const TOTAL_STEPS = WIZARD_STEPS.length;
 

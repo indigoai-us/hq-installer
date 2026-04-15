@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "tauri": "tauri",
+    "tauri:agent": "tauri dev --features agent-test",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",

@@ -1,13 +1,8 @@
 // 02-cognito-auth.tsx — US-013
-// Cognito authentication screen — sign in, sign up, GitHub OAuth
+// Cognito authentication screen — sign in, sign up (email/password only)
 
 import React, { useState } from "react";
-import {
-  signIn,
-  signUp,
-  confirmSignUp,
-  signInWithGitHub,
-} from "@/lib/cognito";
+import { signIn, signUp, confirmSignUp } from "@/lib/cognito";
 
 interface CognitoAuthScreenProps {
   onNext?: () => void;
@@ -37,10 +32,6 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
   const [confirmCode, setConfirmCode] = useState("");
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
-
-  // GitHub state
-  const [githubError, setGithubError] = useState<string | null>(null);
-  const [githubLoading, setGithubLoading] = useState(false);
 
   // Combined error for display
   const currentError =
@@ -93,21 +84,6 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
     }
   }
 
-  async function handleGitHub() {
-    setGithubError(null);
-    setGithubLoading(true);
-    try {
-      await signInWithGitHub();
-      onNext?.();
-    } catch (err) {
-      setGithubError(
-        err instanceof Error ? err.message : "GitHub sign in failed"
-      );
-    } finally {
-      setGithubLoading(false);
-    }
-  }
-
   return (
     <div className="flex flex-col gap-6 max-w-sm">
       <h1 className="text-2xl font-medium text-white">Create your account</h1>
@@ -150,9 +126,9 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       </div>
 
       {/* Error display */}
-      {(currentError || githubError) && (
+      {currentError && (
         <div role="alert" className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-2">
-          {currentError || githubError}
+          {currentError}
         </div>
       )}
 
@@ -202,16 +178,21 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
             required
             className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
           />
-          <input
-            type="password"
-            aria-label="Password"
-            placeholder="Password"
-            value={signUpPassword}
-            onChange={(e) => setSignUpPassword(e.target.value)}
-            autoComplete="new-password"
-            required
-            className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-          />
+          <div className="flex flex-col gap-1.5">
+            <input
+              type="password"
+              aria-label="Password"
+              placeholder="Password"
+              value={signUpPassword}
+              onChange={(e) => setSignUpPassword(e.target.value)}
+              autoComplete="new-password"
+              required
+              className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+            />
+            <p className="text-xs text-zinc-500 px-4">
+              At least 12 characters, with uppercase, lowercase, number, and symbol.
+            </p>
+          </div>
           <input
             type="password"
             aria-label="Confirm password"
@@ -264,32 +245,6 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
         </form>
       )}
 
-      {/* Divider */}
-      <div className="flex items-center gap-3">
-        <div className="flex-1 h-px bg-white/10" />
-        <span className="text-xs text-zinc-500">or</span>
-        <div className="flex-1 h-px bg-white/10" />
-      </div>
-
-      {/* GitHub OAuth */}
-      <button
-        type="button"
-        onClick={handleGitHub}
-        disabled={githubLoading}
-        className="rounded-full py-2.5 text-sm font-medium bg-white/5 border border-white/10 text-zinc-300 hover:bg-white/10 hover:text-white transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-      >
-        <svg
-          viewBox="0 0 16 16"
-          width="16"
-          height="16"
-          fill="currentColor"
-          aria-hidden="true"
-          className="text-zinc-400"
-        >
-          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-        </svg>
-        {githubLoading ? "Opening GitHub…" : "Continue with GitHub"}
-      </button>
     </div>
   );
 }

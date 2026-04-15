@@ -7,8 +7,6 @@ import {
   type InitiateAuthCommandOutput,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-shell";
-import { listen } from "@tauri-apps/api/event";
 
 // ---------------------------------------------------------------------------
 // Config (build-time env vars — read lazily so tests can stub import.meta.env)
@@ -20,10 +18,6 @@ function getUserPoolId(): string {
 
 function getClientId(): string {
   return import.meta.env.VITE_COGNITO_CLIENT_ID as string;
-}
-
-function getCognitoDomain(): string {
-  return import.meta.env.VITE_COGNITO_DOMAIN as string;
 }
 
 /** Extract region from pool ID format: "us-east-1_XXXXX" → "us-east-1" */
@@ -292,76 +286,6 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     email: payload["email"] as string,
     tokens,
   };
-}
-
-/**
- * Sign in via GitHub OAuth using the Cognito hosted UI.
- * Opens the browser, waits for the deep-link callback, then exchanges
- * the authorization code for tokens.
- */
-export async function signInWithGitHub(): Promise<CognitoTokens> {
-  const redirectUri = "hq-installer://callback";
-  const authUrl =
-    `${getCognitoDomain()}/oauth2/authorize` +
-    `?identity_provider=GitHub` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    `&response_type=code` +
-    `&client_id=${getClientId()}` +
-    `&scope=openid%20email%20profile`;
-
-  await open(authUrl);
-
-  // Wait for the deep-link callback
-  const code = await new Promise<string>((resolve, reject) => {
-    listen<{ url: string }>("deep-link://received", (event) => {
-      try {
-        const url = new URL(event.payload.url);
-        const code = url.searchParams.get("code");
-        if (!code) {
-          reject(new Error("No authorization code in callback URL"));
-          return;
-        }
-        resolve(code);
-      } catch (err) {
-        reject(err);
-      }
-    }).catch(reject);
-  });
-
-  // Exchange code for tokens
-  const tokenResponse = await fetch(`${getCognitoDomain()}/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: getClientId(),
-      code,
-      redirect_uri: redirectUri,
-    }).toString(),
-  });
-
-  if (!tokenResponse.ok) {
-    throw new Error(
-      `Token exchange failed: ${tokenResponse.status} ${tokenResponse.statusText}`
-    );
-  }
-
-  const data = (await tokenResponse.json()) as {
-    access_token: string;
-    id_token: string;
-    refresh_token: string;
-    expires_in: number;
-  };
-
-  const tokens: CognitoTokens = {
-    accessToken: data.access_token,
-    idToken: data.id_token,
-    refreshToken: data.refresh_token,
-    expiresAt: expiresAtFromSeconds(data.expires_in),
-  };
-
-  await storeTokens(tokens);
-  return tokens;
 }
 
 /**
