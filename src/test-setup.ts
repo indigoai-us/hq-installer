@@ -136,6 +136,12 @@ vi.mock("@tauri-apps/api/core", () => ({
             duration_ms: 123,
           },
         };
+      case "launch_claude_code":
+        // US-009 — default to the happy path so the Success screen can fire
+        // its "Open in Claude Code" button in tests without bespoke setup.
+        return { result: "spawned", command: "claude", pid: 1234 };
+      case "reveal_in_file_manager":
+        return { result: "spawned", command: "open", pid: 5678 };
       default:
         return null;
     }
@@ -160,6 +166,25 @@ vi.mock("@tauri-apps/plugin-shell", () => ({
 // "copy CLI command" path in Welcome doesn't throw.
 Object.defineProperty(navigator, "clipboard", {
   value: { writeText: vi.fn(async () => {}) },
+  writable: true,
+  configurable: true,
+});
+
+// jsdom has no matchMedia — ConfettiOverlay consults
+// `prefers-reduced-motion: reduce`. Default to "motion allowed" so the
+// happy-path test sees confetti render; individual tests can override
+// via `vi.stubGlobal("matchMedia", ...)` when they need the reduced path.
+Object.defineProperty(window, "matchMedia", {
+  value: vi.fn((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })),
   writable: true,
   configurable: true,
 });

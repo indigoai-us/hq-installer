@@ -6,5 +6,6 @@
 
 pub mod cloud;
 pub mod deps;
+pub mod launch;
 pub mod platform;
 pub mod scaffold;

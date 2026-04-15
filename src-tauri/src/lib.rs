@@ -22,6 +22,8 @@ pub fn run() {
             commands::scaffold::template_file_count,
             commands::cloud::check_cloud_existing,
             commands::cloud::clone_cloud_existing,
+            commands::launch::launch_claude_code,
+            commands::launch::reveal_in_file_manager,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -329,6 +329,60 @@
   box-shadow: none;
 }
 
+/* ---------- Success screen: codebox for fallback cmd ---------- */
+.retro-codebox {
+  background: var(--retro-bg-0);
+  border: 1px solid var(--retro-accent-1);
+  color: var(--retro-fg-bright);
+  font-family: var(--retro-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding: 8px 10px;
+  word-break: break-all;
+  user-select: all;
+}
+
+/* ---------- Text-link (tertiary anchor-style button) ---------- */
+.retro-text-link {
+  background: transparent;
+  border: none;
+  color: var(--retro-accent-2, var(--retro-accent-1));
+  cursor: pointer;
+  font-family: var(--retro-font-mono, ui-monospace, monospace);
+  padding: 4px 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.retro-text-link:hover {
+  color: var(--retro-fg-bright);
+}
+
+/* ---------- Success screen: pure-CSS confetti ---------- */
+.retro-confetti-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 50;
+}
+.retro-confetti-piece {
+  position: absolute;
+  top: -20px;
+  width: 10px;
+  height: 14px;
+  opacity: 0.95;
+  animation: retro-confetti-fall 2.4s ease-in forwards;
+}
+@keyframes retro-confetti-fall {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(110vh) rotate(720deg);
+    opacity: 0;
+  }
+}
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   .retro-window,
@@ -344,5 +398,10 @@
 
   .retro-progress-fill {
     transition: none;
+  }
+
+  .retro-confetti-piece {
+    animation: none;
+    display: none;
   }
 }

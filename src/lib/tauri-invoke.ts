@@ -231,6 +231,28 @@ export async function cloneCloudExisting(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Launch (mirrors commands::launch — US-009)
+// ──────────────────────────────────────────────────────────────────────────
+
+export type LaunchErrorKind = "not-found" | "cwd-missing" | "spawn-failed";
+
+export type LaunchOutcome =
+  | { result: "spawned"; command: string; pid: number | null }
+  | { result: "err"; kind: LaunchErrorKind; message: string };
+
+/** Launch Claude Code in the HQ directory. Wraps `launch_claude_code`. */
+export async function launchClaudeCode(cwd: string): Promise<LaunchOutcome> {
+  return await invoke<LaunchOutcome>("launch_claude_code", { cwd });
+}
+
+/** Open the platform file manager (Finder/Explorer/xdg-open) at `path`. */
+export async function revealInFileManager(
+  path: string,
+): Promise<LaunchOutcome> {
+  return await invoke<LaunchOutcome>("reveal_in_file_manager", { path });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────
 
