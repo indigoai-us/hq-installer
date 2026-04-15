@@ -1,0 +1,155 @@
+# hq-installer Architecture
+
+Native macOS installer for HQ. Guided 11-screen wizard built on Tauri 2 + React 19 + TypeScript.
+
+## Stack
+
+| Layer | Technology | Role |
+|---|---|---|
+| Frontend | React 19, TypeScript, Tailwind 4 | Wizard UI, auth, state |
+| Backend | Rust, Tauri 2 | OS integration (Keychain, git, processes, Xcode) |
+| Auth | AWS Cognito (email/password + GitHub OAuth) | Identity, session tokens |
+| Build | Vite 6, pnpm | Dev server, bundling |
+| CI | GitHub Actions (macos-latest) | Type-check, lint, test, release |
+| E2E | Playwright | Full 11-screen walkthrough |
+
+## Rust ↔ TypeScript Boundary
+
+All OS-level work lives in Rust (`src-tauri/src/commands/`). TypeScript calls across the bridge via `invoke("command_name", { args })`. TypeScript handles all UI, auth, template fetching, and personalization logic.
+
+### Rust Commands
+
+| Module | Commands | Purpose |
+|---|---|---|
+| `deps.rs` | `check_dep`, `install_homebrew`, `install_node`, `install_git`, `install_gh`, `install_claude_code`, `install_qmd`, `cancel_install` | Homebrew-backed dependency probe + install with per-handle cancellation |
+| `xcode.rs` | `xcode_clt_status`, `xcode_clt_install` | Xcode Command Line Tools detection + polling install |
+| `keychain.rs` | `keychain_set`, `keychain_get`, `keychain_delete` | macOS Keychain via `keyring` crate; all services prefixed `com.indigoai.hq-installer` |
+| `git.rs` | `git_init`, `git_probe_user` | git2-backed repo init + global config probe |
+| `process.rs` | `spawn_process`, `cancel_process` | Streamed subprocess output (Tauri events) with cancellation |
+| `template.rs` | `fetch_template` | GitHub releases tarball fetch (wraps TS logic for Tauri resource access) |
+| `deep_link.rs` | (event handler, not a command) | Parses `hq-installer://callback` OAuth redirect URLs, emits `deep-link://received` event |
+
+## Wizard Flow
+
+11 screens in sequence:
+
+| Screen | File | Key action |
+|---|---|---|
+| 1 — Welcome | `01-welcome.tsx` | Intro + telemetry opt-in |
+| 2 — Cognito auth | `02-cognito-auth.tsx` | Sign in / sign up (email+pw or GitHub OAuth) |
+| 3 — Team | `03-team.tsx` | Create or join a team via hq-ops API |
+| 4 — Dependencies | `04-deps.tsx` | Probe + install system deps |
+| 5 — GitHub walkthrough | `05-github-walkthrough.tsx` | gh auth + SSH key setup |
+| 6 — Directory | `06-directory.tsx` | Native directory picker for HQ install path |
+| 7 — Template fetch | `07-template.tsx` | Download + extract HQ tarball from GitHub releases |
+| 8 — Git init | `08-git-init.tsx` | `git_init` command + initial commit |
+| 9 — Personalize | `09-personalize.tsx` | Name, about, goals, starter project selection |
+| 10 — Indexing | `10-indexing.tsx` | `qmd update` via `spawn_process` |
+| 11 — Summary | `11-summary.tsx` | Launch Claude Code |
+
+Navigation is managed by `wizard-router.ts` (plain JS state machine, no React context). Step 3 is auth-gated: no back navigation allowed. Wizard session data (team, installPath, gitIdentity) is held in the `wizard-state.ts` module singleton.
+
+## Auth Architecture
+
+`src/lib/cognito.ts` wraps `@aws-sdk/client-cognito-identity-provider` and the Cognito hosted UI OAuth flow.
+
+### Email/Password flow
+1. `signUp()` → Cognito `SignUpCommand` (sends verification code)
+2. `confirmSignUp()` → Cognito `ConfirmSignUpCommand`
+3. `signIn()` → Cognito `InitiateAuthCommand` (`USER_PASSWORD_AUTH`)
+4. Tokens stored to macOS Keychain (4 keys under service `com.indigoai.hq-installer.cognito`)
+
+### GitHub OAuth flow
+1. Open Cognito hosted UI URL with `identity_provider=GitHub`, `redirect_uri=hq-installer://callback`
+2. Deep link handler (Rust `deep_link.rs`) parses callback URL, emits `deep-link://received`
+3. TS listener receives auth code, exchanges for tokens via `/oauth2/token`
+4. Tokens stored to Keychain
+
+### Token lifecycle
+- `getCurrentUser()` loads from Keychain and auto-refreshes if within 30s of expiry
+- `refreshSession()` uses `REFRESH_TOKEN_AUTH` flow, preserves existing refresh token if Cognito doesn't issue a new one
+- `signOut()` calls `GlobalSignOutCommand` then clears Keychain
+
+## Personalization Output
+
+`personalize-writer.ts` writes to the chosen install directory:
+
+```
+knowledge/{name}/profile.md          ← Handlebars template (name, about, goals)
+knowledge/{name}/voice-style.md      ← Handlebars template (name, customizations)
+companies/personal/projects/{starter}/** ← Starter project files from bundled templates
+companies/personal/settings/cognito.json ← Empty {}
+companies/personal/settings/.gitkeep
+companies/personal/workers/.gitkeep
+```
+
+Templates are bundled Tauri resources (`templates/`). The `loadTemplate()` helper supports injected strings for unit testing without a real Tauri runtime.
+
+## Template Fetching
+
+`src/lib/template-fetcher.ts` fetches the latest non-prerelease, non-draft GitHub release from `indigoai-us/hq`, downloads the tarball, decompresses with `fflate` (gunzip), and extracts the tar in-memory using a manual parser — all in the browser context. Progress events are throttled to 60fps. A `TemplateFetchError` class carries a `retriable` flag for UI retry logic.
+
+## Auto-Update
+
+`src/lib/updater.ts` checks `VITE_UPDATE_MANIFEST_URL` (S3 presigned URL) on launch. Manifest format:
+
+```json
+{
+  "version": "1.2.3",
+  "pub_date": "2026-04-14T00:00:00Z",
+  "url": "https://...",
+  "signature": "...",
+  "notes": "..."
+}
+```
+
+`tauri-plugin-updater` handles download and install. The release workflow uploads the manifest to S3 and generates a fresh presigned URL on each release.
+
+## Dependency Management
+
+`deps.rs` manages these system dependencies:
+
+| Dep | Probe method | Install method |
+|---|---|---|
+| Homebrew | `which brew` | Shell script from brew.sh |
+| Node.js | `which node` | `brew install node` |
+| git | `which git` (post-Xcode CLT) | `brew install git` |
+| gh (GitHub CLI) | `which gh` | `brew install gh` |
+| Claude Code | `which claude` | `npm install -g @anthropic-ai/claude-code` |
+| qmd | `which qmd` | `brew install tobi/tap/qmd` |
+
+All installs stream stdout lines to the frontend via `install:progress` Tauri events and support cancellation via a per-handle cancel registry.
+
+## Release Pipeline
+
+`.github/workflows/release.yml` triggers on version tags (`v*`):
+
+1. Build universal macOS binary (`x86_64` + `arm64`) via `tauri build --target universal-apple-darwin`
+2. Code-sign `.app` with Apple Developer ID certificate
+3. Notarize `.dmg` via Apple notarytool, staple ticket
+4. Create GitHub release with signed `.dmg` attached
+5. Upload auto-update manifest to S3, generate presigned URL
+
+Required GitHub Actions secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`. Certificate sourced from `companies/indigo/settings/`.
+
+## Testing
+
+| Layer | Tool | Coverage |
+|---|---|---|
+| Unit | Vitest | cognito.ts, template-fetcher.ts, personalize-writer.ts, updater.ts |
+| Regression | Vitest (`vitest.config.regression.ts`) | Installer output vs canonical `create-hq + /setup` layout |
+| E2E | Playwright | Full 11-screen walkthrough on macOS CI |
+
+Unit tests use dependency injection for Tauri APIs (injected template strings, stub `invoke`) — no real Tauri runtime required.
+
+## Environment Variables
+
+| Var | Required | Purpose |
+|---|---|---|
+| `VITE_COGNITO_USER_POOL_ID` | Yes | Pool ID (also encodes region: `us-east-1_XXXX`) |
+| `VITE_COGNITO_CLIENT_ID` | Yes | App client ID |
+| `VITE_COGNITO_DOMAIN` | Yes | Cognito hosted UI domain |
+| `VITE_UPDATE_MANIFEST_URL` | Yes | S3 presigned URL for auto-update manifest |
+| `VITE_HQ_OPS_API_URL` | Yes | hq-ops base URL for team registration |
+
+Set in `.env.local` for dev; injected as GitHub Actions secrets for CI/release builds.
