@@ -27,25 +27,27 @@ export interface PersonalizeOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Load a template: use the injected string if provided, otherwise read from
- * the bundled templates directory via @tauri-apps/plugin-fs.
+ * Load a template: use the injected string if provided, otherwise resolve the
+ * bundled Tauri resource path and read via @tauri-apps/plugin-fs.
  */
 async function loadTemplate(
   injected: string | undefined,
-  tauriPath: string,
+  resourceRelPath: string,
 ): Promise<string> {
   if (injected !== undefined) {
     return injected;
   }
-  // At runtime in Tauri, read from the app's resource directory
+  // At runtime in a packaged Tauri app, templates/ is bundled as a resource.
+  // resolveResource() maps "templates/..." to the correct on-disk path.
+  const { resolveResource } = await import("@tauri-apps/api/path");
   const { readTextFile } = await import("@tauri-apps/plugin-fs");
-  return readTextFile(tauriPath);
+  const resolved = await resolveResource(resourceRelPath);
+  return readTextFile(resolved);
 }
 
 /**
  * Load starter project files: use the injected map if provided, otherwise
- * read from the templates/starter-projects/{type}/ directory via
- * @tauri-apps/plugin-fs.
+ * resolve bundled resource paths and read via @tauri-apps/plugin-fs.
  */
 async function loadStarterProjectFiles(
   injected: Record<string, string> | undefined,
@@ -54,11 +56,13 @@ async function loadStarterProjectFiles(
   if (injected !== undefined) {
     return injected;
   }
-  // At runtime, read from the bundled templates directory
+  // At runtime, starter-projects are bundled as Tauri resources.
+  const { resolveResource } = await import("@tauri-apps/api/path");
   const { readDir, readTextFile: readText } = await import(
     "@tauri-apps/plugin-fs"
   );
-  const baseDir = `templates/starter-projects/${starterProject}`;
+  const resourceBase = `templates/starter-projects/${starterProject}`;
+  const resolvedBase = await resolveResource(resourceBase);
   const files: Record<string, string> = {};
 
   async function walk(dir: string, prefix: string): Promise<void> {
@@ -74,7 +78,7 @@ async function loadStarterProjectFiles(
     }
   }
 
-  await walk(baseDir, "");
+  await walk(resolvedBase, "");
   return files;
 }
 
