@@ -73,6 +73,7 @@ The release workflow will:
 |---|---|
 | `APPLE_CERTIFICATE` | Base64-encoded Apple Developer ID Application `.p12` certificate |
 | `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12` certificate |
+| `APPLE_SIGNING_IDENTITY` | Certificate Common Name used by codesign (e.g. `Developer ID Application: Acme Inc (ABC1234DEF)`) |
 | `APPLE_ID` | Apple ID email address used for notarization (e.g. `dev@example.com`) |
 | `APPLE_ID_PASSWORD` | App-specific password for the Apple ID (generated at appleid.apple.com) |
 | `APPLE_TEAM_ID` | 10-character Apple Developer Team ID (e.g. `ABC1234DEF`) |

@@ -82,7 +82,8 @@ jobs:
 
       - name: Build (universal binary)
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_TEAM_ID }}
+          # Full certificate Common Name, e.g. "Developer ID Application: Acme Inc (TEAMID)"
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: pnpm tauri build --target universal-apple-darwin
 
       - name: Notarize
@@ -91,6 +92,15 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/notarize.sh
+
+      - name: Delete build keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          if security list-keychains -d user | grep -q "$KEYCHAIN_PATH"; then
+            security delete-keychain "$KEYCHAIN_PATH"
+            echo "Build keychain deleted."
+          fi
 
       - name: Create GitHub release and upload DMG
         uses: softprops/action-gh-release@v2
