@@ -20,6 +20,8 @@ pub fn run() {
             commands::deps::install_dep,
             commands::scaffold::scaffold_hq,
             commands::scaffold::template_file_count,
+            commands::cloud::check_cloud_existing,
+            commands::cloud::clone_cloud_existing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
