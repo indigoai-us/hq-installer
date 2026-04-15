@@ -163,6 +163,74 @@ export async function templateFileCount(): Promise<number> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Cloud (mirrors commands::cloud)
+// ──────────────────────────────────────────────────────────────────────────
+
+/** `CloudBackendSpec` — kebab-case `backend` tag as the discriminator.
+ *  Matches the serde shape in `src-tauri/src/commands/cloud.rs`. */
+export type CloudBackendSpec =
+  | { backend: "github"; repo: string }
+  | { backend: "s3"; bucket: string; prefix: string };
+
+/** `ExistingInfo` — bytes on the wire are serde snake_case. */
+export interface ExistingInfo {
+  exists: boolean;
+  last_modified: string | null;
+  estimated_size: number | null;
+}
+
+/** `ClonedHqSummary` — summary returned when a clone completes. */
+export interface ClonedHqSummary {
+  target_dir: string;
+  backend: string;
+  duration_ms: number;
+}
+
+/** Stable kebab-case discriminators for `CloudError` mapped to the renderer. */
+export type CloudErrorKind =
+  | "not-found"
+  | "auth-failed"
+  | "network-failed"
+  | "tool-missing"
+  | "parse-error"
+  | "target-not-empty"
+  | "io"
+  | "not-implemented";
+
+export type CheckCloudOutcome =
+  | { result: "ok"; info: ExistingInfo }
+  | { result: "err"; kind: CloudErrorKind; message: string };
+
+export type CloneCloudOutcome =
+  | { result: "ok"; summary: ClonedHqSummary }
+  | { result: "err"; kind: CloudErrorKind; message: string };
+
+/** Ask the configured backend if an HQ already exists at the remote.
+ *  Wraps `#[tauri::command] check_cloud_existing`. */
+export async function checkCloudExisting(
+  spec: CloudBackendSpec,
+): Promise<CheckCloudOutcome> {
+  return await invoke<CheckCloudOutcome>("check_cloud_existing", { spec });
+}
+
+/** Clone a remote HQ to `target_dir`, streaming progress events on the
+ *  `cloud-clone:<request_id>` channel. Wraps
+ *  `#[tauri::command] clone_cloud_existing`. */
+export async function cloneCloudExisting(
+  spec: CloudBackendSpec,
+  targetDir: string,
+  force: boolean,
+  requestId: string,
+): Promise<CloneCloudOutcome> {
+  return await invoke<CloneCloudOutcome>("clone_cloud_existing", {
+    spec,
+    targetDir,
+    force,
+    requestId,
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────
 

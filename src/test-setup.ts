@@ -118,6 +118,24 @@ vi.mock("@tauri-apps/api/core", () => ({
             commit_sha: "abc1234",
           },
         };
+      case "check_cloud_existing":
+        return {
+          result: "ok",
+          info: {
+            exists: false,
+            last_modified: null,
+            estimated_size: null,
+          },
+        };
+      case "clone_cloud_existing":
+        return {
+          result: "ok",
+          summary: {
+            target_dir: "/tmp/hq-test",
+            backend: "github",
+            duration_ms: 123,
+          },
+        };
       default:
         return null;
     }

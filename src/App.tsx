@@ -8,13 +8,15 @@
 import { useMemo, useState } from "react";
 import Welcome from "@/routes/Welcome";
 import InstallRoute from "@/routes/Install";
+import LocationRoute, { type LocationResult } from "@/routes/Location";
 import type { ScanPayload } from "@/routes/Welcome/SystemScan";
 import type { CheckResult, DepId } from "@/lib/tauri-invoke";
 
 type Route =
   | { name: "welcome" }
   | { name: "install-wizard"; scan: ScanPayload }
-  | { name: "location-picker"; finalDeps: CheckResult[] };
+  | { name: "location-picker"; finalDeps: CheckResult[] }
+  | { name: "done"; finalDeps: CheckResult[]; location: LocationResult };
 
 /** Build the queue of deps to install from a Welcome scan payload. */
 function deriveMissingQueue(scan: ScanPayload): DepId[] {
@@ -60,16 +62,34 @@ function App() {
     );
   }
 
-  // Location picker is implemented in US-008. For now, render a neutral
-  // stub acknowledging the handoff — the final dep state is carried forward.
+  if (route.name === "location-picker") {
+    return (
+      <LocationRoute
+        onComplete={(location) =>
+          setRoute({
+            name: "done",
+            finalDeps: route.finalDeps,
+            location,
+          })
+        }
+      />
+    );
+  }
+
+  // US-009 (success + handoff) hasn't shipped yet — render a minimal
+  // confirmation so the flow lands somewhere visible until then.
   return (
     <main
       className="min-h-screen flex items-center justify-center"
       style={{ backgroundColor: "var(--retro-bg-0)" }}
-      data-testid="location-picker-stub"
+      data-testid="done-stub"
     >
-      <p className="font-mono text-sm text-zinc-400">
-        Location picker coming next — {route.finalDeps.length} deps verified.
+      <p
+        className="font-mono text-sm text-zinc-300"
+        data-testid="done-summary"
+      >
+        HQ ready at <code>{route.location.target_dir}</code> ({route.location.mode}: {route.location.detail}) —{" "}
+        {route.finalDeps.length} deps verified.
       </p>
     </main>
   );
