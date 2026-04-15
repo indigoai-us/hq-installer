@@ -66,11 +66,28 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
     setCustomizations((prev) => ({ ...prev, [key]: value }));
   }
 
+  // Strip characters that are unsafe in filesystem paths so the name can be
+  // used as a directory under knowledge/. Replaces sequences of unsafe chars
+  // with a single space and collapses internal whitespace.
+  function sanitizeName(raw: string): string {
+    return raw
+      .trim()
+      .replace(/[/\\:*?"<>|.]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   async function handleSubmit() {
     if (!starterProject) return;
 
+    const safeName = sanitizeName(name);
+    if (!safeName) {
+      setErrorMsg("Name contains only unsafe characters. Please enter a valid name.");
+      return;
+    }
+
     const answers: PersonalizationAnswers = {
-      name: name.trim(),
+      name: safeName,
       about: about.trim(),
       goals: goals.trim(),
       starterProject,
