@@ -62,6 +62,10 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
 
   async function handleSignUp(e: React.FormEvent) {
     e.preventDefault();
+    if (signUpPassword !== signUpConfirmPassword) {
+      setSignUpError("Passwords do not match");
+      return;
+    }
     setSignUpError(null);
     setSignUpLoading(true);
     try {
@@ -80,6 +84,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
     setConfirmLoading(true);
     try {
       await confirmSignUp(signUpEmail, confirmCode);
+      await signIn(signUpEmail, signUpPassword);
       onNext?.();
     } catch (err) {
       setConfirmError(err instanceof Error ? err.message : "Confirmation failed");
@@ -132,6 +137,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
           onClick={() => {
             setActiveTab("signup");
             setSignUpError(null);
+            setSignUpPhase("form");
           }}
           className={`flex-1 py-1.5 rounded-full text-sm font-medium transition-colors ${
             activeTab === "signup"
