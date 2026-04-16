@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "HQ Installer",
@@ -34,9 +35,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../templates": "templates"
+    },
     "macOS": {
-      "signingIdentity": null,
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": null
     }
   },
   "plugins": {

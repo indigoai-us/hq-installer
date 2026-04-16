@@ -1,0 +1,38 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`personalize > golden snapshot: complete output file tree > code-worker: sorted created-path list matches snapshot 1`] = `
+[
+  "companies/personal/projects/code-worker/README.md",
+  "companies/personal/projects/code-worker/workers/coder.yaml",
+  "companies/personal/settings/.gitkeep",
+  "companies/personal/settings/cognito.json",
+  "companies/personal/workers/.gitkeep",
+  "knowledge/alice/profile.md",
+  "knowledge/alice/voice-style.md",
+]
+`;
+
+exports[`personalize > golden snapshot: complete output file tree > personal-assistant: sorted created-path list matches snapshot 1`] = `
+[
+  "companies/personal/projects/personal-assistant/README.md",
+  "companies/personal/projects/personal-assistant/projects/daily-standup/prd.json",
+  "companies/personal/projects/personal-assistant/workers/assistant.yaml",
+  "companies/personal/settings/.gitkeep",
+  "companies/personal/settings/cognito.json",
+  "companies/personal/workers/.gitkeep",
+  "knowledge/alice/profile.md",
+  "knowledge/alice/voice-style.md",
+]
+`;
+
+exports[`personalize > golden snapshot: complete output file tree > social-media: sorted created-path list matches snapshot 1`] = `
+[
+  "companies/personal/projects/social-media/README.md",
+  "companies/personal/projects/social-media/workers/social.yaml",
+  "companies/personal/settings/.gitkeep",
+  "companies/personal/settings/cognito.json",
+  "companies/personal/workers/.gitkeep",
+  "knowledge/alice/profile.md",
+  "knowledge/alice/voice-style.md",
+]
+`;
