@@ -13,14 +13,14 @@ import { ProgressIndicator } from "../ProgressIndicator.js";
 // The implementation must render labels that match these strings.
 const STEP_LABELS = [
   "Welcome",
+  "Sign In",
+  "Company",
   "Prerequisites",
-  "GitHub",
-  "Account",
   "Install",
-  "Configure",
   "Templates",
-  "Personalize",
   "Workspace",
+  "Sync",
+  "Personalize",
   "Verify",
   "Done",
 ];

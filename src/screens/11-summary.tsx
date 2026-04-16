@@ -45,7 +45,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-medium text-white">HQ is ready</h1>
         <p className="text-sm font-light text-zinc-400">
-          Your personal operating system has been installed and indexed.
+          Your personal operating system has been installed, synced, and indexed.
         </p>
       </div>
 
@@ -75,6 +75,17 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             value={wizardState.gitEmail ?? "—"}
           />
         </div>
+      </div>
+
+      {/* Sync next steps */}
+      <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+        <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider mb-2">
+          Keep in sync
+        </p>
+        <p className="text-xs text-zinc-500">
+          Use <code className="text-zinc-400">hq sync push</code> to upload local changes and{" "}
+          <code className="text-zinc-400">hq sync pull</code> to fetch updates from the cloud.
+        </p>
       </div>
 
       {/* Launch button */}

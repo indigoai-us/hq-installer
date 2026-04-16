@@ -86,7 +86,10 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
 
   return (
     <div className="flex flex-col gap-6 max-w-sm">
-      <h1 className="text-2xl font-medium text-white">Create your account</h1>
+      <h1 className="text-2xl font-medium text-white">Sign in</h1>
+      <p className="text-sm text-zinc-400 -mt-4">
+        Sign in with the account you created during setup.
+      </p>
 
       {/* Tabs */}
       <div className="flex gap-1 bg-white/5 border border-white/10 rounded-full p-1">

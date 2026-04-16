@@ -10,10 +10,11 @@ import { Welcome } from "@/screens/01-welcome";
 import { CognitoAuth } from "@/screens/02-cognito-auth";
 import { TeamSetup } from "@/screens/03-team";
 import { DepsInstall } from "@/screens/04-deps";
-import { GithubWalkthrough } from "@/screens/05-github-walkthrough";
+// 05-github-walkthrough removed from default flow (US-006)
 import { DirectoryPicker } from "@/screens/06-directory";
 import { TemplateFetch } from "@/screens/07-template";
 import { GitInit } from "@/screens/08-git-init";
+import { SyncScreen } from "@/screens/08b-sync";
 import { Personalize } from "@/screens/09-personalize";
 import { QmdIndexing } from "@/screens/10-indexing";
 import { Summary } from "@/screens/11-summary";
@@ -22,8 +23,6 @@ function App() {
   const [router] = useState(() => createWizardRouter());
   const [, forceRender] = useState(0);
 
-  // Re-render whenever the wizard-state singleton mutates so canGoNext
-  // (which depends on installPath, etc.) reflects the latest state.
   useEffect(
     () => subscribeWizardState(() => forceRender((n) => n + 1)),
     [],
@@ -43,14 +42,14 @@ function App() {
     // No-op for now — invoked from Summary screen
   }
 
-  // Re-read wizard state on each render (not useState — singleton)
   const wizardState = getWizardState();
   const { currentStep } = router;
-  // Combine router-level navigation rule with per-step prerequisite check
-  // so the WizardShell's Next button refuses to advance past steps that
-  // have unfulfilled requirements (e.g. step 6 without an install path).
   const canGoNext = router.canGoNext && getStepValidity(currentStep, wizardState);
 
+  // Screen flow (US-006):
+  //   1 Welcome → 2 Cognito Auth → 3 Company Detect → 4 Deps →
+  //   5 Directory → 6 Template → 7 Git Init → 8 Sync →
+  //   9 Personalize → 10 Indexing → 11 Summary
   function renderStep() {
     switch (currentStep) {
       case 1:
@@ -71,23 +70,23 @@ function App() {
       case 4:
         return <DepsInstall onNext={handleNext} />;
       case 5:
-        return <GithubWalkthrough onNext={handleNext} />;
-      case 6:
         return <DirectoryPicker onNext={handleNext} />;
-      case 7:
+      case 6:
         return (
           <TemplateFetch
             targetDir={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
-      case 8:
+      case 7:
         return (
           <GitInit
             installPath={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
+      case 8:
+        return <SyncScreen onNext={handleNext} />;
       case 9:
         return (
           <Personalize

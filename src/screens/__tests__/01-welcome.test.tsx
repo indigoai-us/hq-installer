@@ -67,14 +67,14 @@ describe("Welcome screen (01-welcome.tsx)", () => {
   describe("wizard steps at-a-glance", () => {
     const EXPECTED_STEP_LABELS = [
       "Welcome",
+      "Sign In",
+      "Company",
       "Prerequisites",
-      "GitHub",
-      "Account",
       "Install",
-      "Configure",
       "Templates",
-      "Personalize",
       "Workspace",
+      "Sync",
+      "Personalize",
       "Verify",
       "Done",
     ];

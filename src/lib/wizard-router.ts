@@ -1,5 +1,13 @@
-// wizard-router.ts — US-012
-// Wizard navigation state machine
+// wizard-router.ts — US-006
+// Wizard navigation state machine.
+//
+// Screen flow (web-onboarding handoff):
+//   01 Welcome → 02 Cognito Auth → 03 Company Detect → 04 Deps →
+//   05 Directory → 06 Template → 07 Git Init → 08 Sync →
+//   09 Personalize → 10 Indexing → 11 Summary
+//
+// Screen 05-github-walkthrough removed from default flow (GitHub auth
+// happens in web onboarding, not installer). File kept for future use.
 
 import type { WizardState } from "./wizard-state";
 
@@ -11,14 +19,14 @@ export interface WizardStep {
 
 export const WIZARD_STEPS: WizardStep[] = [
   { index: 1, id: "welcome", label: "Welcome" },
-  { index: 2, id: "prerequisites", label: "Prerequisites" },
-  { index: 3, id: "github", label: "GitHub" },
-  { index: 4, id: "account", label: "Account" },
+  { index: 2, id: "cognito-auth", label: "Sign In" },
+  { index: 3, id: "company-detect", label: "Company" },
+  { index: 4, id: "prerequisites", label: "Prerequisites" },
   { index: 5, id: "install", label: "Install" },
-  { index: 6, id: "configure", label: "Configure" },
-  { index: 7, id: "templates", label: "Templates" },
-  { index: 8, id: "personalize", label: "Personalize" },
-  { index: 9, id: "workspace", label: "Workspace" },
+  { index: 6, id: "templates", label: "Templates" },
+  { index: 7, id: "workspace", label: "Workspace" },
+  { index: 8, id: "sync", label: "Sync" },
+  { index: 9, id: "personalize", label: "Personalize" },
   { index: 10, id: "verify", label: "Verify" },
   { index: 11, id: "done", label: "Done" },
 ];
@@ -27,22 +35,15 @@ export const WIZARD_STEPS: WizardStep[] = [
 export const AUTH_GATED_STEPS: number[] = [3];
 
 /**
- * Per-step "is the user allowed to advance" check, evaluated against the
- * current wizard state. Returning false should disable the global Next
- * button in WizardShell so users can't skip required prerequisites.
- *
- * Most screens self-gate (they call `onNext()` themselves once internal
- * conditions are met) — this exists for the few screens where the global
- * Next chrome could otherwise leapfrog over a required action. Add new
- * cases here as more screens get hard prerequisites.
+ * Per-step "is the user allowed to advance" check.
  */
 export function getStepValidity(
   step: number,
   state: Readonly<WizardState>,
 ): boolean {
   switch (step) {
-    // Step 6 (Configure / DirectoryPicker): must have picked an install path.
-    case 6:
+    // Step 5 (DirectoryPicker): must have picked an install path.
+    case 5:
       return state.installPath !== null && state.installPath.length > 0;
     default:
       return true;
