@@ -34,6 +34,8 @@ pub fn run() {
             commands::process::spawn_process,
             commands::process::cancel_process,
             commands::template::fetch_template,
+            commands::fs::write_file,
+            commands::fs::home_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

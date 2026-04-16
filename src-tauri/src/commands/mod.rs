@@ -1,5 +1,6 @@
 pub mod deps;
 pub mod directory;
+pub mod fs;
 pub mod git;
 pub mod keychain;
 pub mod process;
