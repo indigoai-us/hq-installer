@@ -25,35 +25,42 @@ describe("resolveUserCompany", () => {
 
   it("returns company details when user has a provisioned company", async () => {
     globalThis.fetch = mockFetch([
-      // GET /entity/by-type/person
-      {
-        ok: true,
-        status: 200,
-        body: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
-      },
-      // GET /membership/list
-      {
-        ok: true,
-        status: 200,
-        body: [
-          {
-            uid: "mem_001",
-            entityUid: "cmp_001",
-            memberEntityUid: "per_001",
-            role: "admin",
-          },
-        ],
-      },
-      // GET /entity/{companyUid}
+      // GET /entity/by-type/person → { entities: [...] }
       {
         ok: true,
         status: 200,
         body: {
-          uid: "cmp_001",
-          type: "company",
-          slug: "acme",
-          name: "Acme Inc",
-          metadata: { bucketName: "hq-vault-acme" },
+          entities: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        },
+      },
+      // GET /membership/person/{personUid} → { memberships: [...] }
+      {
+        ok: true,
+        status: 200,
+        body: {
+          memberships: [
+            {
+              membershipKey: "per_001#cmp_001",
+              personUid: "per_001",
+              companyUid: "cmp_001",
+              role: "admin",
+              status: "active",
+            },
+          ],
+        },
+      },
+      // GET /entity/{companyUid} → { entity: {...} }
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entity: {
+            uid: "cmp_001",
+            type: "company",
+            slug: "acme",
+            name: "Acme Inc",
+            metadata: { bucketName: "hq-vault-acme" },
+          },
         },
       },
     ]);
@@ -80,7 +87,7 @@ describe("resolveUserCompany", () => {
 
   it("returns found: false when no person entity exists", async () => {
     globalThis.fetch = mockFetch([
-      { ok: true, status: 200, body: [] },
+      { ok: true, status: 200, body: { entities: [] } },
     ]);
 
     const result = await resolveUserCompany(MOCK_TOKEN);
@@ -92,9 +99,11 @@ describe("resolveUserCompany", () => {
       {
         ok: true,
         status: 200,
-        body: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        body: {
+          entities: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        },
       },
-      { ok: true, status: 200, body: [] },
+      { ok: true, status: 200, body: { memberships: [] } },
     ]);
 
     const result = await resolveUserCompany(MOCK_TOKEN);
@@ -116,13 +125,15 @@ describe("resolveUserCompany", () => {
       {
         ok: true,
         status: 200,
-        body: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        body: {
+          entities: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        },
       },
       { ok: false, status: 403, body: { error: "Forbidden" } },
     ]);
 
     await expect(resolveUserCompany(MOCK_TOKEN)).rejects.toThrow(
-      "vault-service /membership/list failed: 403"
+      "vault-service /membership/person/per_001 failed: 403"
     );
   });
 
@@ -131,12 +142,24 @@ describe("resolveUserCompany", () => {
       {
         ok: true,
         status: 200,
-        body: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        body: {
+          entities: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        },
       },
       {
         ok: true,
         status: 200,
-        body: [{ uid: "mem_001", entityUid: "cmp_001", memberEntityUid: "per_001", role: "member" }],
+        body: {
+          memberships: [
+            {
+              membershipKey: "per_001#cmp_001",
+              personUid: "per_001",
+              companyUid: "cmp_001",
+              role: "member",
+              status: "active",
+            },
+          ],
+        },
       },
       { ok: false, status: 404, body: { error: "Not found" } },
     ]);
@@ -146,22 +169,36 @@ describe("resolveUserCompany", () => {
     );
   });
 
-  it("derives bucket name from slug when metadata.bucketName is missing", async () => {
+  it("derives bucket name from slug when bucketName is missing", async () => {
     globalThis.fetch = mockFetch([
       {
         ok: true,
         status: 200,
-        body: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        body: {
+          entities: [{ uid: "per_001", type: "person", slug: "stefan", name: "Stefan" }],
+        },
       },
       {
         ok: true,
         status: 200,
-        body: [{ uid: "mem_001", entityUid: "cmp_001", memberEntityUid: "per_001", role: "admin" }],
+        body: {
+          memberships: [
+            {
+              membershipKey: "per_001#cmp_001",
+              personUid: "per_001",
+              companyUid: "cmp_001",
+              role: "admin",
+              status: "active",
+            },
+          ],
+        },
       },
       {
         ok: true,
         status: 200,
-        body: { uid: "cmp_001", type: "company", slug: "acme", name: "Acme Inc" },
+        body: {
+          entity: { uid: "cmp_001", type: "company", slug: "acme", name: "Acme Inc" },
+        },
       },
     ]);
 

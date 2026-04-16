@@ -136,10 +136,10 @@ async function checkVaultCompany(): Promise<string | null> {
       return null;
     }
 
-    const persons = (await personsRes.json()) as Array<{
-      uid: string;
-      name: string;
-    }>;
+    const personsBody = (await personsRes.json()) as {
+      entities: Array<{ uid: string; name: string }>;
+    };
+    const persons = personsBody.entities;
     if (persons.length === 0) {
       record("Vault company lookup", false, "No person entities found");
       return null;
@@ -147,7 +147,7 @@ async function checkVaultCompany(): Promise<string | null> {
 
     // Find memberships
     const membershipsRes = await fetch(
-      `${VAULT_API_URL}/membership/list?memberEntityUid=${persons[0].uid}`,
+      `${VAULT_API_URL}/membership/person/${persons[0].uid}`,
       { headers }
     );
     if (!membershipsRes.ok) {
@@ -159,15 +159,16 @@ async function checkVaultCompany(): Promise<string | null> {
       return null;
     }
 
-    const memberships = (await membershipsRes.json()) as Array<{
-      entityUid: string;
-    }>;
+    const membershipsBody = (await membershipsRes.json()) as {
+      memberships: Array<{ companyUid: string }>;
+    };
+    const memberships = membershipsBody.memberships;
     if (memberships.length === 0) {
       record("Vault company lookup", false, "No company memberships found");
       return null;
     }
 
-    const companyUid = memberships[0].entityUid;
+    const companyUid = memberships[0].companyUid;
     record(
       "Vault company lookup",
       true,
@@ -213,9 +214,7 @@ async function checkStsVend(companyUid: string) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        entityUid: companyUid,
-        action: "sync",
-        scope: "full",
+        companyUid: companyUid,
       }),
     });
 
@@ -224,19 +223,23 @@ async function checkStsVend(companyUid: string) {
       return;
     }
 
-    const creds = (await res.json()) as {
-      accessKeyId?: string;
-      bucketName?: string;
+    const body = (await res.json()) as {
+      credentials?: {
+        accessKeyId?: string;
+        secretAccessKey?: string;
+        sessionToken?: string;
+        expiration?: string;
+      };
       expiresAt?: string;
     };
-    if (creds.accessKeyId && creds.bucketName) {
+    if (body.credentials?.accessKeyId) {
       record(
         "STS vend",
         true,
-        `Credentials vended for bucket ${creds.bucketName} (expires: ${creds.expiresAt})`
+        `Credentials vended (expires: ${body.expiresAt ?? body.credentials.expiration})`
       );
     } else {
-      record("STS vend", false, "STS response missing accessKeyId or bucketName");
+      record("STS vend", false, "STS response missing credentials.accessKeyId");
     }
   } catch (err) {
     record(

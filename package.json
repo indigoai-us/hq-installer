@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1030.0",
+    "@aws-sdk/client-kms": "^3.1030.0",
     "@aws-sdk/client-s3": "^3.1030.0",
     "@aws-sdk/s3-request-presigner": "^3.1030.0",
     "@base-ui/react": "^1.4.0",

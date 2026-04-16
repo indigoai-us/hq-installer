@@ -56,6 +56,9 @@ export function TeamSetup({ onNext }: CompanyDetectProps) {
           slug: result.companySlug,
           name: result.companyName,
           joinedViaInvite: false,
+          bucketName: result.bucketName,
+          role: result.role,
+          personUid: result.personUid,
         });
 
         setLoading(false);

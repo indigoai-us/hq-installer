@@ -56,9 +56,11 @@ export function SyncScreen({ onNext }: SyncScreenProps) {
         const installPath = state.installPath ?? `${await invoke<string>("home_dir")}/hq`;
 
         // Vend scoped STS credentials
+        const bucketName = state.team.bucketName ?? `hq-vault-${state.team.slug}`;
         const creds = await vendStsCredentials(
           user.tokens.accessToken,
-          state.team.companyId
+          state.team.companyId,
+          bucketName
         );
 
         // Sync files from S3

@@ -19,15 +19,16 @@ interface VaultEntity {
   type: string;
   slug: string;
   name: string;
+  bucketName?: string;
   metadata?: Record<string, unknown>;
 }
 
 interface MembershipEntry {
-  uid: string;
-  entityUid: string;
-  memberEntityUid: string;
+  membershipKey: string;
+  personUid: string;
+  companyUid: string;
   role: string;
-  metadata?: Record<string, unknown>;
+  status: string;
 }
 
 /**
@@ -49,14 +50,15 @@ export async function resolveUserCompany(
     "Content-Type": "application/json",
   };
 
-  // Step 1: Find the person entity
+  // Step 1: Find the person entity (scoped to caller via JWT)
   const personsRes = await fetch(`${base}/entity/by-type/person`, { headers });
   if (!personsRes.ok) {
     throw new Error(
       `vault-service /entity/by-type/person failed: ${personsRes.status}`
     );
   }
-  const persons: VaultEntity[] = await personsRes.json();
+  const personsBody = (await personsRes.json()) as { entities: VaultEntity[] };
+  const persons = personsBody.entities;
   if (!persons.length) {
     return { found: false };
   }
@@ -65,15 +67,18 @@ export async function resolveUserCompany(
 
   // Step 2: Find company memberships for this person
   const membershipsRes = await fetch(
-    `${base}/membership/list?memberEntityUid=${person.uid}`,
+    `${base}/membership/person/${person.uid}`,
     { headers }
   );
   if (!membershipsRes.ok) {
     throw new Error(
-      `vault-service /membership/list failed: ${membershipsRes.status}`
+      `vault-service /membership/person/${person.uid} failed: ${membershipsRes.status}`
     );
   }
-  const memberships: MembershipEntry[] = await membershipsRes.json();
+  const membershipsBody = (await membershipsRes.json()) as {
+    memberships: MembershipEntry[];
+  };
+  const memberships = membershipsBody.memberships;
   if (!memberships.length) {
     return { found: false };
   }
@@ -82,15 +87,16 @@ export async function resolveUserCompany(
 
   // Step 3: Get company entity details
   const companyRes = await fetch(
-    `${base}/entity/${membership.entityUid}`,
+    `${base}/entity/${membership.companyUid}`,
     { headers }
   );
   if (!companyRes.ok) {
     throw new Error(
-      `vault-service /entity/${membership.entityUid} failed: ${companyRes.status}`
+      `vault-service /entity/${membership.companyUid} failed: ${companyRes.status}`
     );
   }
-  const company: VaultEntity = await companyRes.json();
+  const companyBody = (await companyRes.json()) as { entity: VaultEntity };
+  const company = companyBody.entity;
 
   return {
     found: true,
@@ -98,6 +104,7 @@ export async function resolveUserCompany(
     companySlug: company.slug,
     companyName: company.name,
     bucketName:
+      company.bucketName ??
       (company.metadata?.["bucketName"] as string) ??
       `hq-vault-${company.slug}`,
     personUid: person.uid,

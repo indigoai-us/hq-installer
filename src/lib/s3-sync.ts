@@ -8,12 +8,21 @@ import {
 } from "@aws-sdk/client-s3";
 import { invoke } from "@tauri-apps/api/core";
 
-interface StsCredentials {
+interface StsVendResponse {
+  credentials: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken: string;
+    expiration: string;
+  };
+  expiresAt: string;
+}
+
+export interface StsCredentials {
   accessKeyId: string;
   secretAccessKey: string;
   sessionToken: string;
   bucketName: string;
-  prefix: string;
   expiresAt: string;
 }
 
@@ -39,7 +48,8 @@ function getVaultApiUrl(): string {
  */
 export async function vendStsCredentials(
   accessToken: string,
-  entityUid: string
+  companyUid: string,
+  bucketName: string
 ): Promise<StsCredentials> {
   const res = await fetch(`${getVaultApiUrl()}/sts/vend`, {
     method: "POST",
@@ -48,9 +58,7 @@ export async function vendStsCredentials(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      entityUid,
-      action: "sync",
-      scope: "full",
+      companyUid,
     }),
   });
 
@@ -58,7 +66,14 @@ export async function vendStsCredentials(
     throw new Error(`STS vend failed: ${res.status}`);
   }
 
-  return res.json();
+  const data: StsVendResponse = await res.json();
+  return {
+    accessKeyId: data.credentials.accessKeyId,
+    secretAccessKey: data.credentials.secretAccessKey,
+    sessionToken: data.credentials.sessionToken,
+    bucketName,
+    expiresAt: data.expiresAt,
+  };
 }
 
 /**
@@ -85,7 +100,7 @@ export async function syncFromS3(
   const listRes = await client.send(
     new ListObjectsV2Command({
       Bucket: creds.bucketName,
-      Prefix: creds.prefix,
+      // List all objects in the company bucket (no prefix — bucket is per-company)
     })
   );
 
