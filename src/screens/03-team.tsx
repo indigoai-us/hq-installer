@@ -1,162 +1,161 @@
-// 03-team.tsx — US-014
-// Team create screen.
-//
-// NOTE: The "Join team" mode is temporarily hidden — the hq-ops
-// /api/installer/join-team endpoint does not exist yet. For the first end-to-end
-// integration we only support creating a new company. Invite/join will land in
-// a follow-up US.
+// 03-team.tsx — US-004
+// Company detection screen. Looks up the user's existing company from
+// vault-service instead of creating a new one. Users provision their company
+// during web onboarding — the installer just needs to find and confirm it.
 
-import React, { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { setTeam } from "@/lib/wizard-state";
 import { getCurrentUser } from "@/lib/cognito";
+import { resolveUserCompany } from "@/lib/vault-handoff";
 
-interface TeamSetupProps {
+interface CompanyDetectProps {
   onNext?: () => void;
 }
 
-function getApiBase(): string {
-  const base = (import.meta.env.VITE_API_BASE_URL as string) || "";
-  if (!base && import.meta.env.PROD) {
-    console.warn("[hq-installer] VITE_API_BASE_URL is not set — team API requests will fail");
-  }
-  return base;
-}
-
-/** "Indigo Test" → "indigo-test" */
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-export function TeamSetup({ onNext }: TeamSetupProps) {
-  const [teamName, setTeamName] = useState("");
-  const [teamSlug, setTeamSlug] = useState("");
-  // Tracks whether the user has manually edited the slug; once true, we stop
-  // auto-syncing it from teamName.
-  const [slugDirty, setSlugDirty] = useState(false);
-
-  const [loading, setLoading] = useState(false);
+export function TeamSetup({ onNext }: CompanyDetectProps) {
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [company, setCompany] = useState<{
+    companyUid: string;
+    companySlug: string;
+    companyName: string;
+    bucketName: string;
+    personUid: string;
+    role: string;
+  } | null>(null);
+  const attemptedRef = useRef(false);
 
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      // Pull the Cognito IdToken + caller's sub from the keychain. Screen 02
-      // (sign-in) runs before this one, so a session should always exist; the
-      // null-check is defensive in case the user manually clears tokens.
-      const user = await getCurrentUser();
-      if (!user) {
-        throw new Error("No active session — please sign in again");
+  useEffect(() => {
+    if (attemptedRef.current) return;
+    attemptedRef.current = true;
+
+    async function detect() {
+      try {
+        const user = await getCurrentUser();
+        if (!user) {
+          setError("No active session — please sign in again.");
+          setLoading(false);
+          return;
+        }
+
+        const result = await resolveUserCompany(user.tokens.accessToken);
+
+        if (!result.found) {
+          setError(null);
+          setCompany(null);
+          setLoading(false);
+          return;
+        }
+
+        setCompany(result);
+
+        // Store company metadata in wizard state
+        setTeam({
+          teamId: result.companyUid,
+          companyId: result.companyUid,
+          slug: result.companySlug,
+          name: result.companyName,
+          joinedViaInvite: false,
+        });
+
+        setLoading(false);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to look up company"
+        );
+        setLoading(false);
       }
-
-      // cognito_sub is NOT in the body — the hq-ops handler extracts it from
-      // the verified JWT sub claim, so a client can't spoof ownership. We still
-      // call getCurrentUser() to obtain the idToken for the Authorization header.
-      const res = await fetch(`${getApiBase()}/api/installer/register-company`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${user.tokens.idToken}`,
-        },
-        body: JSON.stringify({
-          company_slug: teamSlug,
-          company_name: teamName,
-          // Plan selection UI lives downstream in hq-ops billing — first-run
-          // installer always creates a `free`-tier company.
-          plan_tier: "free",
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to create team (${res.status})`);
-      }
-
-      // hq-ops returns { team_id, company_id, created_at }. The wizard-state
-      // TeamMetadata type wants a richer shape, so we reassemble it by mixing
-      // API-returned IDs with the local form values.
-      const data = (await res.json()) as {
-        team_id: string;
-        company_id: string;
-        created_at: string;
-      };
-
-      setTeam({
-        teamId: data.team_id,
-        companyId: data.company_id,
-        slug: teamSlug,
-        name: teamName,
-        joinedViaInvite: false,
-      });
-      onNext?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to create team");
-    } finally {
-      setLoading(false);
     }
+
+    detect();
+  }, []);
+
+  // Loading state
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center gap-4 max-w-sm">
+        <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+        <p className="text-sm text-zinc-400">
+          Looking up your company…
+        </p>
+      </div>
+    );
   }
 
-  return (
-    <div className="flex flex-col gap-6 max-w-sm">
-      <h1 className="text-2xl font-medium text-white">Create your team</h1>
-
-      {/* Error */}
-      {error && (
+  // Error state
+  if (error) {
+    return (
+      <div className="flex flex-col gap-6 max-w-sm">
+        <h1 className="text-2xl font-medium text-white">Something went wrong</h1>
         <div
           role="alert"
           className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-2"
         >
           {error}
         </div>
-      )}
-
-      <form onSubmit={handleCreate} className="flex flex-col gap-4">
-        <input
-          type="text"
-          aria-label="Team name"
-          placeholder="Team name"
-          value={teamName}
-          onChange={(e) => {
-            const v = e.target.value;
-            setTeamName(v);
-            if (!slugDirty) setTeamSlug(slugify(v));
-          }}
-          required
-          className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-        />
-        <input
-          type="text"
-          aria-label="Slug"
-          placeholder="slug"
-          value={teamSlug}
-          onChange={(e) => {
-            setTeamSlug(slugify(e.target.value));
-            setSlugDirty(true);
-          }}
-          required
-          className="bg-white/5 border border-white/10 rounded-full px-4 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-        />
         <button
-          type="submit"
-          disabled={loading}
-          className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-50"
+          type="button"
+          onClick={() => {
+            attemptedRef.current = false;
+            setLoading(true);
+            setError(null);
+          }}
+          className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
         >
-          {loading ? "Creating…" : "Create team"}
+          Try again
         </button>
-      </form>
+      </div>
+    );
+  }
 
-      {/* Escape hatch — advance the wizard without creating a team. Downstream
-          screens tolerate missing team state. */}
+  // No company found — user hasn't completed web onboarding
+  if (!company) {
+    return (
+      <div className="flex flex-col gap-6 max-w-sm">
+        <h1 className="text-2xl font-medium text-white">
+          No company found
+        </h1>
+        <p className="text-sm text-zinc-400">
+          Complete web onboarding first to provision your company, then return
+          here.
+        </p>
+        <a
+          href="https://onboarding.indigo-hq.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors text-center"
+        >
+          Go to web onboarding
+        </a>
+      </div>
+    );
+  }
+
+  // Company found — display confirmation
+  return (
+    <div className="flex flex-col gap-6 max-w-sm">
+      <h1 className="text-2xl font-medium text-white">Your company is ready</h1>
+      <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl p-4">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center text-green-400">
+            {"\u2713"}
+          </div>
+          <div>
+            <p className="text-sm font-medium text-white">{company.companyName}</p>
+            <p className="text-xs text-zinc-500">{company.companySlug}</p>
+          </div>
+        </div>
+        <div className="text-xs text-zinc-500 flex flex-col gap-1 mt-1">
+          <span>Role: {company.role}</span>
+          <span>Bucket: {company.bucketName}</span>
+        </div>
+      </div>
       <button
         type="button"
         onClick={() => onNext?.()}
-        className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors self-center"
+        className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
       >
-        Skip for now
+        Continue
       </button>
     </div>
   );

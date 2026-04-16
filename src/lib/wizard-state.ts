@@ -7,6 +7,9 @@ export interface TeamMetadata {
   slug: string;
   name: string;
   joinedViaInvite: boolean;
+  bucketName?: string;
+  role?: string;
+  personUid?: string;
 }
 
 export interface WizardState {
