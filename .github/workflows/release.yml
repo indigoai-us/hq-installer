@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   release:
     name: Build & Release (macOS universal)
@@ -34,33 +37,16 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
 
-      # Build with code signing when Apple certificate is configured
-      - name: Build with signing
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
-        uses: tauri-apps/tauri-action@v0
+      - name: Import Apple certificate
+        if: env.HAS_APPLE_CERT == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v__VERSION__
-          releaseName: "HQ Installer v__VERSION__"
-          releaseBody: "See the assets to download and install this version."
-          releaseDraft: false
-          prerelease: false
-          args: --target universal-apple-darwin
-          updaterJsonKeepUniversal: true
+        run: |
+          echo "Apple certificate configured — signing will be enabled"
 
-      # Build without code signing when Apple certificate is not configured
-      - name: Build without signing
-        if: ${{ secrets.APPLE_CERTIFICATE == '' }}
-        uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
