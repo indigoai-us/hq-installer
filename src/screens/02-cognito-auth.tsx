@@ -67,7 +67,15 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       await storeTokens(tokens);
       onNext?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed");
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : JSON.stringify(err);
+      // Surface in the webview console as well so right-click → Inspect shows it.
+      console.error("[google-oauth] sign-in failed:", err);
+      setError(msg || "Sign-in failed");
     } finally {
       setLoading(false);
     }
