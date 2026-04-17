@@ -261,7 +261,9 @@ describe("GitInit screen (08-git-init.tsx)", () => {
       const spawnCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "spawn_process");
       expect(spawnCalls.length).toBeGreaterThanOrEqual(1);
       const firstSpawn = (spawnCalls[0] as unknown[])[1] as { args: { cmd: string; args: string[] } };
-      const scriptArg = firstSpawn?.args?.args?.[1] ?? "";
+      // Script path is args[0] — we invoke `bash <path>` directly (no -c flag)
+      // so the file is read as a script and the execute bit isn't required.
+      const scriptArg = firstSpawn?.args?.args?.[0] ?? "";
       expect(scriptArg).toMatch(/compute-checksums/);
     });
   });
@@ -306,7 +308,7 @@ describe("GitInit screen (08-git-init.tsx)", () => {
       const spawnCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "spawn_process");
       expect(spawnCalls.length).toBeGreaterThanOrEqual(2);
       const secondSpawn = (spawnCalls[1] as unknown[])[1] as { args: { cmd: string; args: string[] } };
-      const scriptArg = secondSpawn?.args?.args?.[1] ?? "";
+      const scriptArg = secondSpawn?.args?.args?.[0] ?? "";
       expect(scriptArg).toMatch(/core-integrity/);
     });
   });

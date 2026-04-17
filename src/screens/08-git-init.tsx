@@ -41,7 +41,7 @@ export interface GitInitProps {
 // ---------------------------------------------------------------------------
 
 const STEP_LABELS = [
-  "Initialise git repository",
+  "Initialise local git",
   "Compute checksums",
   "Verify kernel integrity",
 ];
@@ -177,10 +177,15 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
     // the no-async-promise-executor lint error.
     let handle: string;
     try {
+      // `bash <path>` reads the file as a script (no +x bit required).
+      // Using `bash -c <path>` treats the path as a command and fails with
+      // exit code 126 if the file isn't executable — which it won't be if the
+      // tar extraction missed the mode bit. Reading as a script is strictly
+      // more permissive and matches how `./install.sh` style launchers work.
       handle = await invoke<string>("spawn_process", {
         args: {
           cmd: "bash",
-          args: ["-c", scriptPath],
+          args: [scriptPath],
           cwd: installPath,
         },
       });

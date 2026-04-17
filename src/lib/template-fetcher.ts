@@ -52,6 +52,13 @@ interface TarEntry {
   typeflag: string;
   size: number;
   data: Uint8Array;
+  /**
+   * Unix file mode (permissions) parsed from the tar header at offset 100-107.
+   * We preserve this so executable scripts (e.g. `compute-checksums.sh`) keep
+   * their execute bit after extraction — otherwise `bash -c <path>` fails with
+   * exit code 126 ("command invoked cannot execute") on macOS/Linux.
+   */
+  mode: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +288,9 @@ function parseTar(buf: Uint8Array): TarEntry[] {
 
     const headerStart = pos;
     const name = readString(headerStart, 100);
+    // Mode lives at offset 100-107 (8 bytes, ASCII octal). Default to 0o644 if
+    // unreadable — that's the tar convention for "no mode specified".
+    const mode = readOctal(headerStart + 100, 8) || 0o644;
     const size = readOctal(headerStart + 124, 12);
     const typeflag = String.fromCharCode(buf[headerStart + 156]);
 
@@ -329,7 +339,7 @@ function parseTar(buf: Uint8Array): TarEntry[] {
     pos += dataBlocks;
 
     if (actualName) {
-      entries.push({ name: actualName, typeflag, size, data });
+      entries.push({ name: actualName, typeflag, size, data, mode });
     }
   }
 
@@ -437,7 +447,10 @@ async function extractTarball(
     if (lastSlash > 0) {
       await mkdir(destPath.slice(0, lastSlash), { recursive: true });
     }
-    await writeFile(destPath, entry.data);
+    // Preserve the executable bit from the tar header — shell scripts under
+    // `template/scripts/` are 0o755 and need to stay that way, or later
+    // `bash -c <path>` invocations fail with exit code 126.
+    await writeFile(destPath, entry.data, { mode: entry.mode });
   }
 }
 
