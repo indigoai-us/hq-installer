@@ -96,10 +96,7 @@ function makeTokens(overrides: Partial<CognitoTokens> = {}): CognitoTokens {
 
 /** Pre-populate the fake keychain with a set of tokens */
 async function seedKeychain(tokens: CognitoTokens) {
-  fakeKeychain.set("access_token", tokens.accessToken);
-  fakeKeychain.set("id_token", tokens.idToken);
-  fakeKeychain.set("refresh_token", tokens.refreshToken);
-  fakeKeychain.set("expires_at", String(tokens.expiresAt));
+  fakeKeychain.set("tokens", JSON.stringify(tokens));
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +120,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("storeTokens", () => {
-  it("writes all four token fields to the keychain", async () => {
+  it("writes a single consolidated JSON blob to the keychain (one ACL prompt)", async () => {
     const tokens = makeTokens({
       accessToken: "acc",
       idToken: makeIdToken("sub-1", "alice@example.com"),
@@ -132,14 +129,21 @@ describe("storeTokens", () => {
 
     await storeTokens(tokens);
 
-    expect(fakeKeychain.get("access_token")).toBe("acc");
-    expect(fakeKeychain.get("id_token")).toBe(tokens.idToken);
-    expect(fakeKeychain.get("refresh_token")).toBe("ref");
-    expect(fakeKeychain.get("expires_at")).toBe(String(tokens.expiresAt));
-    expect(invoke).toHaveBeenCalledWith(
-      "keychain_set",
-      expect.objectContaining({ account: "access_token" }),
-    );
+    // All tokens consolidated under the single "tokens" account to minimize
+    // keychain access prompts in unsigned dev builds.
+    expect(fakeKeychain.size).toBe(1);
+    const stored = JSON.parse(fakeKeychain.get("tokens")!);
+    expect(stored.accessToken).toBe("acc");
+    expect(stored.idToken).toBe(tokens.idToken);
+    expect(stored.refreshToken).toBe("ref");
+    expect(stored.expiresAt).toBe(tokens.expiresAt);
+
+    // Exactly one keychain_set invocation (no per-field prompts).
+    const keychainSetCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "keychain_set");
+    expect(keychainSetCalls).toHaveLength(1);
+    expect(keychainSetCalls[0][1]).toMatchObject({ account: "tokens" });
   });
 });
 
@@ -162,8 +166,10 @@ describe("signOut", () => {
 
     expect(globalSignOutCalls).toHaveLength(1);
     expect(fakeKeychain.size).toBe(0);
-    expect(invoke).toHaveBeenCalledWith("keychain_delete", expect.objectContaining({ account: "access_token" }));
-    expect(invoke).toHaveBeenCalledWith("keychain_delete", expect.objectContaining({ account: "refresh_token" }));
+    expect(invoke).toHaveBeenCalledWith(
+      "keychain_delete",
+      expect.objectContaining({ account: "tokens" }),
+    );
   });
 
   it("clears keychain even if GlobalSignOut throws", async () => {
@@ -219,8 +225,10 @@ describe("getCurrentUser", () => {
     expect(user).not.toBeNull();
     expect(user!.email).toBe("fresh@example.com");
     expect(user!.tokens.accessToken).toBe("new-access");
-    // Keychain should be updated with fresh tokens
-    expect(fakeKeychain.get("access_token")).toBe("new-access");
+    // Consolidated blob should be updated with the fresh access token
+    expect(JSON.parse(fakeKeychain.get("tokens")!).accessToken).toBe(
+      "new-access",
+    );
   });
 
   it("returns null and clears keychain if refresh fails", async () => {
@@ -261,8 +269,9 @@ describe("refreshSession", () => {
     expect(refreshed.accessToken).toBe("refreshed-access");
     // Should preserve original refresh token when Cognito doesn't return one
     expect(refreshed.refreshToken).toBe(tokens.refreshToken);
-    expect(fakeKeychain.get("access_token")).toBe("refreshed-access");
-    expect(fakeKeychain.get("refresh_token")).toBe(tokens.refreshToken);
+    const stored = JSON.parse(fakeKeychain.get("tokens")!);
+    expect(stored.accessToken).toBe("refreshed-access");
+    expect(stored.refreshToken).toBe(tokens.refreshToken);
   });
 
   it("throws when no refresh token stored", async () => {

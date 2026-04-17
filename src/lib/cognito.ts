@@ -65,63 +65,41 @@ export interface CurrentUser {
 // ---------------------------------------------------------------------------
 
 const KC_SERVICE = "cognito";
+// Tokens are stored as a single JSON blob under one account name so each
+// macOS keychain access is a single ACL prompt in dev builds (unsigned
+// binaries prompt per access). Previously we split across four accounts,
+// which caused 4-12 prompts per sign-in on dev.
+const KC_ACCOUNT = "tokens";
 
 export async function storeTokens(tokens: CognitoTokens): Promise<void> {
-  await Promise.all([
-    invoke("keychain_set", {
-      service: KC_SERVICE,
-      account: "access_token",
-      secret: tokens.accessToken,
-    }),
-    invoke("keychain_set", {
-      service: KC_SERVICE,
-      account: "id_token",
-      secret: tokens.idToken,
-    }),
-    invoke("keychain_set", {
-      service: KC_SERVICE,
-      account: "refresh_token",
-      secret: tokens.refreshToken,
-    }),
-    invoke("keychain_set", {
-      service: KC_SERVICE,
-      account: "expires_at",
-      secret: String(tokens.expiresAt),
-    }),
-  ]);
+  await invoke("keychain_set", {
+    service: KC_SERVICE,
+    account: KC_ACCOUNT,
+    secret: JSON.stringify(tokens),
+  });
 }
 
 async function loadTokens(): Promise<CognitoTokens | null> {
   try {
-    const [accessToken, idToken, refreshToken, expiresAtStr] =
-      await Promise.all([
-        invoke<string>("keychain_get", {
-          service: KC_SERVICE,
-          account: "access_token",
-        }),
-        invoke<string>("keychain_get", {
-          service: KC_SERVICE,
-          account: "id_token",
-        }),
-        invoke<string>("keychain_get", {
-          service: KC_SERVICE,
-          account: "refresh_token",
-        }),
-        invoke<string>("keychain_get", {
-          service: KC_SERVICE,
-          account: "expires_at",
-        }),
-      ]);
-
-    if (!accessToken || !idToken || !refreshToken || !expiresAtStr) {
+    const raw = await invoke<string>("keychain_get", {
+      service: KC_SERVICE,
+      account: KC_ACCOUNT,
+    });
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
+    if (
+      typeof parsed.accessToken !== "string" ||
+      typeof parsed.idToken !== "string" ||
+      typeof parsed.refreshToken !== "string" ||
+      typeof parsed.expiresAt !== "number"
+    ) {
       return null;
     }
-
     return {
-      accessToken,
-      idToken,
-      refreshToken,
-      expiresAt: Number(expiresAtStr),
+      accessToken: parsed.accessToken,
+      idToken: parsed.idToken,
+      refreshToken: parsed.refreshToken,
+      expiresAt: parsed.expiresAt,
     };
   } catch {
     return null;
@@ -129,12 +107,14 @@ async function loadTokens(): Promise<CognitoTokens | null> {
 }
 
 async function clearTokens(): Promise<void> {
-  await Promise.allSettled([
-    invoke("keychain_delete", { service: KC_SERVICE, account: "access_token" }),
-    invoke("keychain_delete", { service: KC_SERVICE, account: "id_token" }),
-    invoke("keychain_delete", { service: KC_SERVICE, account: "refresh_token" }),
-    invoke("keychain_delete", { service: KC_SERVICE, account: "expires_at" }),
-  ]);
+  try {
+    await invoke("keychain_delete", {
+      service: KC_SERVICE,
+      account: KC_ACCOUNT,
+    });
+  } catch {
+    // Best-effort — entry may not exist
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -3,16 +3,19 @@
 // vault-service instead of creating a new one. Users provision their company
 // during web onboarding — the installer just needs to find and confirm it.
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { setTeam } from "@/lib/wizard-state";
-import { getCurrentUser } from "@/lib/cognito";
+import { getCurrentUser, signOut } from "@/lib/cognito";
 import { resolveUserCompany } from "@/lib/vault-handoff";
 
 interface CompanyDetectProps {
   onNext?: () => void;
+  /** Sign the user out and route back to Screen 02 (optional — if omitted,
+   *  the error UI only shows Try again). */
+  onSignOutAndRetry?: () => void;
 }
 
-export function TeamSetup({ onNext }: CompanyDetectProps) {
+export function TeamSetup({ onNext, onSignOutAndRetry }: CompanyDetectProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [company, setCompany] = useState<{
@@ -23,15 +26,19 @@ export function TeamSetup({ onNext }: CompanyDetectProps) {
     personUid: string;
     role: string;
   } | null>(null);
-  const attemptedRef = useRef(false);
+  // Bumping this counter re-runs the effect. This replaces an older ref-based
+  // guard that kept the effect from re-firing but also prevented the Try again
+  // button from actually retriggering detect() — retries state-updated without
+  // ever restarting the lookup.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (attemptedRef.current) return;
-    attemptedRef.current = true;
+    let cancelled = false;
 
     async function detect() {
       try {
         const user = await getCurrentUser();
+        if (cancelled) return;
         if (!user) {
           setError("No active session — please sign in again.");
           setLoading(false);
@@ -39,6 +46,7 @@ export function TeamSetup({ onNext }: CompanyDetectProps) {
         }
 
         const result = await resolveUserCompany(user.tokens.accessToken);
+        if (cancelled) return;
 
         if (!result.found) {
           setError(null);
@@ -63,6 +71,7 @@ export function TeamSetup({ onNext }: CompanyDetectProps) {
 
         setLoading(false);
       } catch (err) {
+        if (cancelled) return;
         setError(
           err instanceof Error ? err.message : "Failed to look up company"
         );
@@ -71,7 +80,10 @@ export function TeamSetup({ onNext }: CompanyDetectProps) {
     }
 
     detect();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [attempt]);
 
   // Loading state
   if (loading) {
@@ -99,14 +111,26 @@ export function TeamSetup({ onNext }: CompanyDetectProps) {
         <button
           type="button"
           onClick={() => {
-            attemptedRef.current = false;
             setLoading(true);
             setError(null);
+            setAttempt((n) => n + 1);
           }}
           className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
         >
           Try again
         </button>
+        {onSignOutAndRetry && (
+          <button
+            type="button"
+            onClick={async () => {
+              await signOut();
+              onSignOutAndRetry();
+            }}
+            className="text-xs text-zinc-500 hover:text-zinc-300 underline underline-offset-4"
+          >
+            Sign in with a different account
+          </button>
+        )}
       </div>
     );
   }

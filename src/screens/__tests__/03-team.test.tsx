@@ -113,6 +113,9 @@ describe("TeamSetup (company detection)", () => {
         slug: "acme",
         name: "Acme Inc",
         joinedViaInvite: false,
+        bucketName: "hq-vault-acme",
+        role: "admin",
+        personUid: "per_001",
       });
     });
   });

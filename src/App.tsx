@@ -66,7 +66,15 @@ function App() {
       case 2:
         return <CognitoAuth onNext={handleNext} />;
       case 3:
-        return <TeamSetup onNext={handleNext} />;
+        return (
+          <TeamSetup
+            onNext={handleNext}
+            onSignOutAndRetry={() => {
+              router.goTo(2);
+              forceRender((n) => n + 1);
+            }}
+          />
+        );
       case 4:
         return <DepsInstall onNext={handleNext} />;
       case 5:
