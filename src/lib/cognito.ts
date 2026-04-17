@@ -71,39 +71,86 @@ const KC_SERVICE = "cognito";
 // which caused 4-12 prompts per sign-in on dev.
 const KC_ACCOUNT = "tokens";
 
+// In-memory cache for the current session's tokens. On unsigned dev builds
+// macOS prompts the user on every keychain read, so callers like
+// getCurrentUser() — which can run on every mount, including React
+// StrictMode's double-mount and screen-to-screen navigation — would each
+// trigger a fresh ACL dialog. Caching here means the keychain is hit at
+// most once per app launch for reads: storeTokens() populates it after
+// sign-in, the first loadTokens() call warms it from the keychain if the
+// app was just launched, and every subsequent call serves from memory.
+//
+// The cache is module-scoped (per-window), so it dies naturally on app
+// restart — tokens still live in the keychain as the source of truth.
+// clearTokens() invalidates the cache so signOut() doesn't leave a ghost
+// session in memory.
+let cachedTokens: CognitoTokens | null = null;
+let cacheWarmed = false;
+// Memoize the pending keychain read so concurrent callers (StrictMode's
+// double-mounted effect, two screens racing to detect the user) share one
+// invoke() — otherwise both dispatch a keychain_get before either
+// populates `cacheWarmed`, causing two ACL prompts on unsigned dev builds.
+let pendingLoad: Promise<CognitoTokens | null> | null = null;
+
 export async function storeTokens(tokens: CognitoTokens): Promise<void> {
   await invoke("keychain_set", {
     service: KC_SERVICE,
     account: KC_ACCOUNT,
     secret: JSON.stringify(tokens),
   });
+  cachedTokens = tokens;
+  cacheWarmed = true;
+  pendingLoad = null;
 }
 
 async function loadTokens(): Promise<CognitoTokens | null> {
-  try {
-    const raw = await invoke<string>("keychain_get", {
-      service: KC_SERVICE,
-      account: KC_ACCOUNT,
-    });
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
-    if (
-      typeof parsed.accessToken !== "string" ||
-      typeof parsed.idToken !== "string" ||
-      typeof parsed.refreshToken !== "string" ||
-      typeof parsed.expiresAt !== "number"
-    ) {
+  // Serve from memory if we've already read (or written) once this session.
+  // `cacheWarmed` distinguishes "never loaded" (cold start) from
+  // "loaded and confirmed no tokens exist" (both leave cachedTokens null).
+  if (cacheWarmed) return cachedTokens;
+  // Another caller is already asking the keychain — ride their promise.
+  if (pendingLoad) return pendingLoad;
+
+  pendingLoad = (async () => {
+    try {
+      const raw = await invoke<string>("keychain_get", {
+        service: KC_SERVICE,
+        account: KC_ACCOUNT,
+      });
+      if (!raw) {
+        cachedTokens = null;
+        cacheWarmed = true;
+        return null;
+      }
+      const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
+      if (
+        typeof parsed.accessToken !== "string" ||
+        typeof parsed.idToken !== "string" ||
+        typeof parsed.refreshToken !== "string" ||
+        typeof parsed.expiresAt !== "number"
+      ) {
+        cachedTokens = null;
+        cacheWarmed = true;
+        return null;
+      }
+      cachedTokens = {
+        accessToken: parsed.accessToken,
+        idToken: parsed.idToken,
+        refreshToken: parsed.refreshToken,
+        expiresAt: parsed.expiresAt,
+      };
+      cacheWarmed = true;
+      return cachedTokens;
+    } catch {
+      cachedTokens = null;
+      cacheWarmed = true;
       return null;
+    } finally {
+      pendingLoad = null;
     }
-    return {
-      accessToken: parsed.accessToken,
-      idToken: parsed.idToken,
-      refreshToken: parsed.refreshToken,
-      expiresAt: parsed.expiresAt,
-    };
-  } catch {
-    return null;
-  }
+  })();
+
+  return pendingLoad;
 }
 
 async function clearTokens(): Promise<void> {
@@ -115,6 +162,11 @@ async function clearTokens(): Promise<void> {
   } catch {
     // Best-effort — entry may not exist
   }
+  // Always invalidate in-memory state, even if the keychain delete failed —
+  // the user's intent is "forget this session".
+  cachedTokens = null;
+  cacheWarmed = true;
+  pendingLoad = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +212,20 @@ function decodeIdToken(idToken: string): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Test-only: reset the module-scoped token cache. Exposed so unit tests that
+ * share a global fake keychain can return to a known-cold state between
+ * cases. Not meant for production callers — `clearTokens`/`signOut` already
+ * handle session teardown correctly.
+ *
+ * @internal
+ */
+export function __resetCacheForTests(): void {
+  cachedTokens = null;
+  cacheWarmed = false;
+  pendingLoad = null;
+}
 
 /**
  * Refresh the current session using the stored refresh token.

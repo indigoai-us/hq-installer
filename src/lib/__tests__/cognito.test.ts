@@ -66,6 +66,7 @@ import {
   storeTokens,
   refreshSession,
   getCurrentUser,
+  __resetCacheForTests,
   type CognitoTokens,
 } from "../cognito.js";
 import { invoke } from "@tauri-apps/api/core";
@@ -106,6 +107,9 @@ async function seedKeychain(tokens: CognitoTokens) {
 beforeEach(() => {
   fakeKeychain.clear();
   vi.clearAllMocks();
+  // Reset the in-memory token cache — otherwise state leaks across tests
+  // (the cache is module-scoped, not per-test).
+  __resetCacheForTests();
 
   // Default AWS send: return empty object (overridden per-test as needed)
   mockSendImpl = async () => ({});
@@ -247,6 +251,69 @@ describe("getCurrentUser", () => {
 // ---------------------------------------------------------------------------
 // refreshSession
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// In-memory token cache — regression guard for the "4 keychain prompts" bug.
+// ---------------------------------------------------------------------------
+
+describe("token cache", () => {
+  it("hits the keychain at most once for repeated getCurrentUser() calls", async () => {
+    const tokens = makeTokens();
+    await seedKeychain(tokens);
+
+    await getCurrentUser();
+    await getCurrentUser();
+    await getCurrentUser();
+
+    const keychainGetCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "keychain_get");
+    expect(keychainGetCalls).toHaveLength(1);
+  });
+
+  it("shares one keychain read across concurrent getCurrentUser() calls", async () => {
+    const tokens = makeTokens();
+    await seedKeychain(tokens);
+
+    // Fire three in parallel — simulating StrictMode double-mount + a third
+    // caller racing to check auth at the same moment.
+    await Promise.all([
+      getCurrentUser(),
+      getCurrentUser(),
+      getCurrentUser(),
+    ]);
+
+    const keychainGetCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "keychain_get");
+    expect(keychainGetCalls).toHaveLength(1);
+  });
+
+  it("serves storeTokens() results from cache without a subsequent keychain_get", async () => {
+    const tokens = makeTokens();
+
+    await storeTokens(tokens);
+    const user = await getCurrentUser();
+
+    expect(user).not.toBeNull();
+    expect(user!.tokens.accessToken).toBe(tokens.accessToken);
+    const keychainGetCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "keychain_get");
+    // storeTokens warmed the cache — no keychain read should have happened.
+    expect(keychainGetCalls).toHaveLength(0);
+  });
+
+  it("invalidates the cache on signOut so a later getCurrentUser() returns null", async () => {
+    const tokens = makeTokens();
+    await storeTokens(tokens); // warms cache
+
+    await signOut();
+
+    const user = await getCurrentUser();
+    expect(user).toBeNull();
+  });
+});
 
 describe("refreshSession", () => {
   it("exchanges refresh token and updates keychain", async () => {
