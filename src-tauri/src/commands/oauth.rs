@@ -59,12 +59,19 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
 </body>
 </html>"#;
 
-const ERROR_HTML: &str = r#"<!doctype html>
+fn error_html(reason: &str) -> String {
+    format!(
+        r#"<!doctype html>
 <html lang="en"><head><meta charset="utf-8" /><title>Sign-in error</title>
-<style>body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#fafafa;
-text-align:center;padding-top:80px}h1{font-weight:500}p{color:#a1a1aa}</style>
+<style>body{{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#fafafa;
+text-align:center;padding-top:80px}}h1{{font-weight:500}}p{{color:#a1a1aa}}
+code{{color:#f87171;font-size:12px;display:block;margin-top:24px}}</style>
 </head><body><h1>Sign-in error</h1>
-<p>Return to the HQ installer and try again.</p></body></html>"#;
+<p>Return to the HQ installer and try again.</p>
+<code>{reason}</code></body></html>"#,
+        reason = reason
+    )
+}
 
 /// Read an HTTP request from the stream up to the end of the request line +
 /// headers. We only care about the GET line; body (if any) is ignored.
@@ -198,16 +205,38 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
 
                     match parse_callback(&request) {
                         Some((_code, _state, Some(error))) => {
-                            write_response(&mut stream, "400 Bad Request", ERROR_HTML);
-                            return Err(format!("OAuth provider returned error: {error}"));
+                            let reason = format!("Provider error: {error}");
+                            eprintln!("[oauth] callback rejected — {reason}");
+                            write_response(
+                                &mut stream,
+                                "400 Bad Request",
+                                &error_html(&reason),
+                            );
+                            return Err(format!(
+                                "OAuth provider returned error: {error}"
+                            ));
                         }
                         Some((code, state, None)) => {
                             if state != state_copy {
-                                write_response(&mut stream, "400 Bad Request", ERROR_HTML);
+                                let reason = format!(
+                                    "State mismatch: expected {} got {}",
+                                    state_copy, state
+                                );
+                                eprintln!("[oauth] callback rejected — {reason}");
+                                write_response(
+                                    &mut stream,
+                                    "400 Bad Request",
+                                    &error_html(&reason),
+                                );
                                 return Err(
-                                    "OAuth state mismatch — possible CSRF, aborting.".into()
+                                    "OAuth state mismatch — possible CSRF, aborting."
+                                        .into(),
                                 );
                             }
+                            eprintln!(
+                                "[oauth] callback accepted — code length {}",
+                                code.len()
+                            );
                             write_response(&mut stream, "200 OK", SUCCESS_HTML);
                             return Ok(OAuthResult { code });
                         }
