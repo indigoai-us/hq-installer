@@ -25,6 +25,18 @@
         { "url": "https://*.amazonaws.com/*" },
         { "url": "https://telemetry.getindigo.ai/*" }
       ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [{ "path": "$HOME/**" }]
     }
   ]
 }

@@ -89,7 +89,17 @@ async function fetchRelease(
   return (await response.json()) as ReleaseInfo;
 }
 
-async function getLatestRelease(signal?: AbortSignal): Promise<ReleaseInfo> {
+/**
+ * Look up the latest stable release.
+ *
+ * Returns `null` when the repo has no stable non-draft releases yet — this is
+ * a normal state for early-stage repos and must NOT throw, because the
+ * caller's fallback path (branch snapshot via `/tarball/HEAD`) depends on
+ * distinguishing "no releases" from "network/auth error".
+ */
+async function getLatestRelease(
+  signal?: AbortSignal,
+): Promise<ReleaseInfo | null> {
   const url = `${GITHUB_API}/repos/${REPO}/releases`;
   let response: Response;
   try {
@@ -109,14 +119,22 @@ async function getLatestRelease(signal?: AbortSignal): Promise<ReleaseInfo> {
   }
 
   const releases = (await response.json()) as ReleaseInfo[];
-  const latest = releases.find((r) => !r.prerelease && !r.draft);
-  if (!latest) {
-    throw new TemplateFetchError(
-      "No stable non-draft release found on GitHub",
-      false,
-    );
-  }
-  return latest;
+  return releases.find((r) => !r.prerelease && !r.draft) ?? null;
+}
+
+/**
+ * Build the URL for a branch-snapshot tarball of the template repo.
+ *
+ * GitHub's REST API exposes `/repos/{owner}/{repo}/tarball/{ref}` which 302s
+ * to `codeload.github.com` — the same endpoint `gh api repos/.../tarball/HEAD`
+ * uses under the hood. The HTTP allowlist already permits both domains, so
+ * `downloadTarball` can follow the redirect transparently.
+ *
+ * We use this when no release has been published yet, to mirror the
+ * `create-hq` fallback path.
+ */
+function branchTarballUrl(ref: string): string {
+  return `${GITHUB_API}/repos/${REPO}/tarball/${ref}`;
 }
 
 async function getTagRelease(
@@ -323,14 +341,35 @@ function parseTar(buf: Uint8Array): TarEntry[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Strip the top-level GitHub archive directory prefix.
- * GitHub tarballs look like: `indigoai-us-hq-<sha>/path/to/file`
- * We want: `path/to/file`
+ * Map a raw tarball entry name to the path (relative to `targetDir`) where it
+ * should be extracted, or return `null` to skip the entry entirely.
+ *
+ * GitHub tarballs wrap everything in a top-level dir (`indigoai-us-hq-<sha>/`)
+ * and we're extracting from a monorepo, so we need TWO levels of stripping:
+ *
+ *   indigoai-us-hq-abc123/template/core.yaml   →  "core.yaml"          (keep)
+ *   indigoai-us-hq-abc123/template/.claude/... →  ".claude/..."        (keep)
+ *   indigoai-us-hq-abc123/template/            →  "" (dir marker — caller skips)
+ *   indigoai-us-hq-abc123/README.md            →  null (outside template/)
+ *   indigoai-us-hq-abc123/packages/create-hq/  →  null (outside template/)
+ *   indigoai-us-hq-abc123/                     →  null (top-level dir itself)
+ *
+ * Returning `null` means "not our concern" — the caller skips the entry,
+ * which avoids dumping the entire 500MB monorepo into the user's install dir.
  */
-function stripTopLevelDir(entryName: string): string {
-  const slash = entryName.indexOf("/");
-  if (slash === -1) return entryName;
-  return entryName.slice(slash + 1);
+function mapEntryToTemplatePath(entryName: string): string | null {
+  const firstSlash = entryName.indexOf("/");
+  if (firstSlash === -1) return null; // top-level dir entry with no inner path
+  const afterRoot = entryName.slice(firstSlash + 1);
+  if (!afterRoot) return null;
+
+  // The `template/` dir marker itself (either `template` or `template/`).
+  if (afterRoot === "template" || afterRoot === "template/") return "";
+
+  // Anything else must live under `template/` to be kept.
+  if (!afterRoot.startsWith("template/")) return null;
+
+  return afterRoot.slice("template/".length);
 }
 
 /**
@@ -373,39 +412,32 @@ async function extractTarball(
   // 2. Parse tar entries
   const entries = parseTar(tarBytes);
 
-  // 3. Write each entry via Tauri plugin-fs
+  // 3. Write each entry via Tauri plugin-fs, filtering to the `template/`
+  //    subtree. Entries outside `template/` (e.g. packages/, docs/, README.md)
+  //    are dropped so we don't shovel the whole monorepo into targetDir.
   for (const entry of entries) {
-    const relative = stripTopLevelDir(entry.name);
-    if (!relative || relative === "./" || relative.endsWith("/")) {
-      // Name-based directory entry — create it if non-trivial
-      if (relative && relative !== "./") {
-        const dirPath = safeJoin(targetDir, relative.replace(/\/+$/, ""));
-        if (!dirPath) continue; // path traversal attempt — skip
-        await mkdir(dirPath, { recursive: true });
-      }
-      continue;
-    }
+    const relative = mapEntryToTemplatePath(entry.name);
+    if (relative === null) continue; // outside template/ — drop
+    const trimmed = relative.replace(/\/+$/, "");
+    if (!trimmed || trimmed === ".") continue; // the template/ dir marker itself
 
-    const isDir = entry.typeflag === "5";
+    const isDir = entry.typeflag === "5" || entry.name.endsWith("/");
+    const destPath = safeJoin(targetDir, trimmed);
+    if (!destPath) continue; // path traversal attempt — skip
+
     if (isDir) {
-      const dirPath = safeJoin(targetDir, relative);
-      if (!dirPath) continue; // path traversal attempt — skip
-      await mkdir(dirPath, { recursive: true });
+      await mkdir(destPath, { recursive: true });
       continue;
     }
 
-    // Regular file
-    const filePath = safeJoin(targetDir, relative);
-    if (!filePath) continue; // path traversal attempt — skip
-
-    // Ensure parent directory exists
-    const lastSlash = filePath.lastIndexOf("/");
+    // Regular file — ensure parent dir exists, then write.
+    // `recursive: true` means repeated mkdir of the same parent is a no-op,
+    // so we don't bother deduping across siblings.
+    const lastSlash = destPath.lastIndexOf("/");
     if (lastSlash > 0) {
-      const parentDir = filePath.slice(0, lastSlash);
-      await mkdir(parentDir, { recursive: true });
+      await mkdir(destPath.slice(0, lastSlash), { recursive: true });
     }
-
-    await writeFile(filePath, entry.data);
+    await writeFile(destPath, entry.data);
   }
 }
 
@@ -416,11 +448,25 @@ async function extractTarball(
 /**
  * Fetch the HQ template from GitHub and extract it into targetDir.
  *
+ * Strategy (mirrors `packages/create-hq/src/fetch-template.ts`):
+ *
+ *   1. If `tag` is given → fetch the tagged release. No fallback: the caller
+ *      asked for a specific version, so "release not found" is a real error.
+ *   2. Else → try the latest stable release.
+ *      - If one exists, use its `tarball_url`.
+ *      - If the repo has no stable release yet, fall back to the branch
+ *        snapshot endpoint (`/tarball/HEAD`). This is what `gh api
+ *        repos/.../tarball/HEAD` does under the hood, and it's how create-hq
+ *        kept working during periods where `indigoai-us/hq` had no releases.
+ *
+ * Extraction filters to the `template/` subtree of the monorepo — see
+ * `mapEntryToTemplatePath`.
+ *
  * @param targetDir - Absolute path where the template should be extracted
  * @param tag - Optional: pin to a specific release tag. Defaults to latest non-prerelease.
  * @param onProgress - Optional callback receiving {bytes, total} progress events
  * @param signal - Optional AbortSignal for cancellation
- * @returns { version: string } — the release tag that was fetched
+ * @returns { version: string } — the tag or ref that was fetched
  */
 export async function fetchAndExtract(
   targetDir: string,
@@ -433,13 +479,27 @@ export async function fetchAndExtract(
     throw new TemplateFetchError("Operation cancelled before it started", false);
   }
 
-  // 1. Resolve release info
-  const release = tag
-    ? await getTagRelease(tag, signal)
-    : await getLatestRelease(signal);
+  // 1. Resolve tarball URL + version.
+  let version: string;
+  let tarballUrl: string;
 
-  const version = release.tag_name;
-  const tarballUrl = release.tarball_url;
+  if (tag) {
+    const release = await getTagRelease(tag, signal);
+    version = release.tag_name;
+    tarballUrl = release.tarball_url;
+  } else {
+    const release = await getLatestRelease(signal);
+    if (release) {
+      version = release.tag_name;
+      tarballUrl = release.tarball_url;
+    } else {
+      // No published releases yet — fall back to branch snapshot.
+      // We don't know a version in this case; "HEAD" is honest about it
+      // and mirrors what `create-hq` returns when it hits the same path.
+      version = "HEAD";
+      tarballUrl = branchTarballUrl("HEAD");
+    }
+  }
 
   // 2. Download tarball with streaming progress
   const compressedBytes = await downloadTarball(tarballUrl, onProgress, signal);
@@ -447,7 +507,7 @@ export async function fetchAndExtract(
   // 3. Ensure target directory exists
   await mkdir(targetDir, { recursive: true });
 
-  // 4. Extract
+  // 4. Extract (filters to `template/` subtree internally)
   await extractTarball(compressedBytes, targetDir);
 
   return { version };

@@ -192,10 +192,17 @@ beforeEach(() => {
 
 describe("fetchAndExtract", () => {
   // -------------------------------------------------------------------------
-  it("success: extracts files into targetDir and returns version", async () => {
+  it("success: extracts template/ subtree into targetDir and returns version", async () => {
+    // GitHub tarballs of the monorepo contain everything, including files
+    // OUTSIDE template/. The fetcher must keep only the template/ subtree.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "src/index.ts", content: "export default 42;" },
-      { name: "package.json", content: '{"name":"hq"}' },
+      // Inside template/ — should be extracted, with the `template/` prefix
+      // stripped so they land at the root of targetDir.
+      { name: "template/core.yaml", content: "version: 10.2.0" },
+      { name: "template/.claude/CLAUDE.md", content: "# HQ template" },
+      // Outside template/ — must be dropped.
+      { name: "README.md", content: "monorepo readme" },
+      { name: "packages/create-hq/src/index.ts", content: "export {};" },
     ]);
 
     // First fetch call = releases list
@@ -225,24 +232,29 @@ describe("fetchAndExtract", () => {
     // mkdir called for targetDir
     expect(mockMkdir).toHaveBeenCalledWith("/tmp/target", { recursive: true });
 
-    // writeFile called for each file in the archive
+    // template/ entries extracted with the prefix stripped
     const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths.some((p) => p.endsWith("src/index.ts"))).toBe(true);
-    expect(writePaths.some((p) => p.endsWith("package.json"))).toBe(true);
+    expect(writePaths).toContain("/tmp/target/core.yaml");
+    expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
 
-    // Correct content for package.json
-    const pkgCall = mockWriteFile.mock.calls.find((c) =>
-      c[0].endsWith("package.json"),
+    // Files outside template/ must NOT be extracted
+    expect(writePaths.every((p) => !p.endsWith("README.md"))).toBe(true);
+    expect(writePaths.every((p) => !p.includes("packages/create-hq"))).toBe(true);
+
+    // Correct content for core.yaml
+    const coreCall = mockWriteFile.mock.calls.find(
+      (c) => c[0] === "/tmp/target/core.yaml",
     );
-    expect(pkgCall).toBeDefined();
-    const pkgContent = new TextDecoder().decode(pkgCall![1]);
-    expect(pkgContent).toBe('{"name":"hq"}');
+    expect(coreCall).toBeDefined();
+    const coreContent = new TextDecoder().decode(coreCall![1]);
+    expect(coreContent).toBe("version: 10.2.0");
   });
 
   // -------------------------------------------------------------------------
   it("success with pinned tag: uses tags endpoint", async () => {
+    // Put the entry under template/ so it survives the subtree filter.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "README.md", content: "# HQ" },
+      { name: "template/README.md", content: "# HQ" },
     ]);
 
     mockFetch
@@ -260,6 +272,11 @@ describe("fetchAndExtract", () => {
     // The first fetch should use the tags endpoint
     const firstUrl = mockFetch.mock.calls[0][0] as string;
     expect(firstUrl).toContain("releases/tags/v0.9.0");
+
+    // The README lived under template/ in the tarball, so it should land at
+    // the root of targetDir (not at targetDir/template/README.md).
+    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+    expect(writePaths).toContain("/tmp/pinned/README.md");
   });
 
   // -------------------------------------------------------------------------
@@ -332,10 +349,15 @@ describe("fetchAndExtract", () => {
 
   // -------------------------------------------------------------------------
   it("path traversal: entries with '..' segments are silently skipped", async () => {
-    // Build a tar where one entry attempts to escape the target directory
+    // Build a tar with two kinds of malicious entries:
+    //  (a) A traversal that lives inside template/ — exercises safeJoin after
+    //      the template/ prefix has been stripped.
+    //  (b) A traversal that lives OUTSIDE template/ — dropped by the subtree
+    //      filter before it even reaches safeJoin. Both defenses matter.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "safe.txt", content: "safe" },
-      { name: "../../../etc/passwd", content: "root:x:0:0" },
+      { name: "template/safe.txt", content: "safe" },
+      { name: "template/../../etc/passwd", content: "root:x:0:0" }, // (a)
+      { name: "../../../etc/shadow", content: "denied" },           // (b)
     ]);
 
     mockFetch
@@ -350,16 +372,17 @@ describe("fetchAndExtract", () => {
 
     // Only the safe file should have been written
     const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths.some((p) => p.endsWith("safe.txt"))).toBe(true);
-    // The traversal path must never have been written
+    expect(writePaths).toContain("/tmp/target/safe.txt");
+    // Neither traversal path must ever have been written
     expect(writePaths.every((p) => !p.includes("passwd"))).toBe(true);
-    expect(writePaths.every((p) => !p.includes("etc"))).toBe(true);
+    expect(writePaths.every((p) => !p.includes("shadow"))).toBe(true);
+    expect(writePaths.every((p) => !p.includes("/etc/"))).toBe(true);
   });
 
   // -------------------------------------------------------------------------
   it("mid-stream cancellation: AbortSignal aborted during stream read throws non-retriable error", async () => {
     const tarGzBytes = buildGitHubTarGz([
-      { name: "big-file.ts", content: "x".repeat(1000) },
+      { name: "template/big-file.ts", content: "x".repeat(1000) },
     ]);
 
     const controller = new AbortController();
@@ -408,5 +431,88 @@ describe("fetchAndExtract", () => {
       expect((err as TemplateFetchError).message).toContain("cancel");
       return true;
     });
+  });
+
+  // -------------------------------------------------------------------------
+  it("fallback: empty releases list → fetches branch snapshot via /tarball/HEAD", async () => {
+    // Mirrors how `create-hq` copes with a repo that has no published
+    // releases yet. `/repos/{REPO}/releases` returns `[]` (200 OK with an
+    // empty array — NOT 404) and the fetcher falls back to
+    // `api.github.com/repos/{REPO}/tarball/HEAD` which 302s to codeload.
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "template/core.yaml", content: "version: HEAD" },
+    ]);
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [], // <-- no releases published yet
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    const result = await fetchAndExtract("/tmp/target");
+
+    // "HEAD" is how we signal "no tagged version" — matches `create-hq`'s
+    // contract for the same fallback path.
+    expect(result.version).toBe("HEAD");
+
+    // Second fetch must target the branch-snapshot endpoint.
+    const secondUrl = mockFetch.mock.calls[1][0] as string;
+    expect(secondUrl).toBe(
+      "https://api.github.com/repos/indigoai-us/hq/tarball/HEAD",
+    );
+
+    // Template entries still filtered correctly on the fallback path.
+    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+    expect(writePaths).toContain("/tmp/target/core.yaml");
+  });
+
+  // -------------------------------------------------------------------------
+  it("monorepo filter: drops everything outside template/", async () => {
+    // Isolated test for the subtree filter — no other behavior under test.
+    // This is the regression guard against "curl exit 56 → swap to fetcher
+    // → suddenly the whole monorepo lands in the user's install dir".
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "template/keep.txt", content: "kept" },
+      { name: "template/nested/deep.txt", content: "also kept" },
+      { name: "docs/architecture.md", content: "monorepo docs" },
+      { name: "packages/hq-cli/src/cli.ts", content: "cli code" },
+      { name: "apps/web/package.json", content: "{}" },
+      { name: ".github/workflows/ci.yml", content: "ci" },
+      { name: "README.md", content: "monorepo readme" },
+    ]);
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/target");
+
+    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+
+    // Kept:
+    expect(writePaths).toContain("/tmp/target/keep.txt");
+    expect(writePaths).toContain("/tmp/target/nested/deep.txt");
+
+    // Dropped: NONE of these paths should appear as extraction targets.
+    const droppedMarkers = [
+      "docs/",
+      "packages/",
+      "apps/",
+      ".github/",
+      "README.md",
+      "/template/", // the `template/` prefix itself must be stripped
+    ];
+    for (const marker of droppedMarkers) {
+      expect(
+        writePaths.every((p) => !p.includes(marker)),
+        `expected no write path to contain "${marker}", got: ${writePaths.join(", ")}`,
+      ).toBe(true);
+    }
   });
 });
