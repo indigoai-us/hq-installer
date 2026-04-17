@@ -78,13 +78,47 @@ pub struct InstallProgress {
 // check_dep
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Build a PATH string that includes macOS install prefixes a GUI-launched
+/// app does NOT inherit from the user's shell (brew, user-local installs,
+/// Claude Code, qmd). Without this, `which brew` fails even though the
+/// user has Homebrew installed, because LaunchServices-launched apps only
+/// get `/usr/bin:/bin:/usr/sbin:/sbin`.
+fn extended_search_path() -> String {
+    let mut dirs: Vec<String> = Vec::new();
+    if let Ok(existing) = std::env::var("PATH") {
+        if !existing.is_empty() {
+            dirs.push(existing);
+        }
+    }
+    // Standard macOS install locations that GUI app PATH misses.
+    let extras = [
+        "/opt/homebrew/bin",  // Apple Silicon Homebrew
+        "/opt/homebrew/sbin",
+        "/usr/local/bin", // Intel Homebrew + generic
+        "/usr/local/sbin",
+    ];
+    for e in extras {
+        dirs.push(e.to_string());
+    }
+    // User-local installs (~/.claude/bin, ~/.cargo/bin, ~/.local/bin, ~/bin).
+    if let Some(home) = dirs::home_dir() {
+        for rel in [".claude/bin", ".cargo/bin", ".local/bin", "bin"] {
+            let p = home.join(rel);
+            dirs.push(p.to_string_lossy().into_owned());
+        }
+    }
+    dirs.join(":")
+}
+
 /// Internal implementation shared by `check_dep` (uses real PATH) and
 /// `check_dep_in` (uses a caller-supplied search path — useful for tests).
 pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     // Locate the binary.
+    let cwd = std::env::current_dir().unwrap_or_default();
     let bin_path = match search_path {
-        Some(p) => which::which_in(tool, Some(p), std::env::current_dir().unwrap_or_default()),
-        None => which::which(tool),
+        Some(p) => which::which_in(tool, Some(p), cwd),
+        // GUI apps inherit a minimal PATH — extend with common install dirs.
+        None => which::which_in(tool, Some(extended_search_path()), cwd),
     };
 
     let bin_path = match bin_path {
@@ -279,7 +313,7 @@ pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
 /// Errors if Homebrew is not available.
 #[tauri::command]
 pub async fn install_node(app: AppHandle) -> Result<String, String> {
-    let brew = which::which("brew")
+    let brew = which::which_in("brew", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
         .map_err(|_| "Homebrew is not installed. Install Homebrew first.".to_string())?;
     run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "node"]).await
 }
@@ -291,7 +325,7 @@ pub async fn install_node(app: AppHandle) -> Result<String, String> {
 /// Install git via `brew install git`.
 #[tauri::command]
 pub async fn install_git(app: AppHandle) -> Result<String, String> {
-    let brew = which::which("brew")
+    let brew = which::which_in("brew", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
         .map_err(|_| "Homebrew is not installed. Install Homebrew first.".to_string())?;
     run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "git"]).await
 }
@@ -303,7 +337,7 @@ pub async fn install_git(app: AppHandle) -> Result<String, String> {
 /// Install the GitHub CLI via `brew install gh`.
 #[tauri::command]
 pub async fn install_gh(app: AppHandle) -> Result<String, String> {
-    let brew = which::which("brew")
+    let brew = which::which_in("brew", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
         .map_err(|_| "Homebrew is not installed. Install Homebrew first.".to_string())?;
     run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "gh"]).await
 }
@@ -317,7 +351,7 @@ pub async fn install_gh(app: AppHandle) -> Result<String, String> {
 /// Errors if npm is not available.
 #[tauri::command]
 pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
-    let npm = which::which("npm")
+    let npm = which::which_in("npm", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
         .map_err(|_| "npm is not installed. Install Node.js first.".to_string())?;
     run_streaming(
         &app,
@@ -336,7 +370,7 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
 /// Errors if npm is not available.
 #[tauri::command]
 pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
-    let npm = which::which("npm")
+    let npm = which::which_in("npm", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
         .map_err(|_| "npm is not installed. Install Node.js first.".to_string())?;
     run_streaming(
         &app,
