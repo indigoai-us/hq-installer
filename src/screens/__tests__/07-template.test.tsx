@@ -1,51 +1,101 @@
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TemplateFetch } from "../07-template.js";
 
 // ---------------------------------------------------------------------------
 // TemplateFetch screen tests (US-016)
+//
+// The screen calls `fetchAndExtract` from `@/lib/template-fetcher` — a pure
+// TS helper that goes through `@tauri-apps/plugin-http` and `plugin-fs`,
+// bypassing the old Rust `fetch_template` curl command entirely. These tests
+// mock the helper so we can drive progress and resolution from the test
+// body without touching the network or filesystem.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Tauri API mocks
-// ---------------------------------------------------------------------------
+interface FetchCall {
+  targetDir: string;
+  tag: string | undefined;
+  onProgress?: (event: { bytes: number; total: number }) => void;
+  signal?: AbortSignal;
+  resolve: (value: { version: string }) => void;
+  reject: (err: unknown) => void;
+}
 
-type EventCallback = (event: { payload: unknown }) => void;
-const listenCallbacks = new Map<string, EventCallback[]>();
+const fetchCalls: FetchCall[] = [];
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
-}));
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (event: string, handler: EventCallback) => {
-    if (!listenCallbacks.has(event)) {
-      listenCallbacks.set(event, []);
+// `vi.mock` factories are hoisted to the top of the file, so the factory
+// cannot reference outer identifiers. Everything it needs — the error class
+// and the fetchCalls push — is referenced through `globalThis` so the
+// hoisted factory can still reach it once the module body runs.
+//
+// `fetchCalls` is a top-level array in the module scope; the factory calls
+// a getter that reaches back into it at invocation time (not hoist time).
+vi.mock("@/lib/template-fetcher", () => {
+  class TemplateFetchErrorMock extends Error {
+    public readonly retriable: boolean;
+    public readonly cause?: unknown;
+    constructor(message: string, retriable: boolean, cause?: unknown) {
+      super(message);
+      this.name = "TemplateFetchError";
+      this.retriable = retriable;
+      this.cause = cause;
     }
-    listenCallbacks.get(event)!.push(handler);
-    return () => {
-      const handlers = listenCallbacks.get(event);
-      if (handlers) {
-        const idx = handlers.indexOf(handler);
-        if (idx !== -1) handlers.splice(idx, 1);
-      }
-    };
-  }),
-  emit: vi.fn().mockResolvedValue(undefined),
+  }
+  return {
+    TemplateFetchError: TemplateFetchErrorMock,
+    fetchAndExtract: vi.fn(
+      (
+        targetDir: string,
+        tag: string | undefined,
+        onProgress?: (event: { bytes: number; total: number }) => void,
+        signal?: AbortSignal,
+      ) => {
+        let resolve!: (value: { version: string }) => void;
+        let reject!: (err: unknown) => void;
+        const promise = new Promise<{ version: string }>((res, rej) => {
+          resolve = res;
+          reject = rej;
+        });
+        // Reach back to the module-scope array at call time (lazy).
+        (globalThis as { __fetchCalls?: FetchCall[] }).__fetchCalls!.push({
+          targetDir,
+          tag,
+          onProgress,
+          signal,
+          resolve,
+          reject,
+        });
+        return promise;
+      },
+    ),
+  };
+});
+
+// Mock the Tauri core `invoke` too so we can prove the component never falls
+// back to the legacy `fetch_template` command (guard against regression).
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async () => undefined),
 }));
 
-import { invoke } from "@tauri-apps/api/core";
-const mockInvoke = vi.mocked(invoke);
+// Bridge: expose fetchCalls via globalThis so the hoisted factory can reach it.
+(globalThis as { __fetchCalls?: FetchCall[] }).__fetchCalls = fetchCalls;
+
+// Import AFTER vi.mock so the component picks up the mocked helper.
+import { TemplateFetch } from "../07-template.js";
+import * as fetcher from "@/lib/template-fetcher";
+const mockFetchAndExtract = vi.mocked(fetcher.fetchAndExtract);
+// Grab the mocked error class so tests can construct rejections with it.
+const MockTemplateFetchError = fetcher.TemplateFetchError;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function fireEvent(event: string, payload: unknown) {
-  const handlers = listenCallbacks.get(event) ?? [];
-  for (const handler of handlers) {
-    handler({ payload });
+function latestCall(): FetchCall {
+  if (fetchCalls.length === 0) {
+    throw new Error("fetchAndExtract has not been called yet");
   }
+  return fetchCalls[fetchCalls.length - 1];
 }
 
 // ---------------------------------------------------------------------------
@@ -55,9 +105,7 @@ function fireEvent(event: string, payload: unknown) {
 describe("TemplateFetch screen (07-template.tsx)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    listenCallbacks.clear();
-    // Default: fetch_template resolves successfully.
-    mockInvoke.mockResolvedValue(undefined);
+    fetchCalls.length = 0;
   });
 
   // ── 1. Initial render shows loading/progress state ────────────────────────
@@ -67,78 +115,62 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
 
     await waitFor(() => {
       const text = document.body.textContent ?? "";
-      // Must show some indication of activity
       expect(
-        text.match(/download|fetch|progress|starting|loading/i) !== null ||
+        text.match(/download|fetch|progress|starting|loading|resolving/i) !== null ||
         document.querySelector("[role='progressbar']") !== null
       ).toBe(true);
     });
   });
 
-  it("calls fetch_template on mount", async () => {
+  it("calls fetchAndExtract on mount with the supplied targetDir", async () => {
     render(<TemplateFetch targetDir="/tmp/hq" />);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith(
-        "fetch_template",
-        expect.objectContaining({ targetDir: "/tmp/hq" })
-      );
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
+    expect(latestCall().targetDir).toBe("/tmp/hq");
+    // tag is undefined → fetcher picks the latest non-prerelease release.
+    expect(latestCall().tag).toBeUndefined();
   });
 
-  it("registers a listener for template:progress on mount", async () => {
-    const { listen } = await import("@tauri-apps/api/event");
-    const mockListen = vi.mocked(listen);
-
+  it("passes an AbortSignal to fetchAndExtract so unmount can cancel", async () => {
     render(<TemplateFetch targetDir="/tmp/hq" />);
-
     await waitFor(() => {
-      const registered = mockListen.mock.calls.some(
-        ([event]) => event === "template:progress"
-      );
-      expect(registered).toBe(true);
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
+    expect(latestCall().signal).toBeInstanceOf(AbortSignal);
   });
 
-  // ── 2. Progress events update the display ─────────────────────────────────
+  // ── 2. Progress callback updates the display ─────────────────────────────
 
-  it("updates progress display when template:progress events arrive", async () => {
+  it("updates the progress display when onProgress is invoked", async () => {
     render(<TemplateFetch targetDir="/tmp/hq" />);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
 
     act(() => {
-      fireEvent("template:progress", {
-        downloaded: 512 * 1024,
-        total: 2 * 1024 * 1024,
-        done: false,
-      });
+      latestCall().onProgress?.({ bytes: 512 * 1024, total: 2 * 1024 * 1024 });
     });
 
     await waitFor(() => {
       const text = document.body.textContent ?? "";
-      // Should show some kind of size/progress info
       expect(text.match(/\d+(\.\d+)?\s*(kb|mb|b)/i) !== null).toBe(true);
     });
   });
 
   // ── 3. On done, Continue button appears ───────────────────────────────────
 
-  it("shows a Continue button when template:progress done:true is received", async () => {
+  it("shows a Continue button when fetchAndExtract resolves", async () => {
     render(<TemplateFetch targetDir="/tmp/hq" onNext={vi.fn()} />);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
 
-    act(() => {
-      fireEvent("template:progress", {
-        downloaded: 1024,
-        total: 1024,
-        done: true,
-      });
+    await act(async () => {
+      latestCall().resolve({ version: "v1.2.3" });
     });
 
     await waitFor(() => {
@@ -155,11 +187,11 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     render(<TemplateFetch targetDir="/tmp/hq" onNext={onNext} />);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
 
-    act(() => {
-      fireEvent("template:progress", { downloaded: 1024, total: 1024, done: true });
+    await act(async () => {
+      latestCall().resolve({ version: "v1.2.3" });
     });
 
     await waitFor(() => {
@@ -177,22 +209,17 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     expect(onNext).toHaveBeenCalledTimes(1);
   });
 
-  // ── 4. On error, Retry button appears ────────────────────────────────────
+  // ── 4. On error, Retry + View log buttons appear ─────────────────────────
 
-  it("shows a Retry button when template:progress has an error", async () => {
+  it("shows a Retry button when fetchAndExtract rejects", async () => {
     render(<TemplateFetch targetDir="/tmp/hq" />);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
 
-    act(() => {
-      fireEvent("template:progress", {
-        downloaded: 0,
-        total: null,
-        done: true,
-        error: "Network error",
-      });
+    await act(async () => {
+      latestCall().reject(new MockTemplateFetchError("Network error", true));
     });
 
     await waitFor(() => {
@@ -207,16 +234,11 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     render(<TemplateFetch targetDir="/tmp/hq" />);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
 
-    act(() => {
-      fireEvent("template:progress", {
-        downloaded: 0,
-        total: null,
-        done: true,
-        error: "Network error",
-      });
+    await act(async () => {
+      latestCall().reject(new MockTemplateFetchError("Network error", true));
     });
 
     await waitFor(() => {
@@ -227,23 +249,18 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     });
   });
 
-  // ── 5. Retry re-invokes fetch_template ────────────────────────────────────
+  // ── 5. Retry re-invokes fetchAndExtract ──────────────────────────────────
 
-  it("clicking Retry re-invokes fetch_template", async () => {
+  it("clicking Retry re-invokes fetchAndExtract", async () => {
     const user = userEvent.setup();
     render(<TemplateFetch targetDir="/tmp/hq" />);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalledTimes(1);
     });
 
-    act(() => {
-      fireEvent("template:progress", {
-        downloaded: 0,
-        total: null,
-        done: true,
-        error: "Network error",
-      });
+    await act(async () => {
+      latestCall().reject(new MockTemplateFetchError("Network error", true));
     });
 
     await waitFor(() => {
@@ -259,8 +276,7 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     await user.click(retryBtn!);
 
     await waitFor(() => {
-      const fetchCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "fetch_template");
-      expect(fetchCalls.length).toBeGreaterThanOrEqual(2);
+      expect(mockFetchAndExtract.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
   });
 
@@ -269,7 +285,7 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
   it("does NOT use 'purple' class names in the DOM", async () => {
     render(<TemplateFetch targetDir="/tmp/hq" />);
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
     expect(document.body.innerHTML).not.toMatch(/\bpurple\b/);
   });
@@ -277,14 +293,29 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
   it("does NOT use 'indigo' class names in the DOM", async () => {
     render(<TemplateFetch targetDir="/tmp/hq" />);
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("fetch_template", expect.anything());
+      expect(mockFetchAndExtract).toHaveBeenCalled();
     });
     expect(document.body.innerHTML).not.toMatch(/\bindigo\b/);
   });
 
-  // ── 7. Tauri environment compatibility ────────────────────────────────────
+  // ── 7. Does NOT call the legacy Rust fetch_template command ──────────────
 
-  it("renders cleanly when Tauri APIs are mocked", () => {
+  it("never invokes the legacy Rust fetch_template command", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockInvoke = vi.mocked(invoke);
+    render(<TemplateFetch targetDir="/tmp/hq" />);
+    await waitFor(() => {
+      expect(mockFetchAndExtract).toHaveBeenCalled();
+    });
+    const fetchTemplateCalls = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "fetch_template"
+    );
+    expect(fetchTemplateCalls).toHaveLength(0);
+  });
+
+  // ── 8. Renders cleanly ────────────────────────────────────────────────────
+
+  it("renders cleanly when the fetcher is mocked", () => {
     expect(() => {
       render(<TemplateFetch targetDir="/tmp/hq" />);
     }).not.toThrow();

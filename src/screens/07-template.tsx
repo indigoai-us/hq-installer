@@ -1,20 +1,23 @@
 // 07-template.tsx — US-016
 // Template fetch screen — downloads and extracts the HQ template tarball.
+//
+// Transport: `fetchAndExtract()` from `@/lib/template-fetcher`. That helper
+// resolves the latest non-prerelease release on `indigoai-us/hq` via the
+// GitHub Release API, streams the tarball through `@tauri-apps/plugin-http`
+// (which bypasses CORS via the Rust reqwest client), gunzips + parses tar
+// in-memory, and writes each entry with `@tauri-apps/plugin-fs`. No shell
+// curl; no event bus; progress flows in-process via an onProgress callback.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import {
+  fetchAndExtract,
+  TemplateFetchError,
+  type ProgressEvent as TemplateProgressEvent,
+} from "@/lib/template-fetcher";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface TemplateProgress {
-  downloaded: number;
-  total: number | null;
-  done: boolean;
-  error?: string;
-}
 
 type FetchStatus = "idle" | "fetching" | "done" | "error";
 
@@ -38,77 +41,71 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
 
-  // Prevent double-starts in strict mode.
+  // Prevent double-starts in strict mode, and allow in-flight cancellation.
   const fetchingRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const startFetch = useCallback(async () => {
     if (fetchingRef.current) return;
     fetchingRef.current = true;
 
+    // Abort any stale in-flight fetch (unlikely but cheap insurance).
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setStatus("fetching");
     setDownloaded(0);
     setTotal(null);
     setErrorMsg(null);
-    setLogLines([]);
+    setLogLines(["Resolving latest release…"]);
+
+    const handleProgress = (event: TemplateProgressEvent) => {
+      setDownloaded(event.bytes);
+      if (event.total > 0) setTotal(event.total);
+    };
 
     try {
-      await invoke("fetch_template", {
-        url: "https://github.com/coreyepstein/hq/archive/refs/heads/main.tar.gz",
+      const { version } = await fetchAndExtract(
         targetDir,
-      });
-      // fetch_template runs in a background thread and emits events.
-      // The done/error state is driven by template:progress events below.
+        undefined, // latest non-prerelease
+        handleProgress,
+        controller.signal,
+      );
+      setStatus("done");
+      setLogLines((prev) => [
+        ...prev,
+        `Downloaded release ${version}.`,
+        "Template extracted successfully.",
+      ]);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      // Swallow cancellation (intentional unmount / retry) rather than
+      // surfacing it as a user-facing error.
+      if (controller.signal.aborted) {
+        return;
+      }
+      const msg =
+        err instanceof TemplateFetchError
+          ? err.message
+          : err instanceof Error
+          ? err.message
+          : String(err);
       setStatus("error");
       setErrorMsg(msg);
       setLogLines((prev) => [...prev, `Error: ${msg}`]);
+    } finally {
       fetchingRef.current = false;
     }
   }, [targetDir]);
 
   useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
-
-    const listenerPromise = listen(
-      "template:progress",
-      (event: { payload: unknown }) => {
-        const payload = event.payload as TemplateProgress;
-
-        if (payload.downloaded !== undefined && payload.downloaded > 0) {
-          setDownloaded(payload.downloaded);
-        }
-        if (payload.total !== null && payload.total !== undefined) {
-          setTotal(payload.total);
-        }
-
-        if (payload.done) {
-          if (payload.error) {
-            setStatus("error");
-            setErrorMsg(payload.error);
-            setLogLines((prev) => [...prev, `Error: ${payload.error}`]);
-          } else {
-            setStatus("done");
-            setLogLines((prev) => [...prev, "Template extracted successfully."]);
-          }
-          fetchingRef.current = false;
-        } else if (!payload.error) {
-          // In-progress tick
-          setLogLines((prev) => [
-            ...prev,
-            `Downloading… ${formatBytes(payload.downloaded)}`,
-          ]);
-        }
-      }
-    ).then((unlisten) => {
-      unlistenFn = unlisten as () => void;
-    });
-
     // Auto-start on mount.
     startFetch();
 
     return () => {
-      listenerPromise.then(() => unlistenFn?.());
+      // Cancel in-flight fetch on unmount so we don't leak bytes or writes.
+      abortRef.current?.abort();
+      fetchingRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
