@@ -3,10 +3,12 @@
 // Native folder picker + HQ marker detection.
 //
 // `pick_directory` opens an NSOpenPanel via tauri-plugin-dialog and returns
-// the selected absolute path (or null on cancel). It runs as a sync Tauri
-// command so the dialog plugin's `blocking_pick_folder` can dispatch to the
-// macOS main thread internally — Tauri executes sync commands on a worker
-// thread, so we don't deadlock the JS bridge.
+// the selected absolute path (or null on cancel). It is an ASYNC Tauri
+// command that drives the non-blocking `pick_folder(callback)` API and
+// bridges the result via a oneshot channel. This is the macOS-safe pattern:
+// `blocking_pick_folder` on macOS requires the AppKit main thread, and when
+// called from a sync command worker thread it deadlocks — particularly after
+// the user moves focus away from the app window.
 //
 // `detect_hq` returns whether the supplied path exists and whether it looks
 // like an HQ install. The marker check is intentionally loose: the presence
@@ -19,6 +21,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
+use tokio::sync::oneshot;
 
 /// Expand a leading `~/` or bare `~` into `$HOME`. Falls back to the literal
 /// string if `$HOME` is not set, which on macOS effectively never happens.
@@ -37,7 +40,7 @@ fn expand_tilde(s: &str) -> PathBuf {
 }
 
 #[tauri::command]
-pub fn pick_directory(
+pub async fn pick_directory(
     app: AppHandle,
     default_path: Option<String>,
 ) -> Result<Option<String>, String> {
@@ -53,12 +56,22 @@ pub fn pick_directory(
         }
     }
 
-    match builder.blocking_pick_folder() {
-        Some(fp) => fp
+    // Non-blocking `pick_folder` hands the result to the supplied callback
+    // on the plugin's main-thread dispatcher. We forward it through a
+    // oneshot channel so this async command can await it without ever
+    // blocking a worker thread on AppKit.
+    let (tx, rx) = oneshot::channel();
+    builder.pick_folder(move |file_path| {
+        let _ = tx.send(file_path);
+    });
+
+    match rx.await {
+        Ok(Some(fp)) => fp
             .into_path()
             .map(|p| Some(p.to_string_lossy().into_owned()))
             .map_err(|e| format!("invalid path returned from dialog: {e}")),
-        None => Ok(None),
+        Ok(None) => Ok(None),
+        Err(_) => Err("dialog channel closed before a result was delivered".to_string()),
     }
 }
 
