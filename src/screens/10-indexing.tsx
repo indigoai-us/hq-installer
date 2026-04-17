@@ -111,6 +111,16 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
       }
     );
 
+    // Listen for stderr — qmd writes errors like "VOYAGE_AI_API_KEY not set"
+    // to stderr, and we want those visible in the log panel.
+    const stderrUnlisten = await listen(
+      `process://${handle}/stderr`,
+      (event: { payload: unknown }) => {
+        const payload = event.payload as { line: string };
+        appendLog(stepIdx, `[stderr] ${payload.line ?? ""}`);
+      }
+    );
+
     // Wait for the exit event via a regular (non-async) Promise executor.
     return new Promise<boolean>((resolve) => {
       listen(
@@ -126,12 +136,14 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
             setFailedStep(stepIdx);
             resolve(false);
           }
-          // Clean up stdout listener immediately; exit listener self-cleans below.
+          // Clean up stream listeners immediately; exit listener self-cleans below.
           (stdoutUnlisten as () => void)();
+          (stderrUnlisten as () => void)();
         }
       ).then((exitUnlisten) => {
         unlistenRefs.current.push(
           stdoutUnlisten as () => void,
+          stderrUnlisten as () => void,
           exitUnlisten as () => void
         );
       });
@@ -246,6 +258,17 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
             >
               View log
             </button>
+            {/* Skip is safe here: the first step (index) succeeded in most
+                failures — only embeddings (optional, used for vsearch) are
+                missing. Semantic search still falls back to BM25 via
+                `qmd search`, so HQ remains usable without embeddings. */}
+            <button
+              type="button"
+              onClick={onNext}
+              className="px-6 py-2.5 rounded-full text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors"
+            >
+              Skip
+            </button>
           </>
         )}
 
@@ -295,7 +318,9 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
             <span className="text-xs text-red-400">Failed</span>
           )}
 
-          {step.logLines.length > 0 && (
+          {/* Log toggle visible once the step has started — critical for
+              error debugging when stdout is empty but stderr has the reason. */}
+          {step.status !== "idle" && (
             <button
               type="button"
               onClick={onToggleExpanded}
@@ -307,14 +332,16 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
         </div>
       </div>
 
-      {step.expanded && step.logLines.length > 0 && (
+      {step.expanded && (
         <div
           data-log-panel
           className="text-xs font-mono text-zinc-500 bg-black/20 rounded-lg px-3 py-2 max-h-32 overflow-y-auto"
         >
-          {step.logLines.map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
+          {step.logLines.length === 0 ? (
+            <div className="text-zinc-600 italic">(no output)</div>
+          ) : (
+            step.logLines.map((line, i) => <div key={i}>{line}</div>)
+          )}
         </div>
       )}
 

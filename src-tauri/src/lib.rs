@@ -39,6 +39,7 @@ pub fn run() {
             commands::template::fetch_template,
             commands::fs::write_file,
             commands::fs::home_dir,
+            commands::launch::launch_claude_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

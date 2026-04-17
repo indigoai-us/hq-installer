@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { invoke } from "@tauri-apps/api/core";
 import { fetch } from "@tauri-apps/plugin-http";
+import { TauriHttpHandler } from "./tauri-http-handler";
 
 interface StsVendResponse {
   credentials: {
@@ -90,6 +91,11 @@ export async function syncFromS3(
   installPath: string,
   onProgress?: SyncProgressCallback
 ): Promise<{ fileCount: number; totalBytes: number }> {
+  // NOTE: requestHandler override is critical.
+  // The SDK's default FetchHttpHandler uses WebKit's native fetch, which is
+  // subject to CORS and fails with a generic "Load failed" when S3 doesn't
+  // return CORS headers for Tauri's origin. TauriHttpHandler routes the
+  // request through plugin-http (Rust process), bypassing CORS entirely.
   const client = new S3Client({
     region: "us-east-1",
     credentials: {
@@ -97,15 +103,23 @@ export async function syncFromS3(
       secretAccessKey: creds.secretAccessKey,
       sessionToken: creds.sessionToken,
     },
+    requestHandler: new TauriHttpHandler(),
   });
 
   // List all objects under the company prefix
-  const listRes = await client.send(
-    new ListObjectsV2Command({
-      Bucket: creds.bucketName,
-      // List all objects in the company bucket (no prefix — bucket is per-company)
-    })
-  );
+  let listRes;
+  try {
+    listRes = await client.send(
+      new ListObjectsV2Command({
+        Bucket: creds.bucketName,
+        // List all objects in the company bucket (no prefix — bucket is per-company)
+      })
+    );
+  } catch (err) {
+    // Surface the underlying SDK error detail instead of "Load failed".
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`S3 ListObjectsV2 failed: ${msg}`);
+  }
 
   const objects = (listRes.Contents ?? []).filter(
     (obj) => obj.Key && obj.Size && obj.Size > 0
@@ -135,9 +149,15 @@ export async function syncFromS3(
     progress.currentFile = relativePath;
     onProgress?.(progress);
 
-    const getRes = await client.send(
-      new GetObjectCommand({ Bucket: creds.bucketName, Key: key })
-    );
+    let getRes;
+    try {
+      getRes = await client.send(
+        new GetObjectCommand({ Bucket: creds.bucketName, Key: key })
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`S3 GetObject failed for '${key}': ${msg}`);
+    }
 
     if (getRes.Body) {
       // Read body as bytes and write via Tauri

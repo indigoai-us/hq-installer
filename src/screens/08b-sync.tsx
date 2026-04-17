@@ -184,8 +184,7 @@ export function SyncScreen({ onNext }: SyncScreenProps) {
           {error}
         </div>
         <p className="text-xs text-zinc-500 text-center">
-          You can retry now or skip and sync later with{" "}
-          <code className="text-zinc-400">hq sync pull</code>.
+          Retry now, or skip for now — you can sync again from the HQ app later.
         </p>
         <div className="flex gap-3">
           <button

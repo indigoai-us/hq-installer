@@ -26,6 +26,9 @@ mod process_tests {
             ProcessEvent::Stdout(line) => {
                 lines_ref.lock().unwrap().push(line);
             }
+            ProcessEvent::Stderr(_) => {
+                // Tests in this helper only assert on stdout; discard stderr.
+            }
             ProcessEvent::Exit { code, success } => {
                 *exit_ref.lock().unwrap() = Some((code, success));
             }

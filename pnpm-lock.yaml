@@ -26,6 +26,9 @@ importers:
       '@fontsource-variable/geist':
         specifier: ^5.2.8
         version: 5.2.8
+      '@smithy/fetch-http-handler':
+        specifier: ^5.3.16
+        version: 5.3.16
       '@tauri-apps/api':
         specifier: ^2
         version: 2.10.1

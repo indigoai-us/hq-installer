@@ -205,6 +205,17 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
       }
     );
 
+    // Listen for stderr lines — tag them so they stand out in the log panel.
+    // Stderr is where shell script failures (bad path, missing binary,
+    // permission denied) surface their real reason.
+    const stderrUnlisten = await listen(
+      `process://${handle}/stderr`,
+      (event: { payload: unknown }) => {
+        const payload = event.payload as { line: string };
+        appendLog(stepIdx, `[stderr] ${payload.line ?? ""}`);
+      }
+    );
+
     // Wait for the exit event via a regular (non-async) Promise executor.
     return new Promise<boolean>((resolve) => {
       listen(
@@ -220,12 +231,14 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
             setFailedStep(stepIdx);
             resolve(false);
           }
-          // Clean up stdout listener immediately; exit listener self-cleans below.
+          // Clean up stream listeners immediately; exit listener self-cleans below.
           (stdoutUnlisten as () => void)();
+          (stderrUnlisten as () => void)();
         }
       ).then((exitUnlisten) => {
         unlistenRefs.current.push(
           stdoutUnlisten as () => void,
+          stderrUnlisten as () => void,
           exitUnlisten as () => void
         );
       });
@@ -381,7 +394,10 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
             <span className="text-xs text-red-400">Failed</span>
           )}
 
-          {step.logLines.length > 0 && (
+          {/* Log toggle is visible once the step has started (running/done/error),
+              not only when there's output — empty stdout on a failing step is
+              exactly the case where users need a visible panel to see stderr. */}
+          {step.status !== "idle" && (
             <button
               type="button"
               onClick={onToggleExpanded}
@@ -393,14 +409,16 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
         </div>
       </div>
 
-      {step.expanded && step.logLines.length > 0 && (
+      {step.expanded && (
         <div
           data-log-panel
           className="text-xs font-mono text-zinc-500 bg-black/20 rounded-lg px-3 py-2 max-h-32 overflow-y-auto"
         >
-          {step.logLines.map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
+          {step.logLines.length === 0 ? (
+            <div className="text-zinc-600 italic">(no output)</div>
+          ) : (
+            step.logLines.map((line, i) => <div key={i}>{line}</div>)
+          )}
         </div>
       )}
 

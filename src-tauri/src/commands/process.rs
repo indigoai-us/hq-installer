@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -35,6 +36,12 @@ pub struct SpawnArgs {
 /// Payload for `process://{handle}/stdout` events.
 #[derive(Debug, Serialize, Clone)]
 pub struct StdoutEvent {
+    pub line: String,
+}
+
+/// Payload for `process://{handle}/stderr` events.
+#[derive(Debug, Serialize, Clone)]
+pub struct StderrEvent {
     pub line: String,
 }
 
@@ -137,6 +144,7 @@ fn mark_cancelled(handle: &str) -> bool {
 /// Events emitted during process execution.
 pub enum ProcessEvent {
     Stdout(String),
+    Stderr(String),
     Exit { code: Option<i32>, success: bool },
 }
 
@@ -145,22 +153,26 @@ pub enum ProcessEvent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Spawn the process described by `spawn`, update its registry entry with the
-/// OS pid, stream stdout lines to `on_event`, then emit the exit event.
-/// Blocks until the process exits.
+/// OS pid, stream stdout + stderr lines to `on_event`, then emit the exit
+/// event.  Blocks until the process exits.
 ///
 /// The child is placed in its own process group so that cancellation can
 /// signal the whole group (covers wrappers like `sh -c` or `npm run`).
 ///
+/// stdout and stderr are each read on their own thread so one blocking on
+/// the other never deadlocks (e.g. a chatty stderr filling a pipe while
+/// stdout is idle).
+///
 /// All error paths reap the child and deregister the handle so no stale
 /// registry entries or zombie processes are left behind.
-pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, mut on_event: F) -> Result<(), String>
+pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Result<(), String>
 where
     F: FnMut(ProcessEvent),
 {
     let mut cmd = Command::new(&spawn.cmd);
     cmd.args(&spawn.args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         // Place the child in its own process group (pgid == child pid).
         // This lets cancel_process signal the whole group, not just the leader.
         .process_group(0);
@@ -182,25 +194,90 @@ where
     register_process(handle, pid);
 
     let stdout = child.stdout.take().expect("stdout pipe");
-    let mut stdout_err: Option<String> = None;
-    for line_result in BufReader::new(stdout).lines() {
-        match line_result {
-            Ok(line) => on_event(ProcessEvent::Stdout(line)),
-            Err(e) => {
-                // Non-UTF-8 or I/O error — record and stop reading, but still
-                // reap the child below.
-                stdout_err = Some(e.to_string());
-                break;
+    let stderr = child.stderr.take().expect("stderr pipe");
+
+    // mpsc channel: reader threads produce events, main thread consumes and
+    // forwards to on_event in real time. Using a channel keeps on_event on
+    // the caller's thread (so F doesn't need Send) while stream I/O still
+    // runs in parallel.
+    enum ReaderMsg {
+        Event(ProcessEvent),
+        /// Reader finished (either EOF or fatal read error).
+        Done { stream: &'static str, err: Option<String> },
+    }
+
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+
+    // stdout reader
+    let tx_stdout = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stdout).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stdout.send(ReaderMsg::Event(ProcessEvent::Stdout(line))).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stdout.send(ReaderMsg::Done { stream: "stdout", err });
+    });
+
+    // stderr reader
+    let tx_stderr = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stderr).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stderr.send(ReaderMsg::Event(ProcessEvent::Stderr(line))).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stderr.send(ReaderMsg::Done { stream: "stderr", err });
+    });
+
+    // Drop the original sender so the rx loop terminates once both readers
+    // have dropped their clones.
+    drop(tx);
+
+    let mut on_event_mut = on_event;
+    let mut first_stream_err: Option<String> = None;
+    let mut done_count = 0;
+
+    for msg in rx {
+        match msg {
+            ReaderMsg::Event(ev) => on_event_mut(ev),
+            ReaderMsg::Done { stream, err } => {
+                if let Some(e) = err {
+                    if first_stream_err.is_none() {
+                        first_stream_err = Some(format!("{}: {}", stream, e));
+                    }
+                }
+                done_count += 1;
+                if done_count == 2 {
+                    break;
+                }
             }
         }
     }
 
-    // Always reap and deregister, even when stdout produced an error.
     let wait_result = child.wait().map_err(|e| e.to_string());
     deregister_process(handle);
 
-    if let Some(err) = stdout_err {
-        on_event(ProcessEvent::Exit {
+    if let Some(err) = first_stream_err {
+        on_event_mut(ProcessEvent::Exit {
             code: None,
             success: false,
         });
@@ -208,7 +285,7 @@ where
     }
 
     let status = wait_result?;
-    on_event(ProcessEvent::Exit {
+    on_event_mut(ProcessEvent::Exit {
         code: status.code(),
         success: status.success(),
     });
@@ -294,6 +371,12 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
                 let _ = app.emit(
                     &format!("process://{}/stdout", handle_bg),
                     StdoutEvent { line },
+                );
+            }
+            ProcessEvent::Stderr(line) => {
+                let _ = app.emit(
+                    &format!("process://{}/stderr", handle_bg),
+                    StderrEvent { line },
                 );
             }
             ProcessEvent::Exit { code, success } => {

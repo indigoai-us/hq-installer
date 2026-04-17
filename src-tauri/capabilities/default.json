@@ -23,6 +23,9 @@
         { "url": "https://api.github.com/*" },
         { "url": "https://codeload.github.com/*" },
         { "url": "https://*.amazonaws.com/*" },
+        { "url": "https://*.s3.amazonaws.com/*" },
+        { "url": "https://*.s3.us-east-1.amazonaws.com/*" },
+        { "url": "https://s3.us-east-1.amazonaws.com/*" },
         { "url": "https://telemetry.getindigo.ai/*" }
       ]
     },
@@ -37,6 +40,20 @@
     {
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$RESOURCE/templates/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "$RESOURCE/templates/**" },
+        { "path": "$HOME/**" }
+      ]
     }
   ]
 }

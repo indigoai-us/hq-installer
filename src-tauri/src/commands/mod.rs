@@ -3,6 +3,7 @@ pub mod directory;
 pub mod fs;
 pub mod git;
 pub mod keychain;
+pub mod launch;
 pub mod oauth;
 pub mod process;
 pub mod template;

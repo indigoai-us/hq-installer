@@ -5,6 +5,7 @@ src-tauri/target/
 node_modules/
 dist/
 .pnpm-store/
+tsconfig.tsbuildinfo
 
 # Env
 .env
