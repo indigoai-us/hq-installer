@@ -63,13 +63,22 @@ function fireListenEvent(event: string, payload: unknown) {
 const ALL_TOOLS = ["homebrew", "xcode-clt", "node", "git", "gh", "claude-code", "qmd"] as const;
 type Tool = typeof ALL_TOOLS[number];
 
+/** Binary name used by the Rust `check_dep` command, keyed by UI id.
+ *  When a binary name differs from the id, the frontend passes the binary.
+ *  Tests express overrides in terms of UI ids for readability. */
+const BINARY_TO_ID: Record<string, Tool> = {
+  brew: "homebrew",
+  claude: "claude-code",
+};
+
 /** Build a default invoke mock that marks all tools as installed */
 function buildInvokeMock(overrides: Partial<Record<Tool, { installed: boolean }>> = {}) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return vi.fn(async (command: string, args?: any): Promise<any> => {
     if (command === "check_dep") {
-      const tool = (args as { tool?: string })?.tool as Tool;
-      const override = overrides[tool];
+      const binary = (args as { tool?: string })?.tool as string;
+      const id = (BINARY_TO_ID[binary] ?? binary) as Tool;
+      const override = overrides[id];
       return override ?? { installed: true };
     }
     if (command === "xcode_clt_status") {
@@ -93,11 +102,16 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
   // -------------------------------------------------------------------------
   describe("on-mount dep checks", () => {
-    it("calls check_dep for 'homebrew' on mount", async () => {
+    it("calls check_dep with binary name 'brew' (not UI id 'homebrew') on mount", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "homebrew" });
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "brew" });
       });
+      // Must NOT call check_dep with the UI slug — that's the bug fixed here.
+      const calledWithSlug = mockInvoke.mock.calls.some(
+        ([cmd, args]) => cmd === "check_dep" && (args as Record<string,string>)?.tool === "homebrew"
+      );
+      expect(calledWithSlug).toBe(false);
     });
 
     it("calls xcode_clt_status (not check_dep) for xcode-clt on mount", async () => {
@@ -133,11 +147,16 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
-    it("calls check_dep for 'claude-code' on mount", async () => {
+    it("calls check_dep with binary name 'claude' (not UI id 'claude-code') on mount", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "claude-code" });
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "claude" });
       });
+      // Must NOT call check_dep with the UI slug — that's the bug fixed here.
+      const calledWithSlug = mockInvoke.mock.calls.some(
+        ([cmd, args]) => cmd === "check_dep" && (args as Record<string,string>)?.tool === "claude-code"
+      );
+      expect(calledWithSlug).toBe(false);
     });
 
     it("calls check_dep for 'qmd' on mount", async () => {
@@ -227,7 +246,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
         // All dep checks have resolved
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "homebrew" });
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "brew" });
       });
       // No install buttons expected
       const installBtns = screen.queryAllByRole("button", { name: /^install/i });
@@ -240,7 +259,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       let callCount = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
-        if (command === "check_dep" && (args as { tool?: string })?.tool === "homebrew") {
+        if (command === "check_dep" && (args as { tool?: string })?.tool === "brew") {
           callCount++;
           // First call: missing; after install, mark installed
           return callCount === 1 ? { installed: false } : { installed: true };
@@ -324,7 +343,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       const user = userEvent.setup();
       mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string, args?: any): Promise<any> => {
-        if (command === "check_dep" && args?.tool === "homebrew") return { installed: false };
+        if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "xcode_clt_status") return { installed: true };
         if (command === "check_dep") return { installed: true };
         // Install command hangs (never resolves) so progress events can arrive first
@@ -359,7 +378,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       const user = userEvent.setup();
       mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string, args?: any): Promise<any> => {
-        if (command === "check_dep" && args?.tool === "homebrew") return { installed: false };
+        if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "xcode_clt_status") return { installed: true };
         if (command === "check_dep") return { installed: true };
         return new Promise(() => {});
@@ -409,7 +428,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       const user = userEvent.setup();
       mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string, args?: any): Promise<any> => {
-        if (command === "check_dep" && args?.tool === "homebrew") return { installed: false };
+        if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "xcode_clt_status") return { installed: true };
         if (command === "check_dep") return { installed: true };
         // Any install command rejects
@@ -436,7 +455,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       const user = userEvent.setup();
       mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string, args?: any): Promise<any> => {
-        if (command === "check_dep" && args?.tool === "homebrew") return { installed: false };
+        if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "xcode_clt_status") return { installed: true };
         if (command === "check_dep") return { installed: true };
         throw new Error("install failed");
@@ -464,7 +483,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       const user = userEvent.setup();
       mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string, args?: any): Promise<any> => {
-        if (command === "check_dep" && args?.tool === "homebrew") return { installed: false };
+        if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "xcode_clt_status") return { installed: true };
         if (command === "check_dep") return { installed: true };
         throw new Error("install failed");
@@ -505,7 +524,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       let installAttempts = 0;
       mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string, args?: any): Promise<any> => {
-        if (command === "check_dep" && args?.tool === "homebrew") return { installed: false };
+        if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "xcode_clt_status") return { installed: true };
         if (command === "check_dep") return { installed: true };
         installAttempts++;
@@ -586,7 +605,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
       await waitFor(() => {
         // Check that the dep check has run
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "homebrew" });
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "brew" });
       });
 
       const continueBtn =
@@ -687,7 +706,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
     it("does NOT use 'purple' class names in the DOM", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "homebrew" });
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "brew" });
       });
       expect(document.body.innerHTML).not.toMatch(/\bpurple\b/);
     });
@@ -695,7 +714,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
     it("does NOT use 'indigo' class names in the DOM", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "homebrew" });
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "brew" });
       });
       expect(document.body.innerHTML).not.toMatch(/\bindigo\b/);
     });

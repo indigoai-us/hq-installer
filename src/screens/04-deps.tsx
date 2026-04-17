@@ -16,6 +16,8 @@ interface DepDef {
   installCmd: string;
   installUrl: string;
   useXcodeCheck: boolean;
+  /** CLI binary name for `which` lookup. Defaults to `id` when omitted. */
+  binary?: string;
 }
 
 const DEPS: DepDef[] = [
@@ -25,6 +27,7 @@ const DEPS: DepDef[] = [
     installCmd: "install_homebrew",
     installUrl: "https://brew.sh",
     useXcodeCheck: false,
+    binary: "brew",
   },
   {
     id: "xcode-clt",
@@ -60,6 +63,7 @@ const DEPS: DepDef[] = [
     installCmd: "install_claude_code",
     installUrl: "https://docs.anthropic.com/en/claude-code",
     useXcodeCheck: false,
+    binary: "claude",
   },
   {
     id: "qmd",
@@ -156,7 +160,7 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
               installed = parseXcodeInstalled(result);
             } else {
               const result = await invoke<{ installed: boolean }>("check_dep", {
-                tool: dep.id,
+                tool: dep.binary ?? dep.id,
               });
               installed = result.installed;
             }
@@ -242,7 +246,7 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
       }
       // For regular deps the install command is synchronous — re-check after.
       const result = await invoke<{ installed: boolean }>("check_dep", {
-        tool: dep.id,
+        tool: dep.binary ?? dep.id,
       });
       updateTool(dep.id, { status: result.installed ? "installed" : "missing" });
     } catch (err) {
