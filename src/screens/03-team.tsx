@@ -4,7 +4,7 @@
 // during web onboarding — the installer just needs to find and confirm it.
 
 import { useState, useEffect } from "react";
-import { setTeam } from "@/lib/wizard-state";
+import { setTeam, setIsPersonal } from "@/lib/wizard-state";
 import { getCurrentUser, signOut } from "@/lib/cognito";
 import { resolveUserCompany } from "@/lib/vault-handoff";
 
@@ -135,25 +135,46 @@ export function TeamSetup({ onNext, onSignOutAndRetry }: CompanyDetectProps) {
     );
   }
 
-  // No company found — user hasn't completed web onboarding
+  // No company found — offer two paths forward:
+  //   (1) Install a personal HQ right now (no company connection needed)
+  //   (2) Go do web onboarding first, then come back
+  // Downstream screens read wizardState.isPersonal to skip company-scoped
+  // work (S3 sync, summary labelling). Users can always add a company
+  // later via `hq company add` once personal HQ is running.
   if (!company) {
     return (
       <div className="flex flex-col gap-6 max-w-sm">
         <h1 className="text-2xl font-medium text-white">
-          No company found
+          Install personal HQ?
         </h1>
         <p className="text-sm text-zinc-400">
-          Complete web onboarding first to provision your company, then return
-          here.
+          We didn't find a company for this account. You can install a personal
+          HQ now — it works standalone and you can add a company later.
         </p>
-        <a
-          href="https://onboarding.indigo-hq.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors text-center"
+        <button
+          type="button"
+          onClick={() => {
+            setIsPersonal(true);
+            onNext?.();
+          }}
+          className="rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
         >
-          Go to web onboarding
-        </a>
+          Install personal HQ
+        </button>
+        <div className="flex flex-col gap-2 pt-2 border-t border-white/10">
+          <p className="text-xs text-zinc-500">
+            Want to set up a company first? Create one in web onboarding, then
+            re-run the installer.
+          </p>
+          <a
+            href="https://onboarding.indigo-hq.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full py-2.5 text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors text-center"
+          >
+            Create a company
+          </a>
+        </div>
       </div>
     );
   }

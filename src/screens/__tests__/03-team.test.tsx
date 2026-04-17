@@ -27,14 +27,20 @@ vi.mock("@tauri-apps/plugin-http", () => ({
 
 // wizard-state mock
 vi.mock("../../lib/wizard-state.js", () => ({
-  getWizardState: vi.fn(() => ({ telemetryEnabled: true, team: null })),
+  getWizardState: vi.fn(() => ({
+    telemetryEnabled: true,
+    team: null,
+    isPersonal: false,
+  })),
   setTeam: vi.fn(),
+  setIsPersonal: vi.fn(),
   setTelemetryEnabled: vi.fn(),
   clearWizardState: vi.fn(),
 }));
 
 import * as wizardState from "../../lib/wizard-state.js";
 const mockSetTeam = vi.mocked(wizardState.setTeam);
+const mockSetIsPersonal = vi.mocked(wizardState.setIsPersonal);
 
 // cognito mock
 const { MOCK_ACCESS_TOKEN } = vi.hoisted(() => ({
@@ -120,17 +126,42 @@ describe("TeamSetup (company detection)", () => {
     });
   });
 
-  it("shows web onboarding link when no company found", async () => {
+  it("offers personal HQ install when no company found", async () => {
     mockResolveUserCompany.mockResolvedValue({ found: false });
 
     render(<TeamSetup />);
 
     await waitFor(() => {
-      expect(screen.getByText("No company found")).toBeInTheDocument();
+      expect(screen.getByText("Install personal HQ?")).toBeInTheDocument();
     });
-    expect(screen.getByText(/complete web onboarding first/i)).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: /go to web onboarding/i });
+    expect(
+      screen.getByRole("button", { name: /install personal hq/i }),
+    ).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: /create a company/i });
     expect(link).toHaveAttribute("href", "https://onboarding.indigo-hq.com");
+  });
+
+  it("clicking 'Install personal HQ' flags state and advances", async () => {
+    const onNext = vi.fn();
+    mockResolveUserCompany.mockResolvedValue({ found: false });
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const user = userEvent.setup();
+
+    render(<TeamSetup onNext={onNext} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /install personal hq/i }),
+      ).toBeInTheDocument();
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: /install personal hq/i }),
+    );
+
+    expect(mockSetIsPersonal).toHaveBeenCalledWith(true);
+    expect(onNext).toHaveBeenCalledOnce();
   });
 
   it("shows error state on network failure", async () => {

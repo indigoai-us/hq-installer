@@ -93,6 +93,17 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("renders 'Personal HQ (no company)' when isPersonal and no team", () => {
+    render(
+      <Summary
+        wizardState={{ ...WIZARD_STATE_FIXTURE, team: null, isPersonal: true }}
+      />
+    );
+    expect(screen.getByText(/personal hq \(no company\)/i)).toBeInTheDocument();
+    expect(screen.queryByText("Team name")).toBeNull();
+    expect(screen.queryByText("Team slug")).toBeNull();
+  });
+
   it("renders '—' for missing email", () => {
     const { getAllByText } = render(
       <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, gitEmail: null }} />

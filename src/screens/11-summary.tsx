@@ -13,6 +13,7 @@ export interface SummaryProps {
   wizardState: {
     installPath: string | null;
     team: { name: string; slug: string } | null;
+    isPersonal?: boolean;
     gitEmail: string | null;
     telemetryEnabled: boolean;
   };
@@ -61,15 +62,24 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             value={wizardState.installPath ?? "—"}
             mono
           />
-          <SummaryRow
-            label="Team name"
-            value={wizardState.team?.name ?? "—"}
-          />
-          <SummaryRow
-            label="Team slug"
-            value={wizardState.team?.slug ?? "—"}
-            mono
-          />
+          {wizardState.isPersonal && !wizardState.team ? (
+            <SummaryRow
+              label="Mode"
+              value="Personal HQ (no company)"
+            />
+          ) : (
+            <>
+              <SummaryRow
+                label="Team name"
+                value={wizardState.team?.name ?? "—"}
+              />
+              <SummaryRow
+                label="Team slug"
+                value={wizardState.team?.slug ?? "—"}
+                mono
+              />
+            </>
+          )}
           <SummaryRow
             label="Email"
             value={wizardState.gitEmail ?? "—"}

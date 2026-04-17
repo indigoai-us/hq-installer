@@ -15,6 +15,10 @@ export interface TeamMetadata {
 export interface WizardState {
   telemetryEnabled: boolean;
   team: TeamMetadata | null;
+  /** True when the user opted into a personal HQ (no company connection).
+   *  When set, screens like 08b-sync self-skip because there's no bucket to
+   *  pull from, and 11-summary shows "Personal HQ" instead of em-dashes. */
+  isPersonal: boolean;
   installPath: string | null;
   gitName: string | null;
   gitEmail: string | null;
@@ -23,6 +27,7 @@ export interface WizardState {
 const state: WizardState = {
   telemetryEnabled: true,
   team: null,
+  isPersonal: false,
   installPath: null,
   gitName: null,
   gitEmail: null,
@@ -61,6 +66,15 @@ export function setTelemetryEnabled(enabled: boolean): void {
 /** Store team metadata returned by the API. */
 export function setTeam(team: TeamMetadata): void {
   state.team = { ...team };
+  state.isPersonal = false;
+  notify();
+}
+
+/** Opt into personal-HQ mode (no company connection).
+ *  Mutually exclusive with a team — clears any existing team. */
+export function setIsPersonal(value: boolean): void {
+  state.isPersonal = value;
+  if (value) state.team = null;
   notify();
 }
 
@@ -81,6 +95,7 @@ export function setGitIdentity(name: string, email: string): void {
 export function clearWizardState(): void {
   state.telemetryEnabled = true;
   state.team = null;
+  state.isPersonal = false;
   state.installPath = null;
   state.gitName = null;
   state.gitEmail = null;

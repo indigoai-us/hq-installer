@@ -39,6 +39,14 @@ export function SyncScreen({ onNext }: SyncScreenProps) {
     if (attemptedRef.current) return;
     attemptedRef.current = true;
 
+    // Personal HQ mode — no bucket to pull from. Advance immediately so the
+    // user doesn't see a spinner for a step that doesn't apply.
+    const preState = getWizardState();
+    if (preState.isPersonal || !preState.team) {
+      onNext?.();
+      return;
+    }
+
     async function sync() {
       setStatus("syncing");
 

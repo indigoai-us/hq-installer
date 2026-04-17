@@ -3,6 +3,7 @@ import {
   getWizardState,
   setTelemetryEnabled,
   setTeam,
+  setIsPersonal,
   clearWizardState,
 } from "../wizard-state.js";
 import type { TeamMetadata } from "../wizard-state.js";
@@ -46,6 +47,11 @@ describe("wizard-state", () => {
     it("returns an object with team set to null by default", () => {
       const state = getWizardState();
       expect(state.team).toBeNull();
+    });
+
+    it("returns an object with isPersonal=false by default", () => {
+      const state = getWizardState();
+      expect(state.isPersonal).toBe(false);
     });
 
     it("returns a consistent object on repeated calls (same reference or equal shape)", () => {
@@ -112,6 +118,36 @@ describe("wizard-state", () => {
   });
 
   // -------------------------------------------------------------------------
+  describe("setIsPersonal()", () => {
+    it("setIsPersonal(true) flips isPersonal to true", () => {
+      setIsPersonal(true);
+      expect(getWizardState().isPersonal).toBe(true);
+    });
+
+    it("setIsPersonal(true) clears any previously stored team (mutual exclusion)", () => {
+      setTeam(MOCK_TEAM);
+      setIsPersonal(true);
+      const state = getWizardState();
+      expect(state.isPersonal).toBe(true);
+      expect(state.team).toBeNull();
+    });
+
+    it("setTeam resets isPersonal to false (mutual exclusion in reverse)", () => {
+      setIsPersonal(true);
+      setTeam(MOCK_TEAM);
+      const state = getWizardState();
+      expect(state.team?.teamId).toBe("team-abc123");
+      expect(state.isPersonal).toBe(false);
+    });
+
+    it("setIsPersonal(false) leaves team untouched", () => {
+      setTeam(MOCK_TEAM);
+      setIsPersonal(false);
+      expect(getWizardState().team?.teamId).toBe("team-abc123");
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe("clearWizardState()", () => {
     it("resets telemetryEnabled back to true after being set to false", () => {
       setTelemetryEnabled(false);
@@ -133,6 +169,12 @@ describe("wizard-state", () => {
       const state = getWizardState();
       expect(state.team).toBeNull();
       expect(state.telemetryEnabled).toBe(true);
+    });
+
+    it("resets isPersonal back to false", () => {
+      setIsPersonal(true);
+      clearWizardState();
+      expect(getWizardState().isPersonal).toBe(false);
     });
   });
 
