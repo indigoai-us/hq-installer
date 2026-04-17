@@ -1,5 +1,6 @@
 import { gunzipSync } from "fflate";
 import { mkdir, writeFile } from "@tauri-apps/plugin-fs";
+import { fetch } from "@tauri-apps/plugin-http";
 
 // ---------------------------------------------------------------------------
 // Constants

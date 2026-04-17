@@ -1,4 +1,14 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+
+// vault-handoff.ts imports fetch from @tauri-apps/plugin-http so the installer
+// can sidestep WKWebView CORS. In tests, route the plugin's fetch through
+// globalThis.fetch so existing `globalThis.fetch = mockFetch(...)` setups
+// continue to work unchanged.
+vi.mock("@tauri-apps/plugin-http", () => ({
+  fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+    globalThis.fetch(input, init),
+}));
+
 import { resolveUserCompany } from "../vault-handoff";
 
 const MOCK_TOKEN = "mock-access-token";

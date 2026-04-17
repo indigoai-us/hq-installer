@@ -20,6 +20,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
   emit: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("@tauri-apps/plugin-http", () => ({
+  fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+    globalThis.fetch(input, init),
+}));
 
 // wizard-state mock
 vi.mock("../../lib/wizard-state.js", () => ({

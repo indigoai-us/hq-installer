@@ -7,6 +7,7 @@ import {
   GetObjectCommand,
 } from "@aws-sdk/client-s3";
 import { invoke } from "@tauri-apps/api/core";
+import { fetch } from "@tauri-apps/plugin-http";
 
 interface StsVendResponse {
   credentials: {
@@ -23,6 +24,8 @@ export interface StsCredentials {
   secretAccessKey: string;
   sessionToken: string;
   bucketName: string;
+  /** Optional S3 key prefix to strip when computing relative paths. */
+  prefix?: string;
   expiresAt: string;
 }
 
@@ -119,11 +122,12 @@ export async function syncFromS3(
     currentFile: "",
   };
 
+  const prefix = creds.prefix ?? "";
   for (const obj of objects) {
     const key = obj.Key!;
     // Strip the prefix to get the relative path
-    const relativePath = key.startsWith(creds.prefix)
-      ? key.slice(creds.prefix.length).replace(/^\//, "")
+    const relativePath = prefix && key.startsWith(prefix)
+      ? key.slice(prefix.length).replace(/^\//, "")
       : key;
 
     if (!relativePath) continue;

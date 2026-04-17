@@ -27,6 +27,7 @@ keyring = { version = "3", features = ["apple-native"] }
 git2 = "0.19"
 nix = { version = "0.29", features = ["signal"] }
 tauri-plugin-agent-test = { path = "../../../public/tauri-agent-browser/crates/tauri-plugin-agent-test", optional = true }
+tauri-plugin-http = "2.5.8"
 
 [features]
 # Embeds the agent-browser MCP server (127.0.0.1:9876) for E2E testing.

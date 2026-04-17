@@ -2,6 +2,8 @@
 // Fire-and-forget telemetry pings.
 // Pure module — does NOT import wizard-state. Callers check opt-in before calling.
 
+import { fetch } from "@tauri-apps/plugin-http";
+
 const TELEMETRY_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/success";
 
 /**

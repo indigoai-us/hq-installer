@@ -1,7 +1,10 @@
 // vault-handoff.ts — US-003
 // Look up the user's existing company from vault-service after Cognito sign-in.
-// Uses plain fetch (not hq-cloud SDK, which requires Node.js fs/crypto).
+// Uses tauri-plugin-http (not window.fetch) so requests go through Rust
+// reqwest instead of WKWebView — sidesteps the API Gateway CORS allowlist,
+// which does not include `tauri://localhost`.
 
+import { fetch } from "@tauri-apps/plugin-http";
 import type { HandoffResult } from "../types/handoff";
 
 const DEFAULT_VAULT_API_URL =

@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { gzipSync } from "fflate";
 
+// template-fetcher.ts imports fetch from @tauri-apps/plugin-http so GitHub
+// requests go through Rust reqwest (bypassing WKWebView CORS). In tests, we
+// delegate to globalThis.fetch so the existing stubbing pattern keeps working.
+vi.mock("@tauri-apps/plugin-http", () => ({
+  fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+    globalThis.fetch(input, init),
+}));
+
 // ---------------------------------------------------------------------------
 // Mock @tauri-apps/plugin-fs BEFORE importing the module under test
 // ---------------------------------------------------------------------------
