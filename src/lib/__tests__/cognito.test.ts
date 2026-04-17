@@ -48,20 +48,12 @@ vi.mock("@aws-sdk/client-cognito-identity-provider", () => {
   class InitiateAuthCommand {
     constructor(public input: Record<string, unknown>) {}
   }
-  class SignUpCommand {
-    constructor(public input: Record<string, unknown>) {}
-  }
-  class ConfirmSignUpCommand {
-    constructor(public input: Record<string, unknown>) {}
-  }
   class GlobalSignOutCommand {
     constructor(public input: Record<string, unknown>) {}
   }
   return {
     CognitoIdentityProviderClient: MockClient,
     InitiateAuthCommand,
-    SignUpCommand,
-    ConfirmSignUpCommand,
     GlobalSignOutCommand,
   };
 });
@@ -70,10 +62,8 @@ vi.mock("@aws-sdk/client-cognito-identity-provider", () => {
 // Import module under test AFTER all mocks are registered
 // ---------------------------------------------------------------------------
 import {
-  signIn,
   signOut,
-  signUp,
-  confirmSignUp,
+  storeTokens,
   refreshSession,
   getCurrentUser,
   type CognitoTokens,
@@ -129,39 +119,27 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// signIn
+// storeTokens — used by Google OAuth flow to persist tokens after exchange
 // ---------------------------------------------------------------------------
 
-describe("signIn", () => {
-  it("stores tokens in keychain and returns CognitoTokens", async () => {
-    const idToken = makeIdToken("sub-1", "alice@example.com");
-    mockSendImpl = async () => ({
-      AuthenticationResult: {
-        AccessToken: "acc",
-        IdToken: idToken,
-        RefreshToken: "ref",
-        ExpiresIn: 3600,
-      },
+describe("storeTokens", () => {
+  it("writes all four token fields to the keychain", async () => {
+    const tokens = makeTokens({
+      accessToken: "acc",
+      idToken: makeIdToken("sub-1", "alice@example.com"),
+      refreshToken: "ref",
     });
 
-    const tokens = await signIn("alice@example.com", "password123");
+    await storeTokens(tokens);
 
-    expect(tokens.accessToken).toBe("acc");
-    expect(tokens.idToken).toBe(idToken);
-    expect(tokens.refreshToken).toBe("ref");
-    expect(tokens.expiresAt).toBeGreaterThan(Date.now());
-
-    // Verify keychain was written
     expect(fakeKeychain.get("access_token")).toBe("acc");
-    expect(fakeKeychain.get("id_token")).toBe(idToken);
+    expect(fakeKeychain.get("id_token")).toBe(tokens.idToken);
     expect(fakeKeychain.get("refresh_token")).toBe("ref");
-    expect(fakeKeychain.get("expires_at")).toBeDefined();
-
-    // Verify invoke was called for each keychain write
-    expect(invoke).toHaveBeenCalledWith("keychain_set", expect.objectContaining({ account: "access_token" }));
-    expect(invoke).toHaveBeenCalledWith("keychain_set", expect.objectContaining({ account: "id_token" }));
-    expect(invoke).toHaveBeenCalledWith("keychain_set", expect.objectContaining({ account: "refresh_token" }));
-    expect(invoke).toHaveBeenCalledWith("keychain_set", expect.objectContaining({ account: "expires_at" }));
+    expect(fakeKeychain.get("expires_at")).toBe(String(tokens.expiresAt));
+    expect(invoke).toHaveBeenCalledWith(
+      "keychain_set",
+      expect.objectContaining({ account: "access_token" }),
+    );
   });
 });
 
@@ -289,48 +267,6 @@ describe("refreshSession", () => {
 
   it("throws when no refresh token stored", async () => {
     await expect(refreshSession()).rejects.toThrow("No refresh token");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// signUp
-// ---------------------------------------------------------------------------
-
-describe("signUp", () => {
-  it("calls SignUpCommand with email as Username", async () => {
-    const calls: unknown[] = [];
-    mockSendImpl = async (cmd) => { calls.push(cmd); return {}; };
-
-    await signUp("new@example.com", "Secret123!");
-
-    expect(calls).toHaveLength(1);
-    const cmd = calls[0] as { input: Record<string, unknown> };
-    expect(cmd.input.Username).toBe("new@example.com");
-    expect(cmd.input.Password).toBe("Secret123!");
-    expect(cmd.input.ClientId).toBe("test-client-id");
-    expect((cmd.input.UserAttributes as Array<{ Name: string; Value: string }>)).toContainEqual({
-      Name: "email",
-      Value: "new@example.com",
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// confirmSignUp
-// ---------------------------------------------------------------------------
-
-describe("confirmSignUp", () => {
-  it("calls ConfirmSignUpCommand with correct args", async () => {
-    const calls: unknown[] = [];
-    mockSendImpl = async (cmd) => { calls.push(cmd); return {}; };
-
-    await confirmSignUp("user@example.com", "123456");
-
-    expect(calls).toHaveLength(1);
-    const cmd = calls[0] as { input: Record<string, unknown> };
-    expect(cmd.input.Username).toBe("user@example.com");
-    expect(cmd.input.ConfirmationCode).toBe("123456");
-    expect(cmd.input.ClientId).toBe("test-client-id");
   });
 });
 

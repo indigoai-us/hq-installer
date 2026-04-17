@@ -29,6 +29,7 @@ pub fn run() {
             commands::keychain::keychain_set,
             commands::keychain::keychain_get,
             commands::keychain::keychain_delete,
+            commands::oauth::oauth_listen_for_code,
             commands::git::git_init,
             commands::git::git_probe_user,
             commands::process::spawn_process,

@@ -1,8 +1,15 @@
+// cognito.ts — token lifecycle + keychain persistence.
+//
+// Authentication itself lives in `google-oauth.ts` (Google via Cognito Hosted
+// UI + PKCE). This module is responsible for:
+//   - Storing/loading/clearing Cognito tokens in the macOS keychain.
+//   - Refreshing expired sessions via REFRESH_TOKEN_AUTH.
+//   - Exposing the current authenticated user derived from the stored idToken.
+//   - Global sign-out.
+
 import {
   CognitoIdentityProviderClient,
   InitiateAuthCommand,
-  SignUpCommand,
-  ConfirmSignUpCommand,
   GlobalSignOutCommand,
   type InitiateAuthCommandOutput,
 } from "@aws-sdk/client-cognito-identity-provider";
@@ -59,7 +66,7 @@ export interface CurrentUser {
 
 const KC_SERVICE = "cognito";
 
-async function storeTokens(tokens: CognitoTokens): Promise<void> {
+export async function storeTokens(tokens: CognitoTokens): Promise<void> {
   await Promise.all([
     invoke("keychain_set", {
       service: KC_SERVICE,
@@ -173,64 +180,6 @@ function decodeIdToken(idToken: string): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
-/**
- * Sign up a new user with email and password.
- * The user will receive a verification code at their email.
- */
-export async function signUp(email: string, password: string): Promise<void> {
-  const client = makeClient();
-  await client.send(
-    new SignUpCommand({
-      ClientId: getClientId(),
-      Username: email,
-      Password: password,
-      UserAttributes: [{ Name: "email", Value: email }],
-    })
-  );
-}
-
-/**
- * Confirm sign-up with the verification code sent to the user's email.
- */
-export async function confirmSignUp(
-  email: string,
-  code: string
-): Promise<void> {
-  const client = makeClient();
-  await client.send(
-    new ConfirmSignUpCommand({
-      ClientId: getClientId(),
-      Username: email,
-      ConfirmationCode: code,
-    })
-  );
-}
-
-/**
- * Sign in with email and password.
- * Tokens are cached in the Tauri keychain.
- */
-export async function signIn(
-  email: string,
-  password: string
-): Promise<CognitoTokens> {
-  const client = makeClient();
-  const response = await client.send(
-    new InitiateAuthCommand({
-      AuthFlow: "USER_PASSWORD_AUTH",
-      ClientId: getClientId(),
-      AuthParameters: {
-        USERNAME: email,
-        PASSWORD: password,
-      },
-    })
-  );
-
-  const tokens = tokensFromAuthResult(response.AuthenticationResult);
-  await storeTokens(tokens);
-  return tokens;
-}
 
 /**
  * Refresh the current session using the stored refresh token.
