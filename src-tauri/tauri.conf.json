@@ -50,6 +50,9 @@
       "endpoints": [
         "https://github.com/indigoai-us/hq-installer/releases/latest/download/latest.json"
       ]
+    },
+    "fs": {
+      "requireLiteralLeadingDot": false
     }
   }
 }
