@@ -114,7 +114,10 @@ export function SyncScreen({ onNext }: SyncScreenProps) {
     }
 
     sync();
-  }, []);
+    // `attemptedRef` already guards against re-runs, so including `onNext`
+    // here is safe — the effect body runs at most once per mount regardless
+    // of how often the callback reference changes.
+  }, [onNext]);
 
   // Syncing state with progress
   if (status === "syncing") {
