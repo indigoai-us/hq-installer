@@ -17,6 +17,8 @@ Native macOS installer for HQ — guided wizard with AWS Cognito auth, built on 
 pnpm install
 ```
 
+`postinstall` automatically runs `pnpm sync-templates --optional` to copy starter-project templates from the canonical sibling `repos/public/hq` checkout. If that sibling isn't present, the step warns and exits cleanly — re-run `pnpm sync-templates` later when the source is available.
+
 ### Dev server (Tauri window + HMR)
 
 ```bash
@@ -24,6 +26,16 @@ pnpm tauri dev
 ```
 
 This opens the native macOS window with hot reload.
+
+### Refresh starter-project templates
+
+Whenever `repos/public/hq` updates the starter-projects, re-sync into this repo:
+
+```bash
+pnpm sync-templates
+```
+
+This rewrites `templates/starter-projects/` and mirrors into any existing `src-tauri/target/{debug,release}/templates/` so a running `tauri dev` picks up the new files without a rebuild.
 
 ## Quality Gates
 
