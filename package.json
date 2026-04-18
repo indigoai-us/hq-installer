@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "sync-templates": "tsx scripts/sync-templates.ts",
+    "postinstall": "tsx scripts/sync-templates.ts --optional",
     "e2e": "playwright test"
   },
   "dependencies": {

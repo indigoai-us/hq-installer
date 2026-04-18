@@ -75,13 +75,22 @@ function copyStarterProjects(destDir: string): void {
 }
 
 function main(): void {
+  const optional = process.argv.includes("--optional");
+
   if (!existsSync(HQ_STARTER_PROJECTS)) {
-    console.error(
+    const log = optional ? console.warn : console.error;
+    log(
       `[sync-templates] Source directory not found: ${HQ_STARTER_PROJECTS}`,
     );
-    console.error(
+    log(
       "  Set HQ_REPO_PATH to the absolute path of the hq repo checkout.",
     );
+    if (optional) {
+      console.warn(
+        "[sync-templates] --optional set; skipping (templates will be missing until you run `pnpm sync-templates` with the source available).",
+      );
+      return;
+    }
     process.exit(1);
   }
 
