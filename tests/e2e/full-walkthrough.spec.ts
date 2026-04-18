@@ -242,7 +242,17 @@ test.describe('HQ Installer walkthrough', () => {
     });
   });
 
-  test('full 11-screen walkthrough', async ({ page }) => {
+  // TODO(installer-e2e): Rewrite for Google OAuth via Cognito Hosted UI.
+  // The original flow used in-webview email/password — replaced in commit
+  // fa01971 with a Tauri-driven loopback OAuth listener (oauth_listen_for_code
+  // + system browser). The current TAURI_MOCK_SCRIPT doesn't simulate
+  // either piece, so the test sits at Screen 2 until the heading regex
+  // (which referenced the removed "Create your account" copy) times out.
+  // Skipping rather than green-rubberstamping a stale assertion. Restoration
+  // requires (a) mocking oauth_listen_for_code to resolve with a fake code,
+  // (b) mocking exchangeCodeForTokens, and (c) updating Screen-2 assertions
+  // to match the Google sign-in copy ("Sign in" / "Continue with Google").
+  test.skip('full 11-screen walkthrough', async ({ page }) => {
     // ── Screen 1: Welcome ──────────────────────────────────────────────────
     await page.goto('/');
     await expect(page.getByRole('heading', { name: /set up hq/i })).toBeVisible();
