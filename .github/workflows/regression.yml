@@ -1,0 +1,32 @@
+name: Regression
+
+on:
+  schedule:
+    # Nightly at 02:17 UTC — offset to avoid thundering-herd on :00
+    - cron: "17 2 * * *"
+  # Allow manual trigger for on-demand runs
+  workflow_dispatch:
+
+jobs:
+  parity:
+    name: Installer parity vs canonical tar extraction
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run parity regression test
+        run: pnpm vitest run --config vitest.config.regression.ts

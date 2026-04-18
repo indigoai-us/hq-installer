@@ -1,0 +1,21 @@
+[package]
+name = "tauri-plugin-agent-test"
+version = "0.1.0"
+edition = "2021"
+
+# Vendored stub crate for the `agent-test` feature of hq-installer.
+#
+# Historical: this crate used to live at
+# `repos/public/tauri-agent-browser/crates/tauri-plugin-agent-test` — a
+# sibling checkout that existed only on contributor machines. CI runners
+# had no access to it, so `cargo check` failed on manifest resolution
+# even though the dep is optional (cargo still validates optional paths).
+#
+# Vendoring makes the path relative to this repo, so baseline
+# `cargo check` resolves cleanly. The crate is intentionally empty — the
+# real plugin was never implemented; enabling `--features agent-test`
+# against the empty stub won't compile (`::init()` is missing), which
+# mirrors the previous behavior. When the agent-test functionality is
+# built out, fill in `src/lib.rs` here.
+
+[dependencies]

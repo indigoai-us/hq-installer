@@ -27,6 +27,28 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
 
+  e2e:
+    name: E2E (Playwright)
+    runs-on: macos-latest
+    needs: [frontend]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium --with-deps
+      - run: pnpm e2e
+        env:
+          VITE_COGNITO_USER_POOL_ID: us-east-1_TESTPOOL
+          VITE_COGNITO_CLIENT_ID: test-client-id
+          VITE_COGNITO_DOMAIN: https://mock-cognito.auth.us-east-1.amazoncognito.com
+
   rust:
     name: Rust (cargo check)
     runs-on: macos-latest

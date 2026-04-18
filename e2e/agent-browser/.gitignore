@@ -1,0 +1,5 @@
+# Rust build output
+/target/
+
+# Per-run screenshots + test artifacts
+/artifacts/

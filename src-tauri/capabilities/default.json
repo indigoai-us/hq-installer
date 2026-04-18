@@ -1,0 +1,66 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability set for the HQ Installer webview.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:path:default",
+    "core:event:default",
+    "core:app:default",
+    "shell:allow-open",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "updater:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://*.execute-api.us-east-1.amazonaws.com/*" },
+        { "url": "https://*.auth.us-east-1.amazoncognito.com/*" },
+        { "url": "https://api.github.com/*" },
+        { "url": "https://codeload.github.com/*" },
+        { "url": "https://*.amazonaws.com/*" },
+        { "url": "https://*.s3.amazonaws.com/*" },
+        { "url": "https://*.s3.us-east-1.amazonaws.com/*" },
+        { "url": "https://s3.us-east-1.amazonaws.com/*" },
+        { "url": "https://telemetry.getindigo.ai/*" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$RESOURCE/templates/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$RESOURCE/templates/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "$RESOURCE/templates/**" },
+        { "path": "$HOME/**" }
+      ]
+    }
+  ]
+}

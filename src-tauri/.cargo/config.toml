@@ -1,0 +1,8 @@
+# Apple Silicon dev-signing hook — keeps macOS Keychain ACL stable across rebuilds.
+# See scripts/dev-codesign.sh and docs/dev-codesign.md for the full story.
+[target.aarch64-apple-darwin]
+runner = "../scripts/dev-codesign.sh"
+
+# Apple Intel — same hook, only relevant if we ever dev on x86_64 hardware.
+[target.x86_64-apple-darwin]
+runner = "../scripts/dev-codesign.sh"
