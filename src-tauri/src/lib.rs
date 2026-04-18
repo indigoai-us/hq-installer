@@ -40,6 +40,8 @@ pub fn run() {
             commands::fs::write_file,
             commands::fs::home_dir,
             commands::launch::launch_claude_code,
+            commands::install_menubar::install_menubar_app,
+            commands::install_menubar::launch_menubar_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,6 +2,7 @@ pub mod deps;
 pub mod directory;
 pub mod fs;
 pub mod git;
+pub mod install_menubar;
 pub mod keychain;
 pub mod launch;
 pub mod oauth;

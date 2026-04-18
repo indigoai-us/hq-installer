@@ -76,10 +76,11 @@ describe("Welcome screen (01-welcome.tsx)", () => {
       "Sync",
       "Personalize",
       "Verify",
+      "HQ Sync",
       "Done",
     ];
 
-    it("renders all 11 step labels", () => {
+    it("renders all 12 step labels", () => {
       const { container } = render(<Welcome onNext={vi.fn()} />);
       const text = container.textContent ?? "";
       for (const label of EXPECTED_STEP_LABELS) {
@@ -87,19 +88,19 @@ describe("Welcome screen (01-welcome.tsx)", () => {
       }
     });
 
-    it("renders exactly 11 steps (not more, not fewer)", () => {
+    it("renders exactly 12 steps (not more, not fewer)", () => {
       render(<Welcome onNext={vi.fn()} />);
       // Each step label should appear at least once
       let found = 0;
       for (const label of EXPECTED_STEP_LABELS) {
-        try {
-          screen.getByText(label, { exact: false });
+        // Use queryAllByText to handle labels that may appear in multiple
+        // DOM elements (e.g. "HQ Sync" in both a <li> and inner <span>).
+        const matches = screen.queryAllByText(label, { exact: false });
+        if (matches.length > 0) {
           found += 1;
-        } catch {
-          // label not found — intentionally swallowed; count won't reach 11
         }
       }
-      expect(found).toBe(11);
+      expect(found).toBe(12);
     });
   });
 

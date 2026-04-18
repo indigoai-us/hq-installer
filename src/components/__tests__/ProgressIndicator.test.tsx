@@ -22,16 +22,17 @@ const STEP_LABELS = [
   "Sync",
   "Personalize",
   "Verify",
+  "HQ Sync",
   "Done",
 ];
 
 describe("ProgressIndicator", () => {
   // -------------------------------------------------------------------------
   describe("step count", () => {
-    it("renders exactly 11 step entries", () => {
+    it("renders exactly 12 step entries", () => {
       render(<ProgressIndicator currentStep={1} />);
-      // Each step should have a visible step number (1..11)
-      for (let i = 1; i <= 11; i++) {
+      // Each step should have a visible step number (1..12)
+      for (let i = 1; i <= 12; i++) {
         expect(screen.getByText(String(i))).toBeTruthy();
       }
     });
@@ -63,10 +64,10 @@ describe("ProgressIndicator", () => {
       expect(activeEl.textContent).toContain(STEP_LABELS[4]); // 0-indexed
     });
 
-    it("highlights step 11 when currentStep=11", () => {
-      render(<ProgressIndicator currentStep={11} />);
+    it("highlights step 12 when currentStep=12", () => {
+      render(<ProgressIndicator currentStep={12} />);
       const activeEl = screen.getByRole("listitem", { current: "step" });
-      expect(activeEl.textContent).toContain(STEP_LABELS[10]);
+      expect(activeEl.textContent).toContain(STEP_LABELS[11]);
     });
 
     it("marks exactly one step as current", () => {

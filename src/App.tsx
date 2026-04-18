@@ -17,6 +17,7 @@ import { GitInit } from "@/screens/08-git-init";
 import { SyncScreen } from "@/screens/08b-sync";
 import { Personalize } from "@/screens/09-personalize";
 import { QmdIndexing } from "@/screens/10-indexing";
+import { InstallMenubarStep } from "@/components/InstallMenubarStep";
 import { Summary } from "@/screens/11-summary";
 
 function App() {
@@ -46,10 +47,10 @@ function App() {
   const { currentStep } = router;
   const canGoNext = router.canGoNext && getStepValidity(currentStep, wizardState);
 
-  // Screen flow (US-006):
+  // Screen flow (US-006 + US-013):
   //   1 Welcome → 2 Cognito Auth → 3 Company Detect → 4 Deps →
   //   5 Directory → 6 Template → 7 Git Init → 8 Sync →
-  //   9 Personalize → 10 Indexing → 11 Summary
+  //   9 Personalize → 10 Indexing → 11 HQ Sync → 12 Summary
   function renderStep() {
     switch (currentStep) {
       case 1:
@@ -110,6 +111,8 @@ function App() {
           />
         );
       case 11:
+        return <InstallMenubarStep onNext={handleNext} />;
+      case 12:
         return <Summary wizardState={wizardState} onLaunch={handleLaunch} />;
       default:
         return null;

@@ -1,5 +1,26 @@
 import { describe, it, expect } from "vitest";
-import { createWizardRouter, WIZARD_STEPS, AUTH_GATED_STEPS } from "../wizard-router.js";
+import {
+  createWizardRouter,
+  getStepValidity,
+  WIZARD_STEPS,
+  AUTH_GATED_STEPS,
+} from "../wizard-router.js";
+import type { WizardState } from "../wizard-state.js";
+
+// Helper: produce a clean state with all required fields. Tests override only
+// what they care about, leaving every other field at its default.
+function makeState(overrides: Partial<WizardState> = {}): WizardState {
+  return {
+    telemetryEnabled: true,
+    team: null,
+    isPersonal: false,
+    installPath: null,
+    gitName: null,
+    gitEmail: null,
+    personalized: false,
+    ...overrides,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // wizard-router unit tests (US-012)
@@ -9,8 +30,8 @@ import { createWizardRouter, WIZARD_STEPS, AUTH_GATED_STEPS } from "../wizard-ro
 // ---------------------------------------------------------------------------
 
 describe("WIZARD_STEPS constant", () => {
-  it("defines exactly 11 steps", () => {
-    expect(WIZARD_STEPS).toHaveLength(11);
+  it("defines exactly 12 steps", () => {
+    expect(WIZARD_STEPS).toHaveLength(12);
   });
 
   it("each step has an index, id, and label", () => {
@@ -22,9 +43,9 @@ describe("WIZARD_STEPS constant", () => {
     }
   });
 
-  it("step indices run 1..11 without gaps", () => {
+  it("step indices run 1..12 without gaps", () => {
     const indices = WIZARD_STEPS.map((s) => s.index);
-    expect(indices).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(indices).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   });
 });
 
@@ -61,33 +82,33 @@ describe("createWizardRouter", () => {
       expect(router.currentStep).toBe(2);
     });
 
-    it("advances through all 11 steps when next() is called 10 times from step 1", () => {
+    it("advances through all 12 steps when next() is called 11 times from step 1", () => {
       const router = createWizardRouter();
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 11; i++) {
         router.next();
       }
-      expect(router.currentStep).toBe(11);
+      expect(router.currentStep).toBe(12);
     });
 
-    it("stays at step 11 when next() is called at the last step (no overflow)", () => {
+    it("stays at step 12 when next() is called at the last step (no overflow)", () => {
       const router = createWizardRouter();
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 11; i++) {
         router.next();
       }
-      // Already at 11 — one more next() should not overflow
+      // Already at 12 — one more next() should not overflow
       router.next();
-      expect(router.currentStep).toBe(11);
+      expect(router.currentStep).toBe(12);
     });
 
-    it("canGoNext is false at step 11", () => {
+    it("canGoNext is false at step 12", () => {
       const router = createWizardRouter();
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 11; i++) {
         router.next();
       }
       expect(router.canGoNext).toBe(false);
     });
 
-    it("canGoNext is true below step 11", () => {
+    it("canGoNext is true below step 12", () => {
       const router = createWizardRouter();
       router.next(); // step 2
       expect(router.canGoNext).toBe(true);
@@ -150,15 +171,52 @@ describe("createWizardRouter", () => {
   });
 
   // -------------------------------------------------------------------------
+  describe("getStepValidity — per-step advance gates", () => {
+    it("step 5 (DirectoryPicker) is invalid when installPath is null", () => {
+      expect(getStepValidity(5, makeState({ installPath: null }))).toBe(false);
+    });
+
+    it("step 5 is invalid when installPath is empty string", () => {
+      expect(getStepValidity(5, makeState({ installPath: "" }))).toBe(false);
+    });
+
+    it("step 5 is valid once installPath is populated", () => {
+      expect(getStepValidity(5, makeState({ installPath: "/tmp/hq" }))).toBe(true);
+    });
+
+    // ── Step 9 (Personalize) — the bypass bug this whole block exists to prevent.
+    //
+    // Symptom before fix: global Next button was always enabled, letting the
+    // user walk past the Personalize screen without ever clicking Submit.
+    // Result: no profile.md, no voice-style.md, no companies/{slug}/ scaffolded.
+    it("step 9 (Personalize) is invalid by default (personalized=false)", () => {
+      expect(getStepValidity(9, makeState())).toBe(false);
+    });
+
+    it("step 9 is valid once personalize() has succeeded (personalized=true)", () => {
+      expect(getStepValidity(9, makeState({ personalized: true }))).toBe(true);
+    });
+
+    it("returns true by default for steps without an explicit gate", () => {
+      // Sample from the unguarded step set so any future guard additions that
+      // forget to update this test light up rather than silently passing.
+      const unguarded = [1, 2, 3, 4, 6, 7, 8, 10, 12];
+      for (const step of unguarded) {
+        expect(getStepValidity(step, makeState())).toBe(true);
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe("E2E acceptance scenario", () => {
-    it("given shell mounted at step 1, calling next() 10 times reaches step 11 without throwing", () => {
+    it("given shell mounted at step 1, calling next() 11 times reaches step 12 without throwing", () => {
       const router = createWizardRouter();
       expect(() => {
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 11; i++) {
           router.next();
         }
       }).not.toThrow();
-      expect(router.currentStep).toBe(11);
+      expect(router.currentStep).toBe(12);
     });
 
     it("given step 3 is auth-gated, clicking back from step 3 leaves currentStep at 3", () => {
