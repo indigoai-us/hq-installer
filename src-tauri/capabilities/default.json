@@ -38,6 +38,13 @@
       "allow": [{ "path": "$HOME/**" }]
     },
     {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$RESOURCE/templates/**" },
+        { "path": "$HOME/**" }
+      ]
+    },
+    {
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "$HOME/**" }]
     },

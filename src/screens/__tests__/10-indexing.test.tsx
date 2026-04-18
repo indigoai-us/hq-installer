@@ -106,17 +106,68 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
   // ── 2. Auto-starts on mount ───────────────────────────────────────────────
 
-  it("auto-starts on mount — calls invoke('spawn_process') with qmd index args", async () => {
+  it("auto-starts on mount — calls invoke('spawn_process') with qmd collection-add args", async () => {
     render(<QmdIndexing installPath="/tmp/hq" />);
 
+    // qmd 2.x: first step is `qmd collection add . --name <slug>` where slug
+    // is the basename of installPath. "/tmp/hq" → "hq".
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
-        args: { cmd: "qmd", args: ["index", "."], cwd: "/tmp/hq" },
+        args: {
+          cmd: "qmd",
+          args: ["collection", "add", ".", "--name", "hq"],
+          cwd: "/tmp/hq",
+        },
       });
     });
   });
 
-  it("spawns qmd embed after qmd index succeeds", async () => {
+  it("falls back to 'qmd update' when collection already exists", async () => {
+    // Simulate the qmd 2.x "already exists" error on the first spawn, so the
+    // component should transparently retry as `qmd update --name <slug>`.
+    const handles: string[] = [];
+    mockInvoke.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "spawn_process") {
+          const h = `handle-${handles.length + 1}`;
+          handles.push(h);
+          return h;
+        }
+        return null;
+      })
+    );
+
+    render(<QmdIndexing installPath="/tmp/hq" />);
+
+    // Wait for step 0 (collection add) to spawn.
+    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
+
+    // Emit an "already exists" stderr line, then fail the process.
+    act(() => {
+      fireListenEvent(`process://${handles[0]}/stderr`, {
+        line: "Collection 'hq' already exists. Use a different name with --name <name>",
+      });
+    });
+    failProcess(handles[0]);
+
+    // Component should retry as `qmd update --name hq` instead of surfacing
+    // the failure to the user.
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
+        args: {
+          cmd: "qmd",
+          args: ["update", "--name", "hq"],
+          cwd: "/tmp/hq",
+        },
+      });
+    });
+
+    // No Retry button should be visible during the transparent fallback.
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+  });
+
+  it("spawns qmd embed after qmd collection-add succeeds", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

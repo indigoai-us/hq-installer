@@ -1,9 +1,17 @@
 // 10-indexing.tsx — US-018
-// qmd indexing screen — runs `qmd index .` then `qmd embed` with live progress.
+// qmd indexing screen — runs `qmd collection add` (or `qmd update` if the
+// collection already exists) followed by `qmd embed`, with live progress.
 //
 // Steps (auto-start on mount, sequential):
-//   1. qmd index .
+//   1. qmd collection add . --name <slug>   (fresh install)
+//        ↳ on "already exists" stderr, fall back to:
+//      qmd update --name <slug>             (re-index in place)
 //   2. qmd embed
+//
+// The slug is derived from the basename of installPath — e.g.
+// "/Users/stefanjohnson/hq" → "hq". qmd 2.x uses named collections
+// (xdg-based registry at ~/.config/qmd/index.yml) so each HQ install gets
+// its own collection identity instead of the old unnamed 0.3.x flat index.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -43,6 +51,20 @@ const STEP_LABELS = [
   "Index HQ knowledge base",
   "Generate semantic embeddings",
 ];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the qmd collection name from an install path. qmd 2.x requires a
+ * named collection (registered under ~/.config/qmd/index.yml) so we use the
+ * basename as a stable identifier — e.g. "/Users/jane/hq" → "hq",
+ * "/Users/jane/hq3" → "hq3". Falls back to "hq" for degenerate paths.
+ */
+function collectionSlug(installPath: string): string {
+  return installPath.split("/").filter(Boolean).pop() || "hq";
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -89,7 +111,16 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
 
   // Spawn a qmd command and wait for its exit event.
   // Returns true on success, false on failure.
-  async function runQmd(stepIdx: number, args: string[]): Promise<boolean> {
+  //
+  // `stderrBuf`, when provided, is appended with each raw stderr line during
+  // the run. Callers use this to detect benign, recoverable errors (e.g.
+  // "Collection 'hq' already exists") and retry with a different subcommand
+  // without surfacing the first attempt's failure to the user.
+  async function runQmd(
+    stepIdx: number,
+    args: string[],
+    stderrBuf?: string[]
+  ): Promise<boolean> {
     let handle: string;
     try {
       handle = await invoke<string>("spawn_process", {
@@ -112,12 +143,16 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
     );
 
     // Listen for stderr — qmd writes errors like "VOYAGE_AI_API_KEY not set"
-    // to stderr, and we want those visible in the log panel.
+    // to stderr, and we want those visible in the log panel. Also mirror into
+    // the caller-provided buffer when present so known-benign errors (e.g.
+    // "already exists") can be detected after the process exits.
     const stderrUnlisten = await listen(
       `process://${handle}/stderr`,
       (event: { payload: unknown }) => {
         const payload = event.payload as { line: string };
-        appendLog(stepIdx, `[stderr] ${payload.line ?? ""}`);
+        const line = payload.line ?? "";
+        appendLog(stepIdx, `[stderr] ${line}`);
+        if (stderrBuf) stderrBuf.push(line);
       }
     );
 
@@ -168,10 +203,40 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
       for (const u of unlistenRefs.current) u?.();
       unlistenRefs.current = [];
 
-      // ── Step 0: qmd index . ─────────────────────────────────────────────────
+      // ── Step 0: qmd collection add (fall back to update on re-runs) ─────────
+      // qmd 2.x split the old `qmd index .` into two commands:
+      //   - `qmd collection add <path> --name <slug>` creates + indexes a new
+      //     collection. This is the right call for a fresh HQ install.
+      //   - `qmd update --name <slug>` re-indexes an existing collection.
+      //
+      // We optimistically try `collection add` first (most installs are fresh).
+      // If the collection already exists — detected via the "already exists"
+      // substring in stderr — we silently retry as `update` so re-runs of the
+      // installer (or a reinstall over an existing HQ) don't fail this step.
       if (startIdx <= 0) {
         patchStep(0, { status: "running" });
-        const ok = await runQmd(0, ["index", "."]);
+        const slug = collectionSlug(installPath);
+        const stderrBuf: string[] = [];
+        let ok = await runQmd(
+          0,
+          ["collection", "add", ".", "--name", slug],
+          stderrBuf
+        );
+        if (
+          !ok &&
+          stderrBuf.some((line) => line.toLowerCase().includes("already exists"))
+        ) {
+          // Benign — collection already registered from a prior install.
+          // Clear the error state from the failed `add` attempt and re-run
+          // as `update` to reindex in place.
+          appendLog(
+            0,
+            `[info] Collection "${slug}" already exists — re-indexing via 'qmd update'`
+          );
+          patchStep(0, { status: "running", errorMsg: null });
+          setFailedStep(null);
+          ok = await runQmd(0, ["update", "--name", slug]);
+        }
         if (!ok) {
           setRunning(false);
           return;

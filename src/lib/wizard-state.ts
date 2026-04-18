@@ -22,6 +22,11 @@ export interface WizardState {
   installPath: string | null;
   gitName: string | null;
   gitEmail: string | null;
+  /** True once Screen 09 (Personalize) has successfully written profile.md,
+   *  voice-style.md, the starter project, and any user-supplied companies.
+   *  Gates the global Next button so users can't bypass the screen and end
+   *  up with a scaffold that's missing profile + companies. */
+  personalized: boolean;
 }
 
 const state: WizardState = {
@@ -31,6 +36,7 @@ const state: WizardState = {
   installPath: null,
   gitName: null,
   gitEmail: null,
+  personalized: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +97,13 @@ export function setGitIdentity(name: string, email: string): void {
   notify();
 }
 
+/** Mark Screen 09 (Personalize) as successfully completed. Read by
+ *  getStepValidity(9, …) to unlock the global Next button. */
+export function setPersonalized(value: boolean): void {
+  state.personalized = value;
+  notify();
+}
+
 /** Reset all wizard state to initial defaults. */
 export function clearWizardState(): void {
   state.telemetryEnabled = true;
@@ -99,5 +112,6 @@ export function clearWizardState(): void {
   state.installPath = null;
   state.gitName = null;
   state.gitEmail = null;
+  state.personalized = false;
   notify();
 }

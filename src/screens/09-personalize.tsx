@@ -7,6 +7,7 @@ import type {
   CompanySeed,
   PersonalizationAnswers,
 } from "../lib/personalize-writer";
+import { setPersonalized } from "../lib/wizard-state";
 import { IdentityForm } from "../components/forms/IdentityForm";
 import { StarterProjectPicker } from "../components/forms/StarterProjectPicker";
 import { CustomizationForm } from "../components/forms/CustomizationForm";
@@ -130,6 +131,10 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
 
     try {
       await personalize(answers, installPath);
+      // Flip the wizard-state marker so the global Next button unlocks.
+      // Done before onNext() so the router's canGoNext recomputation on the
+      // next step renders with the up-to-date value if the user back-navigates.
+      setPersonalized(true);
       onNext?.();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

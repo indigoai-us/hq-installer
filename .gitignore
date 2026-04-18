@@ -27,3 +27,9 @@ Thumbs.db
 # Playwright
 test-results/
 playwright-report/
+
+# Starter-project templates are synced from repos/public/hq by
+# scripts/sync-templates.ts. Committing them would vendor a copy and
+# drift from the source. The hand-authored .hbs files at the root of
+# templates/ ARE tracked — only the generated subdir is ignored.
+/templates/starter-projects/

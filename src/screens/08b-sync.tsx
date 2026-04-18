@@ -71,8 +71,17 @@ export function SyncScreen({ onNext }: SyncScreenProps) {
           bucketName
         );
 
-        // Sync files from S3
-        const syncResult = await syncFromS3(creds, installPath, setProgress);
+        // Sync files from S3 into companies/{slug}/. The company's S3 bucket
+        // is scaffolded by hq-onboarding so its root mirrors the canonical
+        // companies/{co}/ layout (`.hq/manifest.json`, `knowledge/`, …).
+        // Without this subpath the bucket would land at the HQ root and
+        // overwrite top-level files (e.g. the HQ's own `knowledge/`).
+        const syncResult = await syncFromS3(
+          creds,
+          installPath,
+          setProgress,
+          `companies/${state.team.slug}`,
+        );
 
         // Write .hq/config.json with company context
         const config = {

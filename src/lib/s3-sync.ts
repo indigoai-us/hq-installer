@@ -40,6 +40,54 @@ export interface SyncProgress {
 
 export type SyncProgressCallback = (progress: SyncProgress) => void;
 
+/**
+ * Resolve an S3 object key to a safe on-disk path under `installPath`.
+ *
+ * Context:
+ *   Each company's S3 bucket is scaffolded by hq-onboarding's /api/provision/scaffold
+ *   route and its contents mirror `companies/{slug}/` in HQ — i.e. the bucket
+ *   root holds `.hq/manifest.json`, `knowledge/`, `settings/`, `data/`, etc.
+ *   We therefore write each object at `{installPath}/{destSubpath}/{key}`,
+ *   where `destSubpath` is typically `companies/{slug}`. Without that prefix
+ *   the bucket's `knowledge/` would shadow the HQ's own top-level `knowledge/`.
+ *
+ * Returns null if the resolved path would escape `installPath` (e.g. because
+ * the key contains `..` segments or starts with `/`). Callers should skip
+ * those entries — a well-behaved bucket never produces them, so this is a
+ * defense-in-depth guard against a compromised or buggy writer.
+ */
+export function resolveLocalPath(
+  installPath: string,
+  s3Key: string,
+  destSubpath?: string,
+  s3Prefix?: string,
+): string | null {
+  // 1. Strip the (optional) S3 key prefix so we're working with a relative path.
+  const stripped =
+    s3Prefix && s3Key.startsWith(s3Prefix)
+      ? s3Key.slice(s3Prefix.length).replace(/^\//, "")
+      : s3Key;
+
+  if (!stripped) return null;
+
+  // 2. Reject absolute paths or `..` segments. We split on `/` (S3 keys use
+  //    forward slash regardless of OS) and inspect each segment. A clean key
+  //    like `knowledge/interview.json` has no `.`, `..`, or empty segments.
+  const segments = stripped.split("/");
+  for (const seg of segments) {
+    if (seg === "" || seg === "." || seg === "..") return null;
+  }
+
+  // 3. Join { installPath, destSubpath?, relativeKey } with single separators.
+  //    Trim trailing slashes on installPath so we don't double-slash.
+  const trimmedBase = installPath.replace(/\/+$/, "");
+  const prefix = destSubpath
+    ? `${trimmedBase}/${destSubpath.replace(/^\/+|\/+$/g, "")}`
+    : trimmedBase;
+
+  return `${prefix}/${stripped}`;
+}
+
 function getVaultApiUrl(): string {
   return (
     (import.meta.env.VITE_VAULT_API_URL as string | undefined) ??
@@ -85,11 +133,19 @@ export async function vendStsCredentials(
  *
  * Uses Tauri's `invoke("write_file")` to write downloaded content to disk
  * since browser-context S3Client can't write to the filesystem directly.
+ *
+ * @param destSubpath Optional relative path under `installPath` where the
+ *   bucket contents should land. Callers syncing a company bucket should pass
+ *   `"companies/{slug}"` so the bucket's `knowledge/`, `settings/`, etc.
+ *   become `{installPath}/companies/{slug}/knowledge/...` on disk. Without
+ *   this, the company's knowledge would overwrite the HQ's top-level
+ *   `knowledge/` directory (see resolveLocalPath for the rationale).
  */
 export async function syncFromS3(
   creds: StsCredentials,
   installPath: string,
-  onProgress?: SyncProgressCallback
+  onProgress?: SyncProgressCallback,
+  destSubpath?: string
 ): Promise<{ fileCount: number; totalBytes: number }> {
   // NOTE: requestHandler override is critical.
   // The SDK's default FetchHttpHandler uses WebKit's native fetch, which is
@@ -121,8 +177,13 @@ export async function syncFromS3(
     throw new Error(`S3 ListObjectsV2 failed: ${msg}`);
   }
 
+  // Include zero-byte objects too. hq-onboarding's scaffold route uploads
+  // `.gitkeep` markers (0 bytes) for empty canonical dirs — settings/, data/,
+  // projects/, policies/, registry/, repos/, knowledge/. Filtering on size > 0
+  // would drop them and leave those directories missing after sync. S3 has no
+  // real folders; the placeholder IS the folder.
   const objects = (listRes.Contents ?? []).filter(
-    (obj) => obj.Key && obj.Size && obj.Size > 0
+    (obj) => obj.Key && typeof obj.Size === "number"
   );
 
   const totalFiles = objects.length;
@@ -136,17 +197,21 @@ export async function syncFromS3(
     currentFile: "",
   };
 
-  const prefix = creds.prefix ?? "";
   for (const obj of objects) {
     const key = obj.Key!;
-    // Strip the prefix to get the relative path
-    const relativePath = prefix && key.startsWith(prefix)
-      ? key.slice(prefix.length).replace(/^\//, "")
-      : key;
 
-    if (!relativePath) continue;
+    // Resolve the on-disk path (handles prefix stripping + destSubpath +
+    // `..` rejection). Null means the key was unsafe or empty — skip it
+    // rather than aborting the whole sync, so one bad object doesn't
+    // strand an otherwise-good bucket.
+    const filePath = resolveLocalPath(installPath, key, destSubpath, creds.prefix);
+    if (!filePath) continue;
 
-    progress.currentFile = relativePath;
+    // currentFile is purely for the progress UI — show the path the user
+    // will see on disk (relative to installPath) rather than the raw S3 key.
+    progress.currentFile = filePath.startsWith(installPath)
+      ? filePath.slice(installPath.replace(/\/+$/, "").length + 1)
+      : filePath;
     onProgress?.(progress);
 
     let getRes;
@@ -162,7 +227,6 @@ export async function syncFromS3(
     if (getRes.Body) {
       // Read body as bytes and write via Tauri
       const bytes = await getRes.Body.transformToByteArray();
-      const filePath = `${installPath}/${relativePath}`;
 
       await invoke("write_file", {
         path: filePath,

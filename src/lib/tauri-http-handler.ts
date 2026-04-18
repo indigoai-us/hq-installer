@@ -12,8 +12,10 @@
 // Implementation:
 //   We conform to the Smithy HttpHandler interface (`handle(request, opts)`
 //   returning `{ response: HttpResponse }`) but translate the request to a
-//   Tauri `fetch` call. The body is read as a Blob so the SDK's
-//   `transformToByteArray()` / `transformToString()` helpers work unchanged.
+//   Tauri `fetch` call. The body is passed through as a ReadableStream —
+//   the AWS SDK's ChecksumStream and sdkStreamMixin expect a stream source
+//   (not a Blob). Using Blob causes:
+//     "@smithy/util-stream: unsupported source type Blob in ChecksumStream"
 
 import { HttpResponse } from "@smithy/protocol-http";
 import type { HttpHandler, HttpRequest } from "@smithy/protocol-http";
@@ -71,11 +73,13 @@ export class TauriHttpHandler implements HttpHandler {
       responseHeaders[key] = value;
     });
 
-    // ---- Collect body as Blob ------------------------------------------
-    // The SDK's sdkStreamMixin can transformToByteArray / transformToString
-    // on a Blob, so this covers both the XML list response and the binary
-    // GetObject response.
-    const responseBody = await response.blob();
+    // ---- Pass body through as ReadableStream ---------------------------
+    // The SDK's ChecksumStream wraps the body to validate CRCs on the fly
+    // and its source-type detection only recognizes ReadableStream /
+    // Uint8Array / AsyncIterable. A Blob triggers the "unsupported source
+    // type" error — so we forward response.body directly, matching how
+    // the default FetchHttpHandler behaves.
+    const responseBody = response.body;
 
     return {
       response: new HttpResponse({

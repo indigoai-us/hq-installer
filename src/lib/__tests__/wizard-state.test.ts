@@ -4,6 +4,7 @@ import {
   setTelemetryEnabled,
   setTeam,
   setIsPersonal,
+  setPersonalized,
   clearWizardState,
 } from "../wizard-state.js";
 import type { TeamMetadata } from "../wizard-state.js";
@@ -52,6 +53,11 @@ describe("wizard-state", () => {
     it("returns an object with isPersonal=false by default", () => {
       const state = getWizardState();
       expect(state.isPersonal).toBe(false);
+    });
+
+    it("returns an object with personalized=false by default", () => {
+      const state = getWizardState();
+      expect(state.personalized).toBe(false);
     });
 
     it("returns a consistent object on repeated calls (same reference or equal shape)", () => {
@@ -148,6 +154,33 @@ describe("wizard-state", () => {
   });
 
   // -------------------------------------------------------------------------
+  describe("setPersonalized()", () => {
+    // The personalized flag is the gate the router uses to decide whether
+    // step 9's global Next button is enabled. Screen 09 flips it on
+    // successful personalize() completion, which is what this suite verifies.
+
+    it("setPersonalized(true) flips personalized to true", () => {
+      setPersonalized(true);
+      expect(getWizardState().personalized).toBe(true);
+    });
+
+    it("setPersonalized(false) flips personalized back to false", () => {
+      setPersonalized(true);
+      setPersonalized(false);
+      expect(getWizardState().personalized).toBe(false);
+    });
+
+    it("does not affect unrelated fields (team, isPersonal, installPath)", () => {
+      setTeam(MOCK_TEAM);
+      setPersonalized(true);
+      const state = getWizardState();
+      expect(state.team?.teamId).toBe("team-abc123");
+      expect(state.isPersonal).toBe(false);
+      expect(state.personalized).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe("clearWizardState()", () => {
     it("resets telemetryEnabled back to true after being set to false", () => {
       setTelemetryEnabled(false);
@@ -175,6 +208,12 @@ describe("wizard-state", () => {
       setIsPersonal(true);
       clearWizardState();
       expect(getWizardState().isPersonal).toBe(false);
+    });
+
+    it("resets personalized back to false", () => {
+      setPersonalized(true);
+      clearWizardState();
+      expect(getWizardState().personalized).toBe(false);
     });
   });
 
