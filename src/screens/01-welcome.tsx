@@ -44,13 +44,27 @@ export function Welcome({
       </div>
 
       {/* Telemetry opt-in */}
-      <label className="flex items-center gap-3 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={telemetryChecked}
-          onChange={handleTelemetryChange}
-          className="w-4 h-4 accent-white cursor-pointer"
-        />
+      <label className="flex items-center gap-3 cursor-pointer select-none group">
+        <span className="relative inline-flex items-center justify-center w-4 h-4 shrink-0">
+          <input
+            type="checkbox"
+            checked={telemetryChecked}
+            onChange={handleTelemetryChange}
+            className="peer appearance-none w-4 h-4 rounded-[3px] border border-white/25 bg-white/5 group-hover:border-white/40 checked:bg-white checked:border-white transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+          />
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 12 12"
+            className="pointer-events-none absolute w-3 h-3 opacity-0 peer-checked:opacity-100 text-black transition-opacity"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.25"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="2.5,6.5 5,9 9.5,3.5" />
+          </svg>
+        </span>
         <span className="font-light text-zinc-300 text-sm">
           Help improve HQ by sharing anonymous usage telemetry
         </span>
