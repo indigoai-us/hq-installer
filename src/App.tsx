@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createWizardRouter } from "@/lib/wizard-router";
 import { WizardShell } from "@/components/WizardShell";
+import { ScreenSwitcher } from "@/components/ScreenSwitcher";
 import {
   getWizardState,
   setTelemetryEnabled,
@@ -32,6 +33,32 @@ function App() {
     () => subscribeWizardState(() => forceRender((n) => n + 1)),
     [],
   );
+
+  // Delegated click feedback: any primary white button gets a single-shot
+  // shimmer sweep so the click feels registered even when the handler is
+  // async or navigates away. Keyed on the existing bg-white + text-black
+  // class pair so we don't need to touch 24 call sites individually.
+  useEffect(() => {
+    const CLASS = "hq-shimmer";
+    const DURATION_MS = 700;
+    function onClick(e: MouseEvent) {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      const btn = target.closest("button");
+      if (!btn || btn.disabled) return;
+      if (
+        !btn.classList.contains("bg-white") ||
+        !btn.classList.contains("text-black")
+      ) {
+        return;
+      }
+      if (btn.classList.contains(CLASS)) return;
+      btn.classList.add(CLASS);
+      window.setTimeout(() => btn.classList.remove(CLASS), DURATION_MS);
+    }
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
 
   function handleNext() {
     router.next();
@@ -135,7 +162,7 @@ function App() {
         canNavigateTo={(step) => router.canNavigateTo(step) && step <= maxReachedStep}
         onStepClick={handleStepClick}
       >
-        {renderStep()}
+        <ScreenSwitcher stepKey={currentStep}>{renderStep()}</ScreenSwitcher>
       </WizardShell>
     </div>
   );

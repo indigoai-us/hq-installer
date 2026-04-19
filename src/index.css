@@ -107,3 +107,109 @@ body {
     @apply font-sans;
   }
 }
+
+/* Click-feedback shimmer applied by a delegated listener in App.tsx.
+   Toggled on any primary `bg-white text-black` button for ~720ms after click.
+   Composed of two concurrent animations:
+     1. A diagonal light sweep painted by ::after (the "shimmer").
+     2. A brief ring glow + tiny dip painted on the button itself (the "press"). */
+@keyframes hq-shimmer-sweep {
+  0%   { transform: translateX(-120%); opacity: 0; }
+  15%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translateX(120%);  opacity: 0; }
+}
+@keyframes hq-shimmer-press {
+  0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0);    filter: brightness(1); }
+  35%  { box-shadow: 0 0 0 6px rgba(255,255,255,0.18); filter: brightness(0.94); }
+  100% { box-shadow: 0 0 0 0 rgba(255,255,255,0);    filter: brightness(1); }
+}
+.hq-shimmer {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  animation: hq-shimmer-press 360ms ease-out;
+}
+.hq-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 25%,
+    rgba(0, 0, 0, 0.28) 50%,
+    transparent 75%
+  );
+  transform: translateX(-120%);
+  pointer-events: none;
+  animation: hq-shimmer-sweep 720ms ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hq-shimmer, .hq-shimmer::after { animation: none; }
+}
+
+/* Screen transition — owned by ScreenSwitcher.tsx. Brief crossfade + 4px drift
+   so the outgoing screen has paint time (also lets click-shimmer finish) and
+   incoming content settles rather than snapping in. */
+@keyframes hq-screen-fade-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes hq-screen-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.hq-screen-out { animation: hq-screen-fade-out 180ms ease-in forwards; }
+.hq-screen-in  { animation: hq-screen-fade-in  220ms ease-out forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .hq-screen-out, .hq-screen-in { animation: none; }
+}
+
+/* In-progress text shimmer — ports motion-primitives/text-shimmer as pure CSS.
+   Two stacked background layers, `background-clip: text` on both:
+     1. TOP: narrow transparent→peak→transparent band, animated across 250%
+        of width so it actually travels. `--spread` controls band width;
+        2.5em keeps it roughly proportional to font size regardless of caller.
+     2. BOTTOM: solid base-color layer acting as an always-visible floor.
+   This layering is why the glyphs never disappear — the floor shows through
+   everywhere outside the narrow highlight band, and the band itself is a
+   passing glint rather than a wash. Animating only the TOP layer's position
+   (BOTTOM is `auto`-sized and position-invariant) keeps the sweep clean. */
+@keyframes hq-text-shimmer {
+  0%   { background-position: 100% center, 0 0; }
+  100% { background-position: 0% center, 0 0; }
+}
+.hq-text-shimmer {
+  /* Base + peak — hardcoded because currentColor self-references against
+     the transparent fill color we set below. */
+  --hq-shim-base: #a1a1aa;   /* ≈ zinc-400 */
+  --hq-shim-peak: #ffffff;
+  --hq-shim-spread: 2.5em;
+  background-image:
+    linear-gradient(
+      90deg,
+      transparent calc(50% - var(--hq-shim-spread)),
+      var(--hq-shim-peak),
+      transparent calc(50% + var(--hq-shim-spread))
+    ),
+    linear-gradient(var(--hq-shim-base), var(--hq-shim-base));
+  background-size: 250% 100%, auto;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: hq-text-shimmer 2s linear infinite;
+}
+/* Lighter bases for zinc-500/600 callers so the floor tint matches the
+   surrounding text rather than always rendering as zinc-400. */
+.text-zinc-500.hq-text-shimmer { --hq-shim-base: #71717a; }
+.text-zinc-600.hq-text-shimmer { --hq-shim-base: #52525b; }
+@media (prefers-reduced-motion: reduce) {
+  .hq-text-shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+    color: inherit;
+  }
+}

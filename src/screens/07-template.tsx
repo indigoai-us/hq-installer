@@ -141,7 +141,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         {/* Status label */}
         <div className="flex items-center gap-2">
           {status === "fetching" && (
-            <span className="text-sm text-zinc-400">Downloading…</span>
+            <span className="text-sm text-zinc-400 hq-text-shimmer">Downloading…</span>
           )}
           {status === "done" && (
             <span className="text-sm text-zinc-200">Download complete</span>
@@ -150,7 +150,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
             <span className="text-sm text-red-400">Download failed</span>
           )}
           {status === "idle" && (
-            <span className="text-sm text-zinc-500">Starting…</span>
+            <span className="text-sm text-zinc-500 hq-text-shimmer">Starting…</span>
           )}
         </div>
 

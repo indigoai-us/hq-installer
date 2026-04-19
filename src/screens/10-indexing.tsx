@@ -372,7 +372,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
             <span className="text-xs text-zinc-600">Waiting</span>
           )}
           {step.status === "running" && (
-            <span className="text-xs text-zinc-400">Running…</span>
+            <span className="text-xs text-zinc-400 hq-text-shimmer">Running…</span>
           )}
           {step.status === "done" && (
             <span data-status="done" className="text-xs text-green-400">
