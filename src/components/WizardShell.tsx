@@ -57,7 +57,9 @@ export function WizardShell({
 
         {/* Content area — screens own their own forward CTA */}
         <main className="flex-1 flex flex-col bg-zinc-900/40 overflow-hidden">
-          <div className="flex-1 overflow-auto p-8">{children}</div>
+          <div className="flex-1 overflow-auto p-8">
+            <div className="mx-auto w-full max-w-3xl">{children}</div>
+          </div>
         </main>
       </div>
     </div>

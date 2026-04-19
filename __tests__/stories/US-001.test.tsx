@@ -64,9 +64,11 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
       ).toBeTruthy();
     });
 
-    it("renders wizard overview steps list", () => {
+    it("renders wizard overview steps list (via sidebar ProgressIndicator)", () => {
       render(<App />);
-      expect(screen.getByText(/Setup steps/i)).toBeTruthy();
+      // Steps moved from a duplicated body list into the persistent sidebar.
+      // "Prerequisites" is a sidebar-exclusive label — confirms the sidebar rendered.
+      expect(screen.getByText(/Prerequisites/i)).toBeTruthy();
     });
 
     it("renders telemetry opt-in label", () => {
