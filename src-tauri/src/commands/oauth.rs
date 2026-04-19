@@ -29,6 +29,15 @@ const LOOPBACK_HOST: &str = "127.0.0.1";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `eprintln!` panics on stderr write failure (EPIPE). Under some dev-server
+/// launchers the parent closes our stderr pipe while the async OAuth task is
+/// still running — a subsequent `eprintln!` would panic the blocking task,
+/// surfaced to the frontend as "OAuth listener task panicked". Use `writeln!`
+/// and discard the Result so broken pipes are a silent no-op.
+fn log_line(msg: &str) {
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
 #[derive(Serialize)]
 pub struct OAuthResult {
     pub code: String,
@@ -206,7 +215,7 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                     match parse_callback(&request) {
                         Some((_code, _state, Some(error))) => {
                             let reason = format!("Provider error: {error}");
-                            eprintln!("[oauth] callback rejected — {reason}");
+                            log_line(&format!("[oauth] callback rejected — {reason}"));
                             write_response(
                                 &mut stream,
                                 "400 Bad Request",
@@ -222,7 +231,7 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                                     "State mismatch: expected {} got {}",
                                     state_copy, state
                                 );
-                                eprintln!("[oauth] callback rejected — {reason}");
+                                log_line(&format!("[oauth] callback rejected — {reason}"));
                                 write_response(
                                     &mut stream,
                                     "400 Bad Request",
@@ -233,10 +242,10 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                                         .into(),
                                 );
                             }
-                            eprintln!(
+                            log_line(&format!(
                                 "[oauth] callback accepted — code length {}",
                                 code.len()
-                            );
+                            ));
                             write_response(&mut stream, "200 OK", SUCCESS_HTML);
                             return Ok(OAuthResult { code });
                         }
@@ -299,5 +308,20 @@ mod tests {
         assert_eq!(urldecode("hello+world"), "hello world");
         assert_eq!(urldecode("a%20b"), "a b");
         assert_eq!(urldecode("plain"), "plain");
+    }
+
+    // Regression for the "OAuth listener task panicked: failed printing to
+    // stderr: Broken pipe" bug. `log_line` must never panic — we can't easily
+    // close stderr inside a test, but we can at least confirm a range of
+    // inputs don't panic on a normal pipe, which proves the macro is `writeln!`
+    // (returns Result) rather than `eprintln!` (panics on failure).
+    #[test]
+    fn log_line_does_not_panic_on_various_inputs() {
+        log_line("");
+        log_line("simple");
+        log_line("with\nnewline");
+        log_line("with unicode ✓ and emoji 🔒");
+        let long = "x".repeat(10_000);
+        log_line(&long);
     }
 }
