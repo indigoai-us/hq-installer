@@ -180,4 +180,47 @@ describe("ProgressIndicator", () => {
       expect(screen.queryByRole("button", { name: /Templates/i })).toBeNull();
     });
   });
+
+  // -------------------------------------------------------------------------
+  describe("visual state affordances", () => {
+    it("renders a locked glyph for past steps behind an auth gate", () => {
+      // currentStep=5, all past steps (1-4) are visited but blocked by canNavigateTo —
+      // mirrors what happens once the user crosses AUTH_GATED_STEPS.
+      render(
+        <ProgressIndicator
+          currentStep={5}
+          maxReachedStep={5}
+          canNavigateTo={() => false}
+          onStepClick={vi.fn()}
+        />,
+      );
+      const locks = screen.getAllByRole("img", { name: /locked/i });
+      // Steps 1-4 are past-and-gated = 4 locks. Current & unvisited never
+      // show a lock.
+      expect(locks).toHaveLength(4);
+    });
+
+    it("does not render a locked glyph when nav context is absent", () => {
+      // Back-compat render without onStepClick/canNavigateTo — no lock noise.
+      render(<ProgressIndicator currentStep={5} maxReachedStep={5} />);
+      expect(screen.queryAllByRole("img", { name: /locked/i })).toHaveLength(0);
+    });
+
+    it("marks gated past items with aria-disabled='true'", () => {
+      render(
+        <ProgressIndicator
+          currentStep={5}
+          maxReachedStep={5}
+          canNavigateTo={() => false}
+          onStepClick={vi.fn()}
+        />,
+      );
+      const disabled = screen
+        .getAllByRole("listitem")
+        .filter((li) =>
+          li.querySelector("[aria-disabled='true']"),
+        );
+      expect(disabled).toHaveLength(4); // steps 1-4
+    });
+  });
 });

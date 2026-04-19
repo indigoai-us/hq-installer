@@ -31,30 +31,77 @@ export function ProgressIndicator({
         const isCurrent = step.index === currentStep;
         const isPast = step.index < currentStep;
         const isVisited = step.index <= reachedCap;
+        const navProvided = !!onStepClick && !!canNavigateTo;
         const clickable =
           !!onStepClick &&
           isVisited &&
           !isCurrent &&
           (canNavigateTo?.(step.index) ?? false);
+        // A past step is "gated" only when navigation is wired up AND the
+        // router says we can't reach it. Without nav context, we stay silent
+        // (no lock icons in back-compat renders).
+        const isGatedPast =
+          navProvided && isPast && !canNavigateTo!(step.index);
 
         let textColor: string;
+        let fontWeight = "font-light";
         if (isCurrent) {
           textColor = "text-white";
+          fontWeight = "font-medium";
+        } else if (isGatedPast) {
+          textColor = "text-zinc-600";
         } else if (isPast) {
-          textColor = "text-zinc-400";
+          textColor = "text-zinc-300";
         } else {
           textColor = "text-zinc-600";
         }
 
-        const rowClass = `flex items-center gap-2 text-xs font-light ${textColor}`;
+        // Accent bar for the current step; reserved gutter (border-transparent)
+        // for all others so labels stay aligned.
+        const accent = isCurrent
+          ? "border-l-2 border-white pl-2"
+          : "border-l-2 border-transparent pl-2";
+        const rowClass = `flex items-center gap-2 text-xs ${fontWeight} ${textColor} ${accent}`;
         const interactive =
-          "w-full text-left rounded-md px-1 -mx-1 hover:bg-white/5 hover:text-white transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-white/20";
-        const inert = "px-1 -mx-1";
+          "w-full text-left rounded-md pr-1 hover:bg-white/5 hover:text-white transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-white/20";
+        const inert = "pr-1";
 
         const content = (
           <>
-            <span className="w-4 text-right shrink-0">{step.index}</span>
-            <span>{step.label}</span>
+            <span className="w-4 text-right shrink-0 tabular-nums">
+              {step.index}
+            </span>
+            <span className="flex-1">{step.label}</span>
+            {isPast && !isGatedPast && (
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 12 12"
+                className="w-3 h-3 shrink-0 opacity-70"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="2.5,6.5 5,9 9.5,3.5" />
+              </svg>
+            )}
+            {isGatedPast && (
+              <svg
+                aria-label="locked"
+                role="img"
+                viewBox="0 0 12 12"
+                className="w-3 h-3 shrink-0 opacity-70"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="2.5" y="6" width="7" height="4.5" rx="0.75" />
+                <path d="M4 6 V4.25 a2 2 0 0 1 4 0 V6" />
+              </svg>
+            )}
           </>
         );
 
@@ -73,7 +120,12 @@ export function ProgressIndicator({
                 {content}
               </button>
             ) : (
-              <div className={`${rowClass} ${inert}`}>{content}</div>
+              <div
+                className={`${rowClass} ${inert}`}
+                aria-disabled={isGatedPast ? "true" : undefined}
+              >
+                {content}
+              </div>
             )}
           </li>
         );
