@@ -65,17 +65,23 @@ fn emit_progress(app: &AppHandle, phase: &str, percent: u8, message: &str) {
 /// Call the GitHub Releases API and return the browser_download_url for the
 /// first asset whose name ends with `.dmg`.
 ///
-/// Uses `curl` so no extra Rust dependency is needed.
+/// Uses `curl` so no extra Rust dependency is needed. We deliberately do NOT
+/// pass `--fail` — that would discard the HTTP status code and surface a
+/// misleading curl exit code (e.g. exit 56 on 404 with chunked body) instead
+/// of a clear "no release published / repo private" message. Instead we
+/// append the HTTP status as a sentinel line via `--write-out` and branch
+/// on it in `classify_release_response`.
 fn fetch_latest_dmg_url() -> Result<String, String> {
     let output = Command::new("curl")
         .args([
             "--silent",
-            "--fail",
             "--location",
             "--max-time",
             "15",
             "--user-agent",
             "hq-installer/1.0",
+            "--write-out",
+            "\n%{http_code}",
             "https://api.github.com/repos/indigoai-us/hq-sync/releases/latest",
         ])
         .output()
@@ -84,16 +90,65 @@ fn fetch_latest_dmg_url() -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "GitHub Releases API request failed (exit {}): {}",
+            "Network error contacting GitHub Releases API (curl exit {}). \
+             Check your internet connection and try again.{}",
             output.status.code().unwrap_or(-1),
-            stderr.trim()
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" Detail: {}", stderr.trim())
+            }
         ));
     }
 
-    let body = String::from_utf8(output.stdout)
+    let combined = String::from_utf8(output.stdout)
         .map_err(|e| format!("GitHub API response is not UTF-8: {}", e))?;
 
-    parse_dmg_url_from_json(&body)
+    let (body, status_code) = match combined.rsplit_once('\n') {
+        Some((body, status)) => (body, status.trim()),
+        None => return Err("Empty response from GitHub Releases API".to_string()),
+    };
+
+    classify_release_response(status_code, body)
+}
+
+/// Map an HTTP status code from the GitHub Releases API into either a parsed
+/// DMG URL (200) or a human-readable error (everything else).
+///
+/// Split out from `fetch_latest_dmg_url` so the branching logic is testable
+/// without making real network calls.
+fn classify_release_response(status_code: &str, body: &str) -> Result<String, String> {
+    match status_code {
+        "200" => parse_dmg_url_from_json(body),
+        "404" => Err(
+            "No release has been published for HQ Sync yet. \
+             If the repository is private, the installer would also need an \
+             auth token to read it. Click Skip to continue without HQ Sync — \
+             you can install it later from the menubar."
+                .to_string(),
+        ),
+        "401" | "403" => Err(format!(
+            "GitHub denied access to the HQ Sync release (HTTP {}). \
+             The repository is likely private and requires an auth token. \
+             Click Skip to continue — you can install HQ Sync manually later.",
+            status_code
+        )),
+        "429" => Err(
+            "GitHub rate-limited the request (HTTP 429). Wait a minute and retry, \
+             or click Skip to continue without HQ Sync."
+                .to_string(),
+        ),
+        other if other.starts_with('5') => Err(format!(
+            "GitHub is having trouble (HTTP {}). Try again in a moment, \
+             or click Skip to continue.",
+            other
+        )),
+        other => Err(format!(
+            "Unexpected response from GitHub Releases API (HTTP {}). \
+             Click Skip to continue without HQ Sync.",
+            other
+        )),
+    }
 }
 
 /// Parse the `browser_download_url` of the first `.dmg` asset from a GitHub
@@ -446,7 +501,7 @@ pub fn launch_menubar_app() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_dmg_url_from_json;
+    use super::{classify_release_response, parse_dmg_url_from_json};
 
     const SAMPLE_RELEASE: &str = r#"{
         "tag_name": "v1.2.3",
@@ -496,5 +551,50 @@ mod tests {
             ]
         }"#;
         assert!(parse_dmg_url_from_json(json).is_err());
+    }
+
+    #[test]
+    fn test_classify_200_parses_body() {
+        let url = classify_release_response("200", SAMPLE_RELEASE).expect("200 should parse");
+        assert!(url.ends_with(".dmg"));
+    }
+
+    #[test]
+    fn test_classify_404_explains_no_release_or_private() {
+        let err = classify_release_response("404", "{}").expect_err("404 should error");
+        assert!(err.contains("No release"), "got: {err}");
+        assert!(err.contains("Skip"), "should advise Skip; got: {err}");
+        assert!(!err.contains("exit 56"), "should not leak curl exit code");
+    }
+
+    #[test]
+    fn test_classify_403_explains_private_repo() {
+        let err = classify_release_response("403", "{}").expect_err("403 should error");
+        assert!(err.contains("private"), "got: {err}");
+        assert!(err.contains("403"), "should include status code; got: {err}");
+    }
+
+    #[test]
+    fn test_classify_401_explains_private_repo() {
+        let err = classify_release_response("401", "{}").expect_err("401 should error");
+        assert!(err.contains("private"), "got: {err}");
+    }
+
+    #[test]
+    fn test_classify_429_explains_rate_limit() {
+        let err = classify_release_response("429", "").expect_err("429 should error");
+        assert!(err.contains("rate-limited"), "got: {err}");
+    }
+
+    #[test]
+    fn test_classify_5xx_explains_server_error() {
+        let err = classify_release_response("503", "").expect_err("503 should error");
+        assert!(err.contains("GitHub is having trouble"), "got: {err}");
+    }
+
+    #[test]
+    fn test_classify_unknown_status_falls_through() {
+        let err = classify_release_response("418", "").expect_err("418 should error");
+        assert!(err.contains("Unexpected"), "got: {err}");
     }
 }
