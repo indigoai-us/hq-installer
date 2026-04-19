@@ -2,7 +2,6 @@
 // Welcome screen — product identity, wizard overview, telemetry opt-in
 
 import React, { useState } from "react";
-import { WIZARD_STEPS } from "@/lib/wizard-router";
 
 interface WelcomeScreenProps {
   onNext?: () => void;
@@ -42,27 +41,6 @@ export function Welcome({
         <p className="font-light text-zinc-400 text-sm">
           Run <code className="font-mono text-zinc-200">npx create-hq</code> to get started
         </p>
-      </div>
-
-      {/* Wizard overview */}
-      <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium text-zinc-300 uppercase tracking-widest">
-          Setup steps
-        </h2>
-        <ol className="flex flex-col gap-1">
-          {WIZARD_STEPS.map((step) => (
-            <li
-              key={step.id}
-              data-step-id={step.id}
-              className="flex items-center gap-3 text-sm font-light text-zinc-400"
-            >
-              <span className="w-5 h-5 rounded-full border border-white/10 bg-white/5 flex items-center justify-center text-xs text-zinc-500">
-                {step.index}
-              </span>
-              <span>{step.label}</span>
-            </li>
-          ))}
-        </ol>
       </div>
 
       {/* Telemetry opt-in */}
