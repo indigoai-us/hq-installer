@@ -1,5 +1,7 @@
 // WizardShell.tsx — US-012
-// Full-page wizard overlay — zinc monochrome, Tauri-aware
+// Full-page wizard overlay — zinc monochrome, Tauri-aware.
+// Navigation lives in the sidebar (clickable ProgressIndicator items);
+// there is no bottom Back/Next bar — each screen owns its own forward CTA.
 
 import React from "react";
 import { ProgressIndicator } from "./ProgressIndicator";
@@ -14,19 +16,17 @@ function isTauri(): boolean {
 interface WizardShellProps {
   children: React.ReactNode;
   currentStep: number;
-  onNext?: () => void;
-  onBack?: () => void;
-  canGoBack?: boolean;
-  canGoNext?: boolean;
+  maxReachedStep?: number;
+  canNavigateTo?: (step: number) => boolean;
+  onStepClick?: (step: number) => void;
 }
 
 export function WizardShell({
   children,
   currentStep,
-  onNext,
-  onBack,
-  canGoBack = false,
-  canGoNext = true,
+  maxReachedStep,
+  canNavigateTo,
+  onStepClick,
 }: WizardShellProps) {
   const inTauri = isTauri();
 
@@ -45,37 +45,19 @@ export function WizardShell({
 
       {/* Main panel */}
       <div className="relative z-10 flex h-[calc(100%-2rem)] w-full">
-        {/* Sidebar — progress indicator */}
+        {/* Sidebar — progress indicator doubles as nav */}
         <aside className="w-48 shrink-0 bg-zinc-950/60 p-6 flex flex-col">
-          <ProgressIndicator currentStep={currentStep} />
+          <ProgressIndicator
+            currentStep={currentStep}
+            maxReachedStep={maxReachedStep}
+            canNavigateTo={canNavigateTo}
+            onStepClick={onStepClick}
+          />
         </aside>
 
-        {/* Content area */}
+        {/* Content area — screens own their own forward CTA */}
         <main className="flex-1 flex flex-col bg-zinc-900/40 overflow-hidden">
-          {/* Step content */}
           <div className="flex-1 overflow-auto p-8">{children}</div>
-
-          {/* Navigation buttons */}
-          {(onBack !== undefined || onNext !== undefined) && (
-            <div className="flex items-center justify-between px-8 py-4 border-t border-white/5">
-              <button
-                type="button"
-                onClick={onBack}
-                disabled={!canGoBack}
-                className="px-5 py-2 rounded-full text-sm font-medium bg-white/5 border border-white/10 text-zinc-400 disabled:opacity-30"
-              >
-                Back
-              </button>
-              <button
-                type="button"
-                onClick={onNext}
-                disabled={!canGoNext}
-                className="px-5 py-2 rounded-full text-sm font-medium bg-white text-black disabled:opacity-30"
-              >
-                Next
-              </button>
-            </div>
-          )}
         </main>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createWizardRouter, getStepValidity } from "@/lib/wizard-router";
+import { createWizardRouter } from "@/lib/wizard-router";
 import { WizardShell } from "@/components/WizardShell";
 import {
   getWizardState,
@@ -23,6 +23,10 @@ import { Summary } from "@/screens/11-summary";
 function App() {
   const [router] = useState(() => createWizardRouter());
   const [, forceRender] = useState(0);
+  // High-water mark of steps the user has actually reached. Lets the sidebar
+  // disable forward jumps to never-visited steps without preventing back-jumps
+  // to ones already completed.
+  const [maxReachedStep, setMaxReachedStep] = useState(1);
 
   useEffect(
     () => subscribeWizardState(() => forceRender((n) => n + 1)),
@@ -31,11 +35,14 @@ function App() {
 
   function handleNext() {
     router.next();
+    setMaxReachedStep((m) => Math.max(m, router.currentStep));
     forceRender((n) => n + 1);
   }
 
-  function handleBack() {
-    router.back();
+  function handleStepClick(step: number) {
+    if (!router.canNavigateTo(step)) return;
+    if (step > maxReachedStep) return;
+    router.goTo(step);
     forceRender((n) => n + 1);
   }
 
@@ -45,7 +52,6 @@ function App() {
 
   const wizardState = getWizardState();
   const { currentStep } = router;
-  const canGoNext = router.canGoNext && getStepValidity(currentStep, wizardState);
 
   // Screen flow (US-006 + US-013):
   //   1 Welcome → 2 Cognito Auth → 3 Company Detect → 4 Deps →
@@ -72,6 +78,8 @@ function App() {
             onNext={handleNext}
             onSignOutAndRetry={() => {
               router.goTo(2);
+              // Reset high-water mark — auth sign-out invalidates progress past auth.
+              setMaxReachedStep(2);
               forceRender((n) => n + 1);
             }}
           />
@@ -123,10 +131,9 @@ function App() {
     <div className="min-h-screen bg-zinc-950">
       <WizardShell
         currentStep={currentStep}
-        onNext={handleNext}
-        onBack={handleBack}
-        canGoBack={router.canGoBack}
-        canGoNext={canGoNext}
+        maxReachedStep={maxReachedStep}
+        canNavigateTo={(step) => router.canNavigateTo(step) && step <= maxReachedStep}
+        onStepClick={handleStepClick}
       >
         {renderStep()}
       </WizardShell>

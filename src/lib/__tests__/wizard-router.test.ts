@@ -227,4 +227,49 @@ describe("createWizardRouter", () => {
       expect(router.currentStep).toBe(3);
     });
   });
+
+  // -------------------------------------------------------------------------
+  describe("canNavigateTo", () => {
+    it("returns false for out-of-range targets", () => {
+      const router = createWizardRouter();
+      expect(router.canNavigateTo(0)).toBe(false);
+      expect(router.canNavigateTo(WIZARD_STEPS.length + 1)).toBe(false);
+    });
+
+    it("returns false for the current step", () => {
+      const router = createWizardRouter();
+      expect(router.canNavigateTo(1)).toBe(false);
+      router.next(); // → 2
+      expect(router.canNavigateTo(2)).toBe(false);
+    });
+
+    it("allows forward jumps within range", () => {
+      const router = createWizardRouter();
+      // From step 1, forward jumps are fine — caller is responsible for
+      // gating against unvisited steps via maxReachedStep.
+      expect(router.canNavigateTo(5)).toBe(true);
+    });
+
+    it("allows backward jumps when no auth gate sits between target and current", () => {
+      const router = createWizardRouter();
+      router.goTo(7);
+      expect(router.canNavigateTo(4)).toBe(true);
+      expect(router.canNavigateTo(6)).toBe(true);
+    });
+
+    it("blocks backward jumps that would cross AUTH_GATED_STEPS=[3]", () => {
+      const router = createWizardRouter();
+      router.goTo(7);
+      // step 3 is auth-gated → can't return to step 1 or 2
+      expect(router.canNavigateTo(1)).toBe(false);
+      expect(router.canNavigateTo(2)).toBe(false);
+      // step 3 itself is reachable (the gate is on leaving it backwards)
+      expect(router.canNavigateTo(3)).toBe(true);
+    });
+
+    it("AUTH_GATED_STEPS const is honored — modifying gate set affects rule", () => {
+      // Sanity: confirm the test fixture matches what the rule reads.
+      expect(AUTH_GATED_STEPS).toContain(3);
+    });
+  });
 });

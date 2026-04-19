@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
 import { ProgressIndicator } from "../ProgressIndicator.js";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,90 @@ describe("ProgressIndicator", () => {
     it("renders without blue class names anywhere in the DOM", () => {
       const { container } = render(<ProgressIndicator currentStep={1} />);
       expect(container.innerHTML).not.toMatch(/\bblue\b/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("clickable navigation", () => {
+    it("renders no buttons when onStepClick is not provided (back-compat)", () => {
+      render(<ProgressIndicator currentStep={5} maxReachedStep={5} />);
+      expect(screen.queryAllByRole("button")).toHaveLength(0);
+    });
+
+    it("renders buttons only for visited, non-current, navigable steps", () => {
+      const onStepClick = vi.fn();
+      // currentStep=5, maxReached=5, all visited steps (1-4) navigable.
+      render(
+        <ProgressIndicator
+          currentStep={5}
+          maxReachedStep={5}
+          canNavigateTo={() => true}
+          onStepClick={onStepClick}
+        />,
+      );
+      // Steps 1-4 are buttons; step 5 (current) is not; steps 6-12 (unvisited) are not.
+      expect(screen.getAllByRole("button")).toHaveLength(4);
+    });
+
+    it("does not render a button for the current step", () => {
+      const onStepClick = vi.fn();
+      render(
+        <ProgressIndicator
+          currentStep={3}
+          maxReachedStep={5}
+          canNavigateTo={() => true}
+          onStepClick={onStepClick}
+        />,
+      );
+      const currentEl = screen.getByRole("listitem", { current: "step" });
+      expect(currentEl.querySelector("button")).toBeNull();
+    });
+
+    it("calls onStepClick with the step index when a step button is clicked", () => {
+      const onStepClick = vi.fn();
+      render(
+        <ProgressIndicator
+          currentStep={5}
+          maxReachedStep={5}
+          canNavigateTo={() => true}
+          onStepClick={onStepClick}
+        />,
+      );
+      // Click "Sign In" (step 2)
+      fireEvent.click(screen.getByRole("button", { name: /Sign In/i }));
+      expect(onStepClick).toHaveBeenCalledWith(2);
+    });
+
+    it("respects canNavigateTo — blocked steps render as inert <div>, not <button>", () => {
+      const onStepClick = vi.fn();
+      // Block step 1 explicitly
+      render(
+        <ProgressIndicator
+          currentStep={5}
+          maxReachedStep={5}
+          canNavigateTo={(s) => s !== 1}
+          onStepClick={onStepClick}
+        />,
+      );
+      // Step 1 should not be a button
+      expect(screen.queryByRole("button", { name: /Welcome/i })).toBeNull();
+      // Step 2 should be a button
+      expect(screen.queryByRole("button", { name: /Sign In/i })).not.toBeNull();
+    });
+
+    it("does not render buttons for unvisited steps (above maxReachedStep)", () => {
+      const onStepClick = vi.fn();
+      render(
+        <ProgressIndicator
+          currentStep={3}
+          maxReachedStep={3}
+          canNavigateTo={() => true}
+          onStepClick={onStepClick}
+        />,
+      );
+      // Visited & navigable: 1, 2 (step 3 is current). Steps 4-12 are unvisited.
+      expect(screen.getAllByRole("button")).toHaveLength(2);
+      expect(screen.queryByRole("button", { name: /Templates/i })).toBeNull();
     });
   });
 });
