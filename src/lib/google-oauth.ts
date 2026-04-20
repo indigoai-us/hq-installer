@@ -107,7 +107,11 @@ export interface AuthorizeArgs {
  * Build the Cognito Hosted UI URL that signs the user in via Google.
  *
  * `identity_provider=Google` skips the Cognito username/password screen and
- * goes straight to Google consent.
+ * goes straight to Google consent. `prompt=select_account` passes through
+ * Cognito to Google so the user always sees the account picker — without it,
+ * Google auto-selects whichever Google session is already active in the
+ * system browser, which is rarely the account the user actually means to use
+ * on a multi-account machine.
  */
 export function buildAuthorizeUrl({
   config,
@@ -123,6 +127,7 @@ export function buildAuthorizeUrl({
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
+    prompt: "select_account",
   });
   return `https://${config.cognitoDomain}/oauth2/authorize?${params.toString()}`;
 }

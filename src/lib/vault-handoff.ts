@@ -98,24 +98,44 @@ async function claimPendingInvites(
   headers: Record<string, string>,
   hints: ClaimHints
 ): Promise<void> {
+  console.log("[vault-handoff] claim: GET /membership/pending-by-email");
   const pendingRes = await fetch(`${base}/membership/pending-by-email`, {
     headers,
   });
-  if (!pendingRes.ok) return;
+  if (!pendingRes.ok) {
+    const detail = await pendingRes.text().catch(() => "");
+    console.warn(
+      `[vault-handoff] claim: pending-by-email failed (${pendingRes.status}) — ${detail}`
+    );
+    return;
+  }
   const pendingBody = (await pendingRes.json()) as {
     invites?: MembershipEntry[];
   };
   const pending = pendingBody.invites ?? [];
+  console.log(`[vault-handoff] claim: ${pending.length} pending invite(s)`);
   if (!pending.length) return;
 
   const person = await ensurePersonEntity(base, headers, hints);
-  if (!person) return;
+  if (!person) {
+    console.warn("[vault-handoff] claim: ensurePersonEntity returned null — aborting claim");
+    return;
+  }
+  console.log(`[vault-handoff] claim: person ${person.uid} ready, POST /membership/claim-by-email`);
 
-  await fetch(`${base}/membership/claim-by-email`, {
+  const claimRes = await fetch(`${base}/membership/claim-by-email`, {
     method: "POST",
     headers,
     body: JSON.stringify({ personUid: person.uid }),
   });
+  if (!claimRes.ok) {
+    const detail = await claimRes.text().catch(() => "");
+    console.warn(
+      `[vault-handoff] claim: claim-by-email failed (${claimRes.status}) — ${detail}`
+    );
+  } else {
+    console.log("[vault-handoff] claim: claim-by-email succeeded");
+  }
 }
 
 /**
@@ -141,12 +161,15 @@ export async function resolveUserCompany(
     "Content-Type": "application/json",
   };
 
+  console.log(`[vault-handoff] resolveUserCompany start (base=${base}, hints=${hints ? "yes" : "no"})`);
+
   // Step 0: Claim email-keyed pending invites (first-sign-in bootstrap).
   if (hints) {
     await claimPendingInvites(base, headers, hints);
   }
 
   // Step 1: Find the person entity (scoped to caller via JWT)
+  console.log("[vault-handoff] step 1: GET /entity/by-type/person");
   const personsRes = await fetch(`${base}/entity/by-type/person`, { headers });
   if (!personsRes.ok) {
     throw new Error(
@@ -155,13 +178,16 @@ export async function resolveUserCompany(
   }
   const personsBody = (await personsRes.json()) as { entities: VaultEntity[] };
   const persons = personsBody.entities;
+  console.log(`[vault-handoff] step 1: ${persons.length} person entity/entities`);
   if (!persons.length) {
+    console.log("[vault-handoff] no person entity → found:false");
     return { found: false };
   }
   // Use the first person entity (single-user context after Cognito auth)
   const person = persons[0];
 
   // Step 2: Find company memberships for this person
+  console.log(`[vault-handoff] step 2: GET /membership/person/${person.uid}`);
   const membershipsRes = await fetch(
     `${base}/membership/person/${person.uid}`,
     { headers }
