@@ -154,49 +154,65 @@ fn classify_release_response(status_code: &str, body: &str) -> Result<String, St
 /// Parse the `browser_download_url` of the first `.dmg` asset from a GitHub
 /// releases JSON body without pulling in a JSON crate.
 ///
-/// The JSON looks like:
-/// ```json
-/// { "assets": [ { "name": "HQ.Sync.dmg", "browser_download_url": "https://..." }, ... ] }
-/// ```
-/// We walk the text looking for `"name": "...dmg"` followed by
-/// `"browser_download_url": "..."`.
+/// For each release asset, GitHub's JSON always lists `"name"` before
+/// `"browser_download_url"`, but the real payload also sprinkles a large
+/// nested `"uploader"` object (>1 KB of user fields) between them. So the
+/// two fields can be arbitrarily far apart *within the same asset*, but
+/// the `"browser_download_url"` key itself does NOT appear anywhere else
+/// in the response (the uploader's URLs all use different key names:
+/// `url`, `avatar_url`, `followers_url`, etc.). That makes scanning
+/// forward from a `.dmg`-named asset to the next `"browser_download_url"`
+/// correct and robust against the nested bloat that breaks any
+/// fixed-window heuristic.
 fn parse_dmg_url_from_json(json: &str) -> Result<String, String> {
-    // Find each "browser_download_url" value and return the first one whose
-    // corresponding "name" ends in .dmg.  We use a minimal state-machine
-    // rather than a regex to avoid adding a dependency.
-    //
-    // Strategy: scan for `"browser_download_url"` occurrences, then extract
-    // the quoted string that follows.  Simultaneously scan for `"name"` entries
-    // ending in `.dmg` to confirm this is the right asset.
-    //
-    // Simpler approach: find first `"browser_download_url": "` that is
-    // preceded (within 200 chars) by a `"name"` value ending in `.dmg"`.
+    const URL_KEY: &str = "\"browser_download_url\"";
 
-    let positions: Vec<usize> = json
-        .match_indices("\"browser_download_url\"")
-        .map(|(i, _)| i)
-        .collect();
-
-    for pos in positions {
-        // Check the surrounding context (up to 300 chars before) for a .dmg name.
-        let context_start = pos.saturating_sub(300);
-        let context = &json[context_start..pos];
-        if !context.contains(".dmg\"") {
-            continue;
-        }
-
-        // Extract the URL value: find the opening `"` after the colon.
-        let after = &json[pos + "\"browser_download_url\"".len()..];
-        let colon_offset = after.find(':').ok_or("Malformed JSON: no colon after browser_download_url")?;
-        let after_colon = &after[colon_offset + 1..].trim_start();
+    for (name_pos, _) in json.match_indices("\"name\"") {
+        // Extract the value of this "name" field.
+        let after_key = &json[name_pos + "\"name\"".len()..];
+        let colon_off = match after_key.find(':') {
+            Some(o) => o,
+            None => continue,
+        };
+        let after_colon = after_key[colon_off + 1..].trim_start();
         if !after_colon.starts_with('"') {
             continue;
         }
-        let inner = &after_colon[1..]; // skip opening quote
-        let end = inner
-            .find('"')
-            .ok_or("Malformed JSON: unterminated browser_download_url string")?;
-        let url = &inner[..end];
+        let inner = &after_colon[1..];
+        let close = match inner.find('"') {
+            Some(c) => c,
+            None => continue,
+        };
+        let name_value = &inner[..close];
+
+        // Only DMG assets are candidates.
+        if !name_value.ends_with(".dmg") {
+            continue;
+        }
+
+        // Scan forward from this asset's name to the next browser_download_url
+        // — that key lives nowhere else, so no ambiguity.
+        let forward_start = name_pos;
+        let rel = match json[forward_start..].find(URL_KEY) {
+            Some(r) => r,
+            None => continue,
+        };
+        let url_pos = forward_start + rel;
+        let after_url_key = &json[url_pos + URL_KEY.len()..];
+        let url_colon = match after_url_key.find(':') {
+            Some(o) => o,
+            None => continue,
+        };
+        let after_url_colon = after_url_key[url_colon + 1..].trim_start();
+        if !after_url_colon.starts_with('"') {
+            continue;
+        }
+        let url_inner = &after_url_colon[1..];
+        let url_end = match url_inner.find('"') {
+            Some(e) => e,
+            None => continue,
+        };
+        let url = &url_inner[..url_end];
         if url.starts_with("https://") {
             return Ok(url.to_string());
         }
@@ -521,11 +537,54 @@ mod tests {
         ]
     }"#;
 
+    /// Snapshot of a real `/releases/latest` asset entry (with nested
+    /// `uploader` object) shaped exactly like GitHub's response. The
+    /// `uploader` alone is >1 KB — more than the old parser's 300-char
+    /// backward context window — so before the fix this asset's
+    /// `browser_download_url` would be skipped and "No .dmg asset found"
+    /// would bubble up to the UI even though a DMG was clearly published.
+    const REAL_RELEASE_WITH_UPLOADER: &str = r#"{
+        "tag_name":"v0.1.2",
+        "name":"HQ Sync v0.1.2",
+        "assets":[
+            {
+                "url":"https://api.github.com/repos/indigoai-us/hq-sync/releases/assets/400391570",
+                "id":400391570,
+                "node_id":"RA_kwDOSF3Hkc4X3X2S",
+                "name":"HQ-Sync_0.1.2_universal.dmg",
+                "label":"",
+                "uploader":{"login":"github-actions[bot]","id":41898282,"node_id":"MDM6Qm90NDE4OTgyODI=","avatar_url":"https://avatars.githubusercontent.com/in/15368?v=4","gravatar_id":"","url":"https://api.github.com/users/github-actions%5Bbot%5D","html_url":"https://github.com/apps/github-actions","followers_url":"https://api.github.com/users/github-actions%5Bbot%5D/followers","following_url":"https://api.github.com/users/github-actions%5Bbot%5D/following{/other_user}","gists_url":"https://api.github.com/users/github-actions%5Bbot%5D/gists{/gist_id}","starred_url":"https://api.github.com/users/github-actions%5Bbot%5D/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/github-actions%5Bbot%5D/subscriptions","organizations_url":"https://api.github.com/users/github-actions%5Bbot%5D/orgs","repos_url":"https://api.github.com/users/github-actions%5Bbot%5D/repos","events_url":"https://api.github.com/users/github-actions%5Bbot%5D/events{/privacy}","received_events_url":"https://api.github.com/users/github-actions%5Bbot%5D/received_events","type":"Bot","user_view_type":"public","site_admin":false},
+                "content_type":"application/x-apple-diskimage",
+                "state":"uploaded",
+                "size":15569413,
+                "digest":"sha256:72c898102528ade122260d57b9a6cb79194775abb6ab59c774f2cd8e24d2bd84",
+                "download_count":2,
+                "created_at":"2026-04-20T04:31:48Z",
+                "updated_at":"2026-04-20T04:31:49Z",
+                "browser_download_url":"https://github.com/indigoai-us/hq-sync/releases/download/v0.1.2/HQ-Sync_0.1.2_universal.dmg"
+            }
+        ]
+    }"#;
+
     #[test]
     fn test_parse_dmg_url_finds_first_dmg() {
         let url = parse_dmg_url_from_json(SAMPLE_RELEASE).expect("should find dmg url");
         assert!(url.starts_with("https://github.com/"));
         assert!(url.ends_with(".dmg"));
+    }
+
+    /// Regression guard: the real GitHub response has a large `uploader`
+    /// nested object sitting between each asset's `name` and
+    /// `browser_download_url`. The parser must pair them across that gap.
+    #[test]
+    fn test_parse_dmg_url_pairs_name_and_url_across_uploader_object() {
+        let url = parse_dmg_url_from_json(REAL_RELEASE_WITH_UPLOADER)
+            .expect("should find dmg url in real-shaped release");
+        assert!(url.ends_with(".dmg"), "got: {url}");
+        assert!(
+            url.contains("HQ-Sync_0.1.2_universal.dmg"),
+            "should extract this asset's url, not a neighbour's; got: {url}"
+        );
     }
 
     #[test]
