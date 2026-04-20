@@ -24,7 +24,7 @@ which = "6"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
 keyring = { version = "3", features = ["apple-native"] }
-git2 = "0.19"
+git2 = { version = "0.19", features = ["vendored-openssl"] }
 nix = { version = "0.29", features = ["signal"] }
 tauri-plugin-agent-test = { path = "crates/tauri-plugin-agent-test", optional = true }
 tauri-plugin-http = "2.5.8"
