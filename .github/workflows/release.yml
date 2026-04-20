@@ -150,6 +150,27 @@ jobs:
 
           gh release upload "$TAG" latest.json --clobber
 
+      # Versionless DMG alias. A second copy of the same signed/notarized
+      # DMG uploaded under a stable filename gives consumers a permanent
+      # one-click URL:
+      #   https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_universal.dmg
+      # GitHub auto-redirects /releases/latest/download/<name> to whatever
+      # the current release is. Used by hq-onboarding's "Download HQ
+      # Installer" step — no API call, no rate limit, one click forever.
+      - name: Upload versionless DMG alias
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DMG_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -z "$DMG_PATH" ]; then
+            echo "::warning::No DMG found — skipping versionless alias"
+            exit 0
+          fi
+          ALIAS_PATH="src-tauri/target/hq-installer_universal.dmg"
+          cp "$DMG_PATH" "$ALIAS_PATH"
+          gh release upload "$TAG" "$ALIAS_PATH" --clobber
+
       # tauri-action creates the release as a draft so we can sanity-check
       # assets before it hits everyone's auto-updater. Publish once the
       # .tar.gz, .sig, DMG, and latest.json are all present.
@@ -159,7 +180,7 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
-          for REQUIRED in ".dmg" ".tar.gz" ".tar.gz.sig" "latest.json"; do
+          for REQUIRED in ".dmg" ".tar.gz" ".tar.gz.sig" "latest.json" "hq-installer_universal.dmg"; do
             if ! echo "$ASSETS" | grep -q "$REQUIRED"; then
               echo "::error::Missing required asset: $REQUIRED"
               exit 1
