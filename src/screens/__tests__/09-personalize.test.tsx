@@ -70,7 +70,7 @@ vi.mock("../../lib/s3-sync.js", () => ({
     secretAccessKey: "secret",
     sessionToken: "session",
     bucketName: "hq-vault-acme",
-    expiration: new Date(Date.now() + 3_600_000).toISOString(),
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
   }),
   syncFromS3: vi
     .fn()
@@ -149,7 +149,7 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
       secretAccessKey: "secret",
       sessionToken: "session",
       bucketName: "hq-vault-acme",
-      expiration: new Date(Date.now() + 3_600_000).toISOString(),
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     });
     mockSyncFromS3.mockResolvedValue({ fileCount: 0, totalBytes: 0 });
     mockGetWizardState.mockReturnValue({

@@ -166,7 +166,7 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
             // No per-file progress surfaced here — the Personalize screen
             // shows a single "Syncing {name}…" line; detailed per-file
             // progress already lives on the dedicated Sync screen (08b).
-            const noopProgress = (_p: SyncProgress) => {};
+            const noopProgress: (p: SyncProgress) => void = () => {};
             await syncFromS3(
               creds,
               installPath,
