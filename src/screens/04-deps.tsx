@@ -72,6 +72,17 @@ const DEPS: DepDef[] = [
     installUrl: "https://github.com/tobi/qmd",
     useXcodeCheck: false,
   },
+  {
+    id: "hq-cloud",
+    label: "HQ Cloud",
+    installCmd: "install_hq_cloud",
+    installUrl: "https://www.npmjs.com/package/@indigoai-us/hq-cloud",
+    useXcodeCheck: false,
+    // `npm install -g @indigoai-us/hq-cloud` installs the `hq-sync-runner`
+    // binary on PATH — that's the actual thing `check_dep` needs to find,
+    // since the package name isn't a command.
+    binary: "hq-sync-runner",
+  },
 ];
 
 // ---------------------------------------------------------------------------
