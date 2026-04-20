@@ -1,0 +1,42 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background rounded square with Indigo gradient -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg-gradient)"/>
+
+  <!-- Subtle inner border glow -->
+  <rect x="8" y="8" width="1008" height="1008" rx="220" stroke="white" stroke-opacity="0.08" stroke-width="4"/>
+
+  <!-- Indigo logomark (double-chevron "I") centered and scaled to fit -->
+  <g transform="translate(190, 232) scale(10)">
+    <path d="M23.3486 1.39825C23.8646 0.882259 23.4992 0 22.7694 0H15.8194C15.6021 0 15.3938 0.0862951 15.2402 0.239901L0.239901 15.2402C-0.0799672 15.5601 -0.0799672 16.0787 0.239901 16.3985L22.2485 38.4071C22.5684 38.727 23.087 38.727 23.4068 38.4071L45.4154 16.3985C45.7353 16.0787 45.7353 15.5601 45.4154 15.2402L41.3612 11.186C41.3282 11.153 41.2712 11.1676 41.253 11.2106C41.2131 11.3044 41.1548 11.3924 41.0783 11.4689L23.4068 29.1404C23.087 29.4602 22.5684 29.4602 22.2485 29.1404L9.50667 16.3985C9.18681 16.0787 9.18681 15.5601 9.50667 15.2402L16.7501 7.99674L16.753 7.99388L23.3486 1.39825Z" fill="white"/>
+    <path d="M49.2538 0.239901C49.1002 0.0862951 48.8918 0 48.6746 0H34.658C34.4408 0 34.2324 0.0862951 34.0788 0.239901L19.0785 15.2402C18.7587 15.5601 18.7587 16.0787 19.0785 16.3985L22.5493 19.8693C22.8692 20.1892 23.3878 20.1892 23.7076 19.8693L34.7098 8.86712C34.711 8.86593 34.7129 8.86593 34.7141 8.86712C34.7153 8.86831 34.7172 8.86831 34.7184 8.86712L36.793 6.7925C36.9466 6.63889 37.155 6.5526 37.3722 6.5526H45.9604C46.1777 6.5526 46.386 6.63889 46.5396 6.7925L54.9873 15.2402C55.3072 15.5601 55.3072 16.0787 54.9873 16.3985L43.3383 28.0476C43.3326 28.0529 43.327 28.0584 43.3215 28.0639L28.2588 43.1266C27.9389 43.4465 27.9389 43.9651 28.2588 44.285L31.7338 47.76C32.0537 48.0799 32.5723 48.0799 32.8922 47.76L42.2291 38.4231C42.2346 38.4179 42.2401 38.4126 42.2455 38.4071L64.2541 16.3985C64.5739 16.0787 64.5739 15.5601 64.2541 15.2402L49.2538 0.239901Z" fill="white"/>
+  </g>
+
+  <!-- Installer badge: white circle with download arrow, bottom-right corner.
+       Distinguishes this app from the HQ menubar app in the dock. -->
+  <g>
+    <!-- Soft shadow behind the badge so it reads against the gradient -->
+    <circle cx="812" cy="812" r="172" fill="black" fill-opacity="0.18" filter="url(#badge-shadow)"/>
+    <!-- Badge body -->
+    <circle cx="812" cy="812" r="164" fill="white"/>
+    <!-- Download arrow — indigo, matches gradient start color -->
+    <g transform="translate(812, 812)">
+      <!-- Vertical arrow shaft -->
+      <rect x="-30" y="-92" width="60" height="108" rx="14" fill="#4F46E5"/>
+      <!-- Arrow head (triangle) -->
+      <path d="M -82 8 L 82 8 L 0 96 Z" fill="#4F46E5"/>
+      <!-- Horizontal base line (tray) -->
+      <rect x="-96" y="114" width="192" height="28" rx="12" fill="#4F46E5"/>
+    </g>
+  </g>
+
+  <!-- Gradient + filter definitions -->
+  <defs>
+    <linearGradient id="bg-gradient" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#3730A3"/>
+    </linearGradient>
+    <filter id="badge-shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="12"/>
+    </filter>
+  </defs>
+</svg>
