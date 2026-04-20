@@ -7,7 +7,7 @@
 #[cfg(test)]
 mod deps_tests {
     use hq_installer_lib::commands::deps::{
-        cancel_install, check_dep_in, register_cancel_handle,
+        cancel_install, check_dep_in, extended_search_path, register_cancel_handle,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -192,5 +192,27 @@ mod deps_tests {
         let status = check_dep_in("brew", dir.path().to_str().unwrap());
 
         assert!(status.installed, "brew should be detected as installed");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 11: extended_search_path returns a non-empty PATH and contains
+    //          the static macOS extras a GUI-launched app would otherwise
+    //          miss. Also exercises the shell-derived seeding path so
+    //          nvm/fnm/asdf installations of qmd, claude, etc. are reachable.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_extended_search_path_includes_static_extras() {
+        let path = extended_search_path();
+        assert!(!path.is_empty(), "extended_search_path should not be empty");
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "should include Apple Silicon Homebrew prefix, got: {}",
+            path
+        );
+        assert!(
+            path.contains("/usr/local/bin"),
+            "should include Intel Homebrew / generic prefix, got: {}",
+            path
+        );
     }
 }

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt as _;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -18,6 +19,8 @@ use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
+
+use super::deps::extended_search_path;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -156,6 +159,19 @@ pub enum ProcessEvent {
 /// OS pid, stream stdout + stderr lines to `on_event`, then emit the exit
 /// event.  Blocks until the process exits.
 ///
+/// `search_path` is used to resolve bare command names (e.g. `qmd`, `npm`)
+/// to absolute paths via `which::which_in` before spawning. GUI-launched
+/// Tauri apps inherit only `/usr/bin:/bin` from LaunchServices, so passing
+/// the caller's bare `cmd` directly to `Command::new` would fail to locate
+/// binaries installed under nvm, Homebrew, `~/.local/bin`, etc. Resolving
+/// up-front also means spawn failures surface synchronously — no race
+/// window between "spawn failed on background thread" and "JS registers
+/// exit listener" that previously left the indexing UI stuck at "Running…".
+///
+/// The search path is also set as the child's `PATH` env so grandchildren
+/// (e.g. `qmd` → `git`, `npm` → `node`) find their own tools. A caller-
+/// supplied `PATH` in `spawn.env` wins.
+///
 /// The child is placed in its own process group so that cancellation can
 /// signal the whole group (covers wrappers like `sh -c` or `npm run`).
 ///
@@ -165,11 +181,27 @@ pub enum ProcessEvent {
 ///
 /// All error paths reap the child and deregister the handle so no stale
 /// registry entries or zombie processes are left behind.
-pub fn run_process_impl<F>(handle: &str, spawn: &SpawnArgs, on_event: F) -> Result<(), String>
+pub fn run_process_impl<F>(
+    handle: &str,
+    spawn: &SpawnArgs,
+    search_path: &str,
+    on_event: F,
+) -> Result<(), String>
 where
     F: FnMut(ProcessEvent),
 {
-    let mut cmd = Command::new(&spawn.cmd);
+    // Resolve the cmd via the caller-supplied search path. `which_in` accepts
+    // an absolute path too and returns it unchanged, so this is a no-op when
+    // the caller passes a full path.
+    let cwd_for_which: PathBuf = spawn
+        .cwd
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let resolved = which::which_in(&spawn.cmd, Some(search_path), cwd_for_which)
+        .map_err(|_| format!("command not found on PATH: {}", spawn.cmd))?;
+
+    let mut cmd = Command::new(&resolved);
     cmd.args(&spawn.args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -179,6 +211,17 @@ where
 
     if let Some(cwd) = &spawn.cwd {
         cmd.current_dir(cwd);
+    }
+
+    // Seed the child's PATH from the search path so grandchildren inherit
+    // the extended PATH. Caller's explicit PATH in `spawn.env` takes precedence.
+    let caller_sets_path = spawn
+        .env
+        .as_ref()
+        .map(|e| e.contains_key("PATH"))
+        .unwrap_or(false);
+    if !caller_sets_path {
+        cmd.env("PATH", search_path);
     }
     if let Some(env) = &spawn.env {
         for (k, v) in env {
@@ -344,14 +387,34 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
 ///
 /// The handle is registered **before** this function returns so that
 /// `cancel_process` called immediately after `invoke` is never silently lost.
+///
+/// The command is resolved against the shell-derived extended PATH
+/// *synchronously* before returning Ok(handle). If it can't be found, Err is
+/// returned and no background thread is ever spawned — this matters because
+/// the JS listener registration for `exit` happens after `await invoke()`
+/// resolves, so an error event emitted from a background thread could race
+/// past it and leave the UI stuck at "Running…".
 #[tauri::command]
 pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> {
+    let search_path = extended_search_path();
+
+    // Synchronous pre-resolution — if the binary isn't on the extended PATH,
+    // fail before anyone subscribes to exit events. No race possible.
+    let cwd_for_which: PathBuf = args
+        .cwd
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    which::which_in(&args.cmd, Some(&search_path), cwd_for_which)
+        .map_err(|_| format!("command not found on PATH: {}", args.cmd))?;
+
     let handle = Uuid::new_v4().to_string();
 
     // Pre-register before the thread starts to eliminate the cancel race.
     pre_register_handle(&handle);
 
     let handle_bg = handle.clone();
+    let search_path_bg = search_path;
     thread::spawn(move || {
         // Respect a cancel that arrived before the process even started.
         if is_cancelled(&handle_bg) {
@@ -366,7 +429,7 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
             return;
         }
 
-        let result = run_process_impl(&handle_bg, &args, |event| match event {
+        let result = run_process_impl(&handle_bg, &args, &search_path_bg, |event| match event {
             ProcessEvent::Stdout(line) => {
                 let _ = app.emit(
                     &format!("process://{}/stdout", handle_bg),

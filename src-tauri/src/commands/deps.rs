@@ -78,17 +78,57 @@ pub struct InstallProgress {
 // check_dep
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// One-shot cache for the user's login-shell PATH. See `shell_login_path`.
+static SHELL_LOGIN_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Capture the user's login-shell `$PATH` once per process.
+///
+/// A GUI-launched Tauri app on macOS inherits only `/usr/bin:/bin:/usr/sbin:/sbin`
+/// from LaunchServices. Users install CLI tools via all sorts of managers —
+/// nvm, fnm, asdf, volta, mise, direnv, manual prefixes — that only wire
+/// their bin dirs into `$PATH` via the shell's profile (`.zshrc`, `.zprofile`,
+/// `.bash_profile`, etc.). So the only portable way to find `qmd`, `claude`,
+/// `hq-sync-runner` etc. is to invoke the login shell and read what PATH it
+/// assembles.
+///
+/// Cached with `OnceLock` — the subprocess spawn is ~100 ms the first time
+/// and free on subsequent calls within the app lifetime.
+fn shell_login_path() -> &'static str {
+    SHELL_LOGIN_PATH.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let output = Command::new(&shell)
+            .args(["-lc", "printf %s \"$PATH\""])
+            .stdin(Stdio::null())
+            .output();
+        match output {
+            Ok(out) if out.status.success() => String::from_utf8(out.stdout)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            _ => String::new(),
+        }
+    })
+}
+
 /// Build a PATH string that includes macOS install prefixes a GUI-launched
 /// app does NOT inherit from the user's shell (brew, user-local installs,
 /// Claude Code, qmd). Without this, `which brew` fails even though the
 /// user has Homebrew installed, because LaunchServices-launched apps only
 /// get `/usr/bin:/bin:/usr/sbin:/sbin`.
-fn extended_search_path() -> String {
+pub fn extended_search_path() -> String {
     let mut dirs: Vec<String> = Vec::new();
     if let Ok(existing) = std::env::var("PATH") {
         if !existing.is_empty() {
             dirs.push(existing);
         }
+    }
+    // Seed from the user's login shell — picks up nvm/fnm/asdf/volta/mise etc.
+    // that inject node-version-manager bin dirs via profile scripts. This is
+    // the only reliable way to find tools installed via `npm i -g` on systems
+    // where the global prefix is under ~/.nvm/versions/node/<v>/bin or similar.
+    let shell_path = shell_login_path();
+    if !shell_path.is_empty() {
+        dirs.push(shell_path.to_string());
     }
     // Standard macOS install locations that GUI app PATH misses.
     let extras = [
