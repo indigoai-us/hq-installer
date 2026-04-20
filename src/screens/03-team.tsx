@@ -45,7 +45,10 @@ export function TeamSetup({ onNext, onSignOutAndRetry }: CompanyDetectProps) {
           return;
         }
 
-        const result = await resolveUserCompany(user.tokens.accessToken);
+        const result = await resolveUserCompany(user.tokens.accessToken, {
+          ownerSub: user.sub,
+          displayName: user.name ?? user.email.split("@")[0] ?? user.sub,
+        });
         if (cancelled) return;
 
         if (!result.found) {
