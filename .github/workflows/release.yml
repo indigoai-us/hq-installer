@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). If empty, uses the current commit."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -15,8 +21,20 @@ jobs:
   release:
     name: Build & Release (macOS universal)
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - name: Validate tag format
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::Tag must match vX.Y.Z format, got: $TAG"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -37,25 +55,105 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
 
-      - name: Import Apple certificate
-        if: env.HAS_APPLE_CERT == 'true'
-        env:
-          HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          echo "Apple certificate configured — signing will be enabled"
-
-      - uses: tauri-apps/tauri-action@v0
+      # Signing + notarization uses the same Apple Developer identity as
+      # hq-sync and the indigo-nx Electron app. Secret-name mapping:
+      #
+      #   indigo-nx (CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_ID_PASSWORD,
+      #              ASC_PROVIDER)
+      #   → hq-installer / hq-sync (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
+      #                             APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID)
+      #
+      # tauri-action reads these env vars natively:
+      #   - APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD — imports the .p12
+      #     into a temporary keychain automatically; no manual `security
+      #     import` step needed.
+      #   - APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID — notarytool submits
+      #     the signed bundle to Apple using an app-specific password
+      #     (same method electron-builder uses on indigo-nx).
+      - name: Build, sign, and notarize universal DMG
+        uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: "Developer ID Application"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri updater bundle signing. Public half lives in
+          # tauri.conf.json → plugins.updater.pubkey. Users get auto-updates
+          # only if the .tar.gz's detached signature verifies against that
+          # pubkey, so rotating these means shipping a new pubkey and
+          # forcing manual reinstall for every existing user.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: "HQ Installer v__VERSION__"
-          releaseBody: "See the assets to download and install this version."
-          releaseDraft: false
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "HQ Installer ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: "Download the DMG below to install. First time? See README for prerequisites."
+          releaseDraft: true
           prerelease: false
           args: --target universal-apple-darwin
           updaterJsonKeepUniversal: true
+
+      # Auto-updater manifest. tauri-action produces the .tar.gz + .tar.gz.sig
+      # with createUpdaterArtifacts enabled; here we translate those into the
+      # latest.json shape Tauri's updater plugin polls at the endpoint in
+      # tauri.conf.json.
+      - name: Generate and upload latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          UPDATER_BUNDLE=$(find src-tauri/target/universal-apple-darwin/release/bundle -name "*.tar.gz" | head -1)
+          if [ -z "$UPDATER_BUNDLE" ]; then
+            echo "::warning::No updater bundle found — skipping latest.json"
+            exit 0
+          fi
+
+          if [ ! -f "${UPDATER_BUNDLE}.sig" ]; then
+            echo "::error::Updater signature file missing: ${UPDATER_BUNDLE}.sig"
+            exit 1
+          fi
+          SIGNATURE=$(cat "${UPDATER_BUNDLE}.sig")
+
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/$(basename "$UPDATER_BUNDLE")"
+          NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+
+          python3 -c "
+          import json, sys
+          data = {
+            'version': sys.argv[1],
+            'notes': 'See ' + sys.argv[2],
+            'pub_date': sys.argv[3],
+            'platforms': {
+              'darwin-universal': {'signature': sys.argv[4], 'url': sys.argv[5]},
+              'darwin-aarch64':  {'signature': sys.argv[4], 'url': sys.argv[5]},
+              'darwin-x86_64':   {'signature': sys.argv[4], 'url': sys.argv[5]}
+            }
+          }
+          json.dump(data, open('latest.json','w'), indent=2)
+          " "$VERSION" "$NOTES_URL" "$DATE" "$SIGNATURE" "$DOWNLOAD_URL"
+
+          gh release upload "$TAG" latest.json --clobber
+
+      # tauri-action creates the release as a draft so we can sanity-check
+      # assets before it hits everyone's auto-updater. Publish once the
+      # .tar.gz, .sig, DMG, and latest.json are all present.
+      - name: Publish draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
+          for REQUIRED in ".dmg" ".tar.gz" ".tar.gz.sig" "latest.json"; do
+            if ! echo "$ASSETS" | grep -q "$REQUIRED"; then
+              echo "::error::Missing required asset: $REQUIRED"
+              exit 1
+            fi
+          done
+          gh release edit "$TAG" --draft=false
