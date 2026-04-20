@@ -338,7 +338,7 @@ export function InstallMenubarStep({ onNext }: InstallMenubarStepProps) {
               Retry
             </button>
             <a
-              href="https://github.com/indigoai-us/hq-sync/releases/latest"
+              href="https://github.com/indigoai-us/hq-sync/releases/latest/download/HQ-Sync_universal.dmg"
               target="_blank"
               rel="noreferrer"
               className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-300 hover:bg-white/20 transition-colors"
