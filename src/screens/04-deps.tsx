@@ -18,6 +18,8 @@ interface DepDef {
   useXcodeCheck: boolean;
   /** CLI binary name for `which` lookup. Defaults to `id` when omitted. */
   binary?: string;
+  /** When true, a missing/failed state does NOT block the Continue button. */
+  optional?: boolean;
 }
 
 const DEPS: DepDef[] = [
@@ -56,6 +58,7 @@ const DEPS: DepDef[] = [
     installCmd: "install_gh",
     installUrl: "https://cli.github.com",
     useXcodeCheck: false,
+    optional: true,
   },
   {
     id: "claude-code",
@@ -64,6 +67,7 @@ const DEPS: DepDef[] = [
     installUrl: "https://docs.anthropic.com/en/claude-code",
     useXcodeCheck: false,
     binary: "claude",
+    optional: true,
   },
   {
     id: "qmd",
@@ -71,17 +75,7 @@ const DEPS: DepDef[] = [
     installCmd: "install_qmd",
     installUrl: "https://github.com/tobi/qmd",
     useXcodeCheck: false,
-  },
-  {
-    id: "hq-cloud",
-    label: "HQ Cloud",
-    installCmd: "install_hq_cloud",
-    installUrl: "https://www.npmjs.com/package/@indigoai-us/hq-cloud",
-    useXcodeCheck: false,
-    // `npm install -g @indigoai-us/hq-cloud` installs the `hq-sync-runner`
-    // binary on PATH — that's the actual thing `check_dep` needs to find,
-    // since the package name isn't a command.
-    binary: "hq-sync-runner",
+    optional: true,
   },
 ];
 
@@ -281,7 +275,9 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
   // Derived state
   // ---------------------------------------------------------------------------
 
-  const allInstalled = DEPS.every((dep) => deps[dep.id].status === "installed");
+  const allRequiredInstalled = DEPS.filter((d) => !d.optional).every(
+    (dep) => deps[dep.id].status === "installed",
+  );
 
   // ---------------------------------------------------------------------------
   // Render
@@ -312,7 +308,7 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
         })}
       </div>
 
-      {allInstalled && (
+      {allRequiredInstalled && (
         <button
           type="button"
           onClick={onNext}
@@ -341,7 +337,14 @@ function DepRow({ dep, tool, onInstall, onRetry, onOpenPage }: DepRowProps) {
   return (
     <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-zinc-200">{dep.label}</span>
+        <span className="text-sm font-medium text-zinc-200">
+          {dep.label}
+          {dep.optional && (
+            <span className="ml-2 text-[10px] uppercase tracking-wider text-zinc-500 font-normal">
+              Optional
+            </span>
+          )}
+        </span>
 
         <div className="flex items-center gap-2">
           {tool.status === "loading" && (

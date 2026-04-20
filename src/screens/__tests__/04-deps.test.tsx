@@ -60,7 +60,7 @@ function fireListenEvent(event: string, payload: unknown) {
   }
 }
 
-const ALL_TOOLS = ["homebrew", "xcode-clt", "node", "git", "gh", "claude-code", "qmd", "hq-cloud"] as const;
+const ALL_TOOLS = ["homebrew", "xcode-clt", "node", "git", "gh", "claude-code", "qmd"] as const;
 type Tool = typeof ALL_TOOLS[number];
 
 /** Binary name used by the Rust `check_dep` command, keyed by UI id.
@@ -69,7 +69,6 @@ type Tool = typeof ALL_TOOLS[number];
 const BINARY_TO_ID: Record<string, Tool> = {
   brew: "homebrew",
   claude: "claude-code",
-  "hq-sync-runner": "hq-cloud",
 };
 
 /** Build a default invoke mock that marks all tools as installed */
@@ -167,26 +166,13 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
-    it("calls check_dep with binary name 'hq-sync-runner' (not UI id 'hq-cloud') on mount", async () => {
+    it("checks all 7 tools on mount (no extras, no fewer)", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "hq-sync-runner" });
-      });
-      // Must NOT call check_dep with the UI slug — `hq-cloud` is a package
-      // name, not a binary; the binary installed by the package is `hq-sync-runner`.
-      const calledWithSlug = mockInvoke.mock.calls.some(
-        ([cmd, args]) => cmd === "check_dep" && (args as Record<string,string>)?.tool === "hq-cloud"
-      );
-      expect(calledWithSlug).toBe(false);
-    });
-
-    it("checks all 8 tools on mount (no extras, no fewer)", async () => {
-      render(<DepsInstall onNext={vi.fn()} />);
-      await waitFor(() => {
-        // 7 check_dep calls + 1 xcode_clt_status = 8 total dep checks
+        // 6 check_dep calls + 1 xcode_clt_status = 7 total dep checks
         const checkDepCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "check_dep");
         const xcodeCall = mockInvoke.mock.calls.some(([cmd]) => cmd === "xcode_clt_status");
-        expect(checkDepCalls).toHaveLength(7);
+        expect(checkDepCalls).toHaveLength(6);
         expect(xcodeCall).toBe(true);
       });
     });
@@ -644,13 +630,13 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
   // -------------------------------------------------------------------------
   describe("dep state matrix — React test coverage", () => {
-    it("all installed: shows 8 installed statuses, no Install buttons", async () => {
+    it("all installed: shows 7 installed statuses, no Install buttons", async () => {
       mockInvoke.mockImplementation(buildInvokeMock());
       render(<DepsInstall onNext={vi.fn()} />);
 
       await waitFor(() => {
         const checkDepCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "check_dep");
-        expect(checkDepCalls).toHaveLength(7);
+        expect(checkDepCalls).toHaveLength(6);
       });
 
       const installBtns = screen.queryAllByRole("button", { name: /^install/i });
@@ -685,7 +671,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
-    it("all missing: shows 7 Install buttons and no Continue button", async () => {
+    it("all missing: shows 7 Install buttons and Continue is absent when required deps missing", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
           homebrew: { installed: false },

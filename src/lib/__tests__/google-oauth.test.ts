@@ -115,6 +115,7 @@ describe("buildAuthorizeUrl", () => {
     expect(u.searchParams.get("state")).toBe("STATE");
     expect(u.searchParams.get("code_challenge")).toBe("CHALLENGE");
     expect(u.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(u.searchParams.get("prompt")).toBe("select_account");
   });
 });
 

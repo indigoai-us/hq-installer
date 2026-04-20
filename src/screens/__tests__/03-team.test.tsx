@@ -176,13 +176,16 @@ describe("TeamSetup (company detection)", () => {
     expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
   });
 
-  it("passes access token to resolveUserCompany", async () => {
+  it("passes access token and claim hints to resolveUserCompany", async () => {
     mockResolveUserCompany.mockResolvedValue({ found: false });
 
     render(<TeamSetup />);
 
     await waitFor(() => {
-      expect(mockResolveUserCompany).toHaveBeenCalledWith(MOCK_ACCESS_TOKEN);
+      expect(mockResolveUserCompany).toHaveBeenCalledWith(MOCK_ACCESS_TOKEN, {
+        ownerSub: "sub-123",
+        displayName: "test",
+      });
     });
   });
 
