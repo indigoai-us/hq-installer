@@ -17,6 +17,9 @@ const listenCallbacks = new Map<string, EventCallback[]>();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  exists: vi.fn().mockResolvedValue(true),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (event: string, handler: EventCallback) => {
     if (!listenCallbacks.has(event)) {
@@ -35,7 +38,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { exists } from "@tauri-apps/plugin-fs";
 const mockInvoke = vi.mocked(invoke);
+const mockExists = vi.mocked(exists);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,6 +110,7 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     listenCallbacks.clear();
     handleCounter = 0;
     mockInvoke.mockImplementation(buildInvokeMock());
+    mockExists.mockResolvedValue(true);
   });
 
   // ── 1. On mount, calls git_probe_user to pre-fill fields ──────────────────
@@ -311,6 +317,58 @@ describe("GitInit screen (08-git-init.tsx)", () => {
       const scriptArg = secondSpawn?.args?.args?.[0] ?? "";
       expect(scriptArg).toMatch(/core-integrity/);
     });
+  });
+
+  // ── 6b. core-integrity.sh missing from template → step is skipped ────────
+
+  it("skips core-integrity.sh when the script is missing from the template", async () => {
+    const user = userEvent.setup();
+
+    mockExists.mockResolvedValue(false);
+
+    const handles: string[] = [];
+    const invokeMock = vi.fn(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async (command: string): Promise<any> => {
+        if (command === "git_probe_user") return DEFAULT_PROBE;
+        if (command === "git_init") return "abc1234";
+        if (command === "spawn_process") {
+          const h = `handle-${handles.length + 1}`;
+          handles.push(h);
+          return h;
+        }
+        return null;
+      }
+    );
+    mockInvoke.mockImplementation(invokeMock);
+
+    render(<GitInit installPath="/tmp/hq" onNext={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /run setup/i })).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /run setup/i }));
+
+    // Complete compute-checksums.sh (step 1). Step 2 should skip itself
+    // without spawning a second process.
+    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
+    completeProcess(handles[0]);
+
+    // Continue button should appear — step 2 marked done via skip path.
+    await waitFor(() => {
+      const btn =
+        screen.queryByRole("button", { name: /continue/i }) ||
+        screen.queryByRole("button", { name: /next/i });
+      expect(btn).not.toBeNull();
+    });
+
+    // Only one spawn_process call — no attempt to run the missing script.
+    const spawnCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "spawn_process");
+    expect(spawnCalls.length).toBe(1);
+
+    // exists() was asked about core-integrity.sh at the expected path.
+    expect(mockExists).toHaveBeenCalledWith("/tmp/hq/scripts/core-integrity.sh");
   });
 
   // ── 7. All steps done → Continue button appears ──────────────────────────

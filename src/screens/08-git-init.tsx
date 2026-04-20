@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { exists } from "@tauri-apps/plugin-fs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,12 +159,26 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
     }
 
     // ── Step 2: core-integrity.sh ───────────────────────────────────────────
+    // v11.2.0 of the HQ template rebuilt from a strict allowlist and dropped
+    // core-integrity.sh. Skip the step (rather than fail) when the script
+    // isn't present so installs against newer templates don't wedge here.
     if (startIdx <= 2) {
-      patchStep(2, { status: "running" });
-      const ok = await runScript(2, `${installPath}/scripts/core-integrity.sh`);
-      if (!ok) {
-        setRunning(false);
-        return;
+      const scriptPath = `${installPath}/scripts/core-integrity.sh`;
+      const scriptExists = await exists(scriptPath).catch(() => false);
+      if (!scriptExists) {
+        patchStep(2, {
+          status: "done",
+          logLines: [
+            "Skipped — core-integrity.sh not present in this template.",
+          ],
+        });
+      } else {
+        patchStep(2, { status: "running" });
+        const ok = await runScript(2, scriptPath);
+        if (!ok) {
+          setRunning(false);
+          return;
+        }
       }
     }
 
