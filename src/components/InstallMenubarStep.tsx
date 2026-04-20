@@ -223,7 +223,7 @@ export function InstallMenubarStep({ onNext }: InstallMenubarStepProps) {
 
           <div className="flex items-center gap-2">
             {isRunning && (
-              <span className="text-xs text-zinc-400">Installing…</span>
+              <span className="text-xs text-zinc-400 hq-text-shimmer">Installing…</span>
             )}
             {isDone && (
               <span className="text-xs text-green-400">Installed</span>

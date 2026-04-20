@@ -14,9 +14,11 @@
     "windows": [
       {
         "title": "HQ Installer",
-        "width": 900,
+        "width": 960,
         "height": 640,
-        "resizable": false,
+        "minWidth": 880,
+        "minHeight": 600,
+        "resizable": true,
         "transparent": false,
         "decorations": true
       }

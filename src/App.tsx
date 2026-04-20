@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { createWizardRouter, getStepValidity } from "@/lib/wizard-router";
+import { createWizardRouter } from "@/lib/wizard-router";
 import { WizardShell } from "@/components/WizardShell";
+import { ScreenSwitcher } from "@/components/ScreenSwitcher";
 import {
   getWizardState,
   setTelemetryEnabled,
@@ -23,19 +24,52 @@ import { Summary } from "@/screens/11-summary";
 function App() {
   const [router] = useState(() => createWizardRouter());
   const [, forceRender] = useState(0);
+  // High-water mark of steps the user has actually reached. Lets the sidebar
+  // disable forward jumps to never-visited steps without preventing back-jumps
+  // to ones already completed.
+  const [maxReachedStep, setMaxReachedStep] = useState(1);
 
   useEffect(
     () => subscribeWizardState(() => forceRender((n) => n + 1)),
     [],
   );
 
+  // Delegated click feedback: any primary white button gets a single-shot
+  // shimmer sweep so the click feels registered even when the handler is
+  // async or navigates away. Keyed on the existing bg-white + text-black
+  // class pair so we don't need to touch 24 call sites individually.
+  useEffect(() => {
+    const CLASS = "hq-shimmer";
+    const DURATION_MS = 700;
+    function onClick(e: MouseEvent) {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      const btn = target.closest("button");
+      if (!btn || btn.disabled) return;
+      if (
+        !btn.classList.contains("bg-white") ||
+        !btn.classList.contains("text-black")
+      ) {
+        return;
+      }
+      if (btn.classList.contains(CLASS)) return;
+      btn.classList.add(CLASS);
+      window.setTimeout(() => btn.classList.remove(CLASS), DURATION_MS);
+    }
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
+
   function handleNext() {
     router.next();
+    setMaxReachedStep((m) => Math.max(m, router.currentStep));
     forceRender((n) => n + 1);
   }
 
-  function handleBack() {
-    router.back();
+  function handleStepClick(step: number) {
+    if (!router.canNavigateTo(step)) return;
+    if (step > maxReachedStep) return;
+    router.goTo(step);
     forceRender((n) => n + 1);
   }
 
@@ -45,7 +79,6 @@ function App() {
 
   const wizardState = getWizardState();
   const { currentStep } = router;
-  const canGoNext = router.canGoNext && getStepValidity(currentStep, wizardState);
 
   // Screen flow (US-006 + US-013):
   //   1 Welcome → 2 Cognito Auth → 3 Company Detect → 4 Deps →
@@ -72,6 +105,8 @@ function App() {
             onNext={handleNext}
             onSignOutAndRetry={() => {
               router.goTo(2);
+              // Reset high-water mark — auth sign-out invalidates progress past auth.
+              setMaxReachedStep(2);
               forceRender((n) => n + 1);
             }}
           />
@@ -123,12 +158,11 @@ function App() {
     <div className="min-h-screen bg-zinc-950">
       <WizardShell
         currentStep={currentStep}
-        onNext={handleNext}
-        onBack={handleBack}
-        canGoBack={router.canGoBack}
-        canGoNext={canGoNext}
+        maxReachedStep={maxReachedStep}
+        canNavigateTo={(step) => router.canNavigateTo(step) && step <= maxReachedStep}
+        onStepClick={handleStepClick}
       >
-        {renderStep()}
+        <ScreenSwitcher stepKey={currentStep}>{renderStep()}</ScreenSwitcher>
       </WizardShell>
     </div>
   );

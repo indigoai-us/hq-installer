@@ -57,6 +57,11 @@ export interface CognitoTokens {
 export interface CurrentUser {
   sub: string;
   email: string;
+  /** Full display name from the Google-federated idToken (claim: "name").
+   *  Absent only when the user signed up without a federated provider. */
+  name?: string;
+  givenName?: string;
+  familyName?: string;
   tokens: CognitoTokens;
 }
 
@@ -279,6 +284,9 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   return {
     sub: payload["sub"] as string,
     email: payload["email"] as string,
+    name: (payload["name"] as string | undefined) || undefined,
+    givenName: (payload["given_name"] as string | undefined) || undefined,
+    familyName: (payload["family_name"] as string | undefined) || undefined,
     tokens,
   };
 }

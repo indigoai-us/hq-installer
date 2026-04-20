@@ -114,3 +114,76 @@ export async function resolveUserCompany(
     role: membership.role,
   };
 }
+
+export interface UserCompanyEntry {
+  companyUid: string;
+  companySlug: string;
+  companyName: string;
+  bucketName: string;
+  role: string;
+  status: string;
+}
+
+/**
+ * List every cloud company the user is a member of.
+ *
+ * Same first two steps as `resolveUserCompany` (find person → list memberships),
+ * but fans out to fetch all company entities in parallel and returns them all.
+ * Used by the Personalize screen to show every HQ-Pro/Cloud company the user
+ * has access to, so we can sync each one's folder during setup.
+ */
+export async function listUserCompanies(
+  accessToken: string
+): Promise<UserCompanyEntry[]> {
+  const base = getVaultApiUrl();
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+  };
+
+  const personsRes = await fetch(`${base}/entity/by-type/person`, { headers });
+  if (!personsRes.ok) {
+    throw new Error(
+      `vault-service /entity/by-type/person failed: ${personsRes.status}`
+    );
+  }
+  const personsBody = (await personsRes.json()) as { entities: VaultEntity[] };
+  if (!personsBody.entities.length) return [];
+  const person = personsBody.entities[0];
+
+  const membershipsRes = await fetch(
+    `${base}/membership/person/${person.uid}`,
+    { headers }
+  );
+  if (!membershipsRes.ok) {
+    throw new Error(
+      `vault-service /membership/person/${person.uid} failed: ${membershipsRes.status}`
+    );
+  }
+  const membershipsBody = (await membershipsRes.json()) as {
+    memberships: MembershipEntry[];
+  };
+  if (!membershipsBody.memberships.length) return [];
+
+  const companies = await Promise.all(
+    membershipsBody.memberships.map(async (m) => {
+      const res = await fetch(`${base}/entity/${m.companyUid}`, { headers });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { entity: VaultEntity };
+      const c = body.entity;
+      return {
+        companyUid: c.uid,
+        companySlug: c.slug,
+        companyName: c.name,
+        bucketName:
+          c.bucketName ??
+          (c.metadata?.["bucketName"] as string) ??
+          `hq-vault-${c.slug}`,
+        role: m.role,
+        status: m.status,
+      } satisfies UserCompanyEntry;
+    })
+  );
+
+  return companies.filter((c): c is UserCompanyEntry => c !== null);
+}

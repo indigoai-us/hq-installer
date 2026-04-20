@@ -2,7 +2,6 @@
 // Welcome screen — product identity, wizard overview, telemetry opt-in
 
 import React, { useState } from "react";
-import { WIZARD_STEPS } from "@/lib/wizard-router";
 
 interface WelcomeScreenProps {
   onNext?: () => void;
@@ -44,35 +43,28 @@ export function Welcome({
         </p>
       </div>
 
-      {/* Wizard overview */}
-      <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium text-zinc-300 uppercase tracking-widest">
-          Setup steps
-        </h2>
-        <ol className="flex flex-col gap-1">
-          {WIZARD_STEPS.map((step) => (
-            <li
-              key={step.id}
-              data-step-id={step.id}
-              className="flex items-center gap-3 text-sm font-light text-zinc-400"
-            >
-              <span className="w-5 h-5 rounded-full border border-white/10 bg-white/5 flex items-center justify-center text-xs text-zinc-500">
-                {step.index}
-              </span>
-              <span>{step.label}</span>
-            </li>
-          ))}
-        </ol>
-      </div>
-
       {/* Telemetry opt-in */}
-      <label className="flex items-center gap-3 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={telemetryChecked}
-          onChange={handleTelemetryChange}
-          className="w-4 h-4 accent-white cursor-pointer"
-        />
+      <label className="flex items-center gap-3 cursor-pointer select-none group">
+        <span className="relative inline-flex items-center justify-center w-4 h-4 shrink-0">
+          <input
+            type="checkbox"
+            checked={telemetryChecked}
+            onChange={handleTelemetryChange}
+            className="peer appearance-none w-4 h-4 rounded-[3px] border border-white/25 bg-white/5 group-hover:border-white/40 checked:bg-white checked:border-white transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+          />
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 12 12"
+            className="pointer-events-none absolute w-3 h-3 opacity-0 peer-checked:opacity-100 text-black transition-opacity"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.25"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="2.5,6.5 5,9 9.5,3.5" />
+          </svg>
+        </span>
         <span className="font-light text-zinc-300 text-sm">
           Help improve HQ by sharing anonymous usage telemetry
         </span>

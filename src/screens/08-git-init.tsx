@@ -272,8 +272,8 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
   // ---------------------------------------------------------------------------
 
   return (
-    <div className="flex flex-col gap-6 max-w-lg">
-      <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-4 max-w-lg">
+      <div className="flex flex-col gap-1">
         <h1 className="text-2xl font-medium text-white">Git setup &amp; integrity check</h1>
         <p className="text-sm font-light text-zinc-400">
           Initialise the HQ repository and verify kernel integrity.
@@ -281,7 +281,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
       </div>
 
       {/* Git identity fields */}
-      <div className="flex flex-col gap-4 bg-white/5 border border-white/10 rounded-xl px-4 py-4">
+      <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
         <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
           Git identity
         </p>
@@ -289,7 +289,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
         {probing ? (
           <p className="text-xs text-zinc-500">Loading git config…</p>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2.5">
             <label className="flex flex-col gap-1">
               <span className="text-xs text-zinc-400">Name</span>
               <input
@@ -298,7 +298,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Your Name"
                 aria-label="Name"
-                className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-white/30"
+                className="bg-black/30 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-white/30"
               />
             </label>
             <label className="flex flex-col gap-1">
@@ -309,7 +309,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 aria-label="Email"
-                className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-white/30"
+                className="bg-black/30 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-white/30"
               />
             </label>
           </div>
@@ -317,7 +317,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
       </div>
 
       {/* Steps */}
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2">
         {steps.map((step, i) => (
           <StepRow
             key={i}
@@ -386,7 +386,7 @@ interface StepRowProps {
 
 function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
   return (
-    <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+    <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-2">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-zinc-200">{label}</span>
 
@@ -395,7 +395,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
             <span className="text-xs text-zinc-600">Waiting</span>
           )}
           {step.status === "running" && (
-            <span className="text-xs text-zinc-400">Running…</span>
+            <span className="text-xs text-zinc-400 hq-text-shimmer">Running…</span>
           )}
           {step.status === "done" && (
             <span

@@ -77,6 +77,15 @@ export interface WizardRouter {
   canGoBack: boolean;
   canGoNext: boolean;
   goTo(step: number): void;
+  /**
+   * True if the user can jump directly to `target` from the current step.
+   * Used by the sidebar progress indicator to decide which steps are
+   * clickable. Mirrors `back()`'s auth-gate rule: you cannot cross an
+   * AUTH_GATED_STEPS boundary backwards. Forward jumps to unvisited steps
+   * are blocked by the caller (it owns `maxReachedStep`); this method only
+   * enforces the auth-gate invariant.
+   */
+  canNavigateTo(target: number): boolean;
 }
 
 export function createWizardRouter(): WizardRouter {
@@ -115,6 +124,21 @@ export function createWizardRouter(): WizardRouter {
       if (step >= 1 && step <= TOTAL_STEPS) {
         current = step;
       }
+    },
+
+    canNavigateTo(target: number) {
+      if (target < 1 || target > TOTAL_STEPS) return false;
+      if (target === current) return false;
+      // Block backward navigation that would cross an auth-gated step.
+      // An auth gate at step G means: once on or past G, you cannot return
+      // to anything before G. Equivalent rule for sidebar jumps: target is
+      // unreachable if any G in AUTH_GATED_STEPS satisfies target < G <= current.
+      if (target < current) {
+        for (const gate of AUTH_GATED_STEPS) {
+          if (target < gate && gate <= current) return false;
+        }
+      }
+      return true;
     },
   };
 

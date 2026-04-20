@@ -10,13 +10,22 @@ export interface CompanySeed {
   name: string;
   /** Optional marketing site URL — captured into the company manifest. */
   website?: string;
+  /** If true, this company is backed by an HQ-Cloud bucket the user is a
+   *  member of — recorded in company.yaml so downstream tooling can skip
+   *  first-time provisioning and know the folder is remote-synced. */
+  cloud?: boolean;
+  /** Vault entity UID of the cloud company (present when `cloud` is true). */
+  cloudCompanyUid?: string;
 }
 
 export interface PersonalizationAnswers {
   name: string;
-  about: string;
-  goals: string;
-  starterProject: "personal-assistant" | "social-media" | "code-worker";
+  about?: string;
+  goals?: string;
+  /** Starter project template — optional; when omitted no starter project
+   *  files are written. The redesigned Personalize screen no longer asks
+   *  for this, but the writer still supports it for callers that do. */
+  starterProject?: "personal-assistant" | "social-media" | "code-worker";
   customizations?: Record<string, string>;
   /** Optional list of companies the user wants scaffolded under companies/. */
   companies?: CompanySeed[];
@@ -159,21 +168,23 @@ export async function personalize(
   await writeTextFile(`${knowledgeDir}/voice-style.md`, voiceStyleContent);
 
   // -----------------------------------------------------------------------
-  // 4. Write starter project files
+  // 4. Write starter project files (only if the caller asked for one)
   // -----------------------------------------------------------------------
-  const starterFiles = await loadStarterProjectFiles(
-    options?.starterProjectFiles,
-    starterProject,
-  );
-  const projectBase = `${baseDir}/companies/personal/projects/${starterProject}`;
+  if (starterProject) {
+    const starterFiles = await loadStarterProjectFiles(
+      options?.starterProjectFiles,
+      starterProject,
+    );
+    const projectBase = `${baseDir}/companies/personal/projects/${starterProject}`;
 
-  for (const [filename, content] of Object.entries(starterFiles)) {
-    const destPath = `${projectBase}/${filename}`;
-    const parent = parentDir(destPath);
-    if (parent) {
-      await mkdir(parent, { recursive: true });
+    for (const [filename, content] of Object.entries(starterFiles)) {
+      const destPath = `${projectBase}/${filename}`;
+      const parent = parentDir(destPath);
+      if (parent) {
+        await mkdir(parent, { recursive: true });
+      }
+      await writeTextFile(destPath, content);
     }
-    await writeTextFile(destPath, content);
   }
 
   // -----------------------------------------------------------------------
@@ -217,10 +228,17 @@ export async function personalize(
       const websiteLine = co.website?.trim()
         ? `website: ${co.website.trim()}\n`
         : "";
+      const cloudLines = co.cloud
+        ? `cloud: true\n` +
+          (co.cloudCompanyUid
+            ? `cloudCompanyUid: ${co.cloudCompanyUid}\n`
+            : "")
+        : "";
       const yaml =
         `name: ${displayName}\n` +
         `slug: ${slug}\n` +
-        websiteLine;
+        websiteLine +
+        cloudLines;
       await writeTextFile(`${coBase}/company.yaml`, yaml);
     }
   }

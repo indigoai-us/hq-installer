@@ -64,47 +64,6 @@ describe("Welcome screen (01-welcome.tsx)", () => {
   });
 
   // -------------------------------------------------------------------------
-  describe("wizard steps at-a-glance", () => {
-    const EXPECTED_STEP_LABELS = [
-      "Welcome",
-      "Sign In",
-      "Company",
-      "Prerequisites",
-      "Install",
-      "Templates",
-      "Workspace",
-      "Sync",
-      "Personalize",
-      "Verify",
-      "HQ Sync",
-      "Done",
-    ];
-
-    it("renders all 12 step labels", () => {
-      const { container } = render(<Welcome onNext={vi.fn()} />);
-      const text = container.textContent ?? "";
-      for (const label of EXPECTED_STEP_LABELS) {
-        expect(text).toContain(label);
-      }
-    });
-
-    it("renders exactly 12 steps (not more, not fewer)", () => {
-      render(<Welcome onNext={vi.fn()} />);
-      // Each step label should appear at least once
-      let found = 0;
-      for (const label of EXPECTED_STEP_LABELS) {
-        // Use queryAllByText to handle labels that may appear in multiple
-        // DOM elements (e.g. "HQ Sync" in both a <li> and inner <span>).
-        const matches = screen.queryAllByText(label, { exact: false });
-        if (matches.length > 0) {
-          found += 1;
-        }
-      }
-      expect(found).toBe(12);
-    });
-  });
-
-  // -------------------------------------------------------------------------
   describe("telemetry opt-in", () => {
     it("renders a telemetry opt-in control (checkbox or toggle)", () => {
       const { container } = render(<Welcome onNext={vi.fn()} />);

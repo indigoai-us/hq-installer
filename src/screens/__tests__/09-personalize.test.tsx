@@ -4,19 +4,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Personalize } from "../09-personalize.js";
 
 // ---------------------------------------------------------------------------
-// Personalize screen tests (US-017)
+// Personalize screen tests (US-017, redesigned 2026-04-18)
 //
-// These tests are written BEFORE the implementation exists.
-// They will fail until src/screens/09-personalize.tsx is created.
+// Screen: single-step form
+//   - Full-name input prefilled from the Google idToken (via getCurrentUser)
+//   - Read-only list of HQ-Cloud companies the user is a member of
+//   - Optional manual companies list (free-text rows the user adds)
+//   - Single "Continue" button: triggers cloud-company sync, then calls
+//     personalize() with merged company seeds, then onNext().
 //
-// Screen: multi-step form
-//   Step 1 — IdentityForm:       name, about, goals (all required)
-//   Step 2 — StarterProjectPicker: pick one of 3 projects (required)
-//   Step 3 — CustomizationForm:  role-specific fields, then Submit
-//
-// On submit: calls personalize() from lib/personalize-writer.
-// On success: calls onNext().
-// On failure: renders an error message.
+// The earlier 3-step form (Identity / StarterProject / Customization) was
+// replaced; tests here cover the new surface.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -39,112 +37,130 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// personalize-writer mock — isolate screen from real file-system writes
+// Dependency mocks — isolate screen from fs, keychain, vault, and S3.
 // ---------------------------------------------------------------------------
 
 vi.mock("../../lib/personalize-writer.js", () => ({
   personalize: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../lib/cognito.js", () => ({
+  getCurrentUser: vi.fn().mockResolvedValue({
+    sub: "sub-123",
+    email: "jane@example.com",
+    name: "Jane Doe",
+    givenName: "Jane",
+    familyName: "Doe",
+    tokens: {
+      accessToken: "at",
+      idToken: "it",
+      refreshToken: "rt",
+      expiresAt: Date.now() + 60_000,
+    },
+  }),
+}));
+
+vi.mock("../../lib/vault-handoff.js", () => ({
+  listUserCompanies: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("../../lib/s3-sync.js", () => ({
+  vendStsCredentials: vi.fn().mockResolvedValue({
+    accessKeyId: "AKIA",
+    secretAccessKey: "secret",
+    sessionToken: "session",
+    bucketName: "hq-vault-acme",
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  }),
+  syncFromS3: vi
+    .fn()
+    .mockResolvedValue({ fileCount: 0, totalBytes: 0 }),
+}));
+
+vi.mock("../../lib/wizard-state.js", () => ({
+  getWizardState: vi.fn(() => ({
+    telemetryEnabled: true,
+    team: null,
+    isPersonal: true,
+    installPath: "/tmp/hq",
+    gitName: null,
+    gitEmail: null,
+    personalized: false,
+  })),
+  setPersonalized: vi.fn(),
+}));
+
 import { personalize } from "../../lib/personalize-writer.js";
+import { getCurrentUser } from "../../lib/cognito.js";
+import { listUserCompanies } from "../../lib/vault-handoff.js";
+import { syncFromS3, vendStsCredentials } from "../../lib/s3-sync.js";
+import { getWizardState, setPersonalized } from "../../lib/wizard-state.js";
+
 const mockPersonalize = vi.mocked(personalize);
+const mockGetCurrentUser = vi.mocked(getCurrentUser);
+const mockListUserCompanies = vi.mocked(listUserCompanies);
+const mockVendSts = vi.mocked(vendStsCredentials);
+const mockSyncFromS3 = vi.mocked(syncFromS3);
+const mockGetWizardState = vi.mocked(getWizardState);
+const mockSetPersonalized = vi.mocked(setPersonalized);
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Find the "Next" / "Continue" navigation button on step 1 or 2.
- * Implementations may label it differently.
- */
-function findNextButton() {
+function findContinueButton() {
   return (
-    screen.queryByRole("button", { name: /next/i }) ||
-    screen.queryByRole("button", { name: /continue/i })
+    screen.queryByRole("button", { name: /^continue$/i }) ||
+    screen.queryByRole("button", { name: /setting up/i })
   );
 }
 
-/**
- * Find the final "Submit" button on step 3.
- */
-function findSubmitButton() {
+function findNameInput(): HTMLInputElement | null {
   return (
-    screen.queryByRole("button", { name: /submit/i }) ||
-    screen.queryByRole("button", { name: /finish/i }) ||
-    screen.queryByRole("button", { name: /personalize/i }) ||
-    screen.queryByRole("button", { name: /save/i }) ||
-    screen.queryByRole("button", { name: /done/i })
+    (screen.queryByLabelText(/full name/i) as HTMLInputElement | null) ||
+    (screen.queryByPlaceholderText(/jane doe/i) as HTMLInputElement | null)
   );
-}
-
-/**
- * Fill in the identity fields (step 1) and advance to step 2.
- */
-async function fillIdentityAndAdvance(
-  user: ReturnType<typeof userEvent.setup>,
-  opts: { name?: string; about?: string; goals?: string } = {}
-) {
-  const name = opts.name ?? "Jane Doe";
-  const about = opts.about ?? "Software engineer who loves building tools.";
-  const goals = opts.goals ?? "Automate my workflow and ship faster.";
-
-  const nameField =
-    screen.queryByLabelText(/\bname\b/i) ||
-    screen.queryByPlaceholderText(/\bname\b/i) ||
-    screen.queryByLabelText(/full name/i) ||
-    screen.queryByPlaceholderText(/full name/i);
-  const aboutField =
-    screen.queryByLabelText(/about/i) ||
-    screen.queryByPlaceholderText(/about/i) ||
-    screen.queryByLabelText(/who are you/i) ||
-    screen.queryByLabelText(/bio/i);
-  const goalsField =
-    screen.queryByLabelText(/goals?/i) ||
-    screen.queryByPlaceholderText(/goals?/i) ||
-    screen.queryByLabelText(/what.*want/i);
-
-  if (nameField) await user.clear(nameField);
-  if (nameField) await user.type(nameField, name);
-  if (aboutField) await user.clear(aboutField);
-  if (aboutField) await user.type(aboutField, about);
-  if (goalsField) await user.clear(goalsField);
-  if (goalsField) await user.type(goalsField, goals);
-
-  const nextBtn = findNextButton();
-  if (nextBtn) await user.click(nextBtn);
-}
-
-/**
- * Pick a starter project option (step 2) and advance to step 3.
- * Returns the option slug that was selected.
- */
-async function pickProjectAndAdvance(
-  user: ReturnType<typeof userEvent.setup>,
-  slug: "personal-assistant" | "social-media" | "code-worker" = "personal-assistant"
-) {
-  // Try radio button, then clickable card/button with matching label text
-  const option =
-    screen.queryByRole("radio", { name: new RegExp(slug.replace(/-/g, "[ -]"), "i") }) ||
-    screen.queryByRole("radio", { name: /personal.assistant/i }) ||
-    screen.queryByRole("button", { name: /personal.assistant/i }) ||
-    // Fallback: any radio on the page
-    document.querySelector<HTMLElement>('input[type="radio"]') ||
-    document.querySelector<HTMLElement>('[role="radio"]');
-
-  if (option) await user.click(option);
-
-  const nextBtn = findNextButton();
-  if (nextBtn) await user.click(nextBtn);
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("Personalize screen (09-personalize.tsx)", () => {
+describe("Personalize screen (09-personalize.tsx) — redesigned single-step form", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPersonalize.mockResolvedValue(undefined);
+    mockGetCurrentUser.mockResolvedValue({
+      sub: "sub-123",
+      email: "jane@example.com",
+      name: "Jane Doe",
+      givenName: "Jane",
+      familyName: "Doe",
+      tokens: {
+        accessToken: "at",
+        idToken: "it",
+        refreshToken: "rt",
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+    mockListUserCompanies.mockResolvedValue([]);
+    mockVendSts.mockResolvedValue({
+      accessKeyId: "AKIA",
+      secretAccessKey: "secret",
+      sessionToken: "session",
+      bucketName: "hq-vault-acme",
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    mockSyncFromS3.mockResolvedValue({ fileCount: 0, totalBytes: 0 });
+    mockGetWizardState.mockReturnValue({
+      telemetryEnabled: true,
+      team: null,
+      isPersonal: true,
+      installPath: "/tmp/hq",
+      gitName: null,
+      gitEmail: null,
+      personalized: false,
+    });
   });
 
   // ── 1. Initial render ─────────────────────────────────────────────────────
@@ -156,23 +172,9 @@ describe("Personalize screen (09-personalize.tsx)", () => {
       }).not.toThrow();
     });
 
-    it("renders step 1 identity fields on mount", () => {
+    it("renders a name input", () => {
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      const nameField =
-        screen.queryByLabelText(/\bname\b/i) ||
-        screen.queryByPlaceholderText(/\bname\b/i) ||
-        screen.queryByLabelText(/full name/i);
-      const aboutField =
-        screen.queryByLabelText(/about/i) ||
-        screen.queryByPlaceholderText(/about/i) ||
-        screen.queryByLabelText(/bio/i);
-      const goalsField =
-        screen.queryByLabelText(/goals?/i) ||
-        screen.queryByPlaceholderText(/goals?/i);
-
-      // At least the name field must be present on step 1
-      expect(nameField || aboutField || goalsField).not.toBeNull();
+      expect(findNameInput()).not.toBeNull();
     });
 
     it("does NOT call personalize() on mount", () => {
@@ -185,310 +187,338 @@ describe("Personalize screen (09-personalize.tsx)", () => {
       render(<Personalize installPath="/tmp/hq" onNext={onNext} />);
       expect(onNext).not.toHaveBeenCalled();
     });
-  });
 
-  // ── 2. Step 1: IdentityForm — required field validation ───────────────────
-
-  describe("Step 1 — IdentityForm field validation", () => {
-    it("Next button is disabled (or absent) when all identity fields are empty", () => {
+    it("fetches the current user on mount", async () => {
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      const nextBtn = findNextButton();
-      if (nextBtn) {
-        // Must be disabled, not just present
-        expect((nextBtn as HTMLButtonElement).disabled).toBe(true);
-      }
-      // Acceptable: button is absent until fields are filled
-    });
-
-    it("Next button is disabled when only name is filled", async () => {
-      const user = userEvent.setup();
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      const nameField =
-        screen.queryByLabelText(/\bname\b/i) ||
-        screen.queryByPlaceholderText(/\bname\b/i) ||
-        screen.queryByLabelText(/full name/i);
-
-      if (nameField) {
-        await user.type(nameField, "Jane Doe");
-      }
-
-      const nextBtn = findNextButton();
-      if (nextBtn) {
-        expect((nextBtn as HTMLButtonElement).disabled).toBe(true);
-      }
-    });
-
-    it("Next button is enabled when all three identity fields are filled", async () => {
-      const user = userEvent.setup();
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      const nameField =
-        screen.queryByLabelText(/\bname\b/i) ||
-        screen.queryByPlaceholderText(/\bname\b/i) ||
-        screen.queryByLabelText(/full name/i);
-      const aboutField =
-        screen.queryByLabelText(/about/i) ||
-        screen.queryByPlaceholderText(/about/i) ||
-        screen.queryByLabelText(/bio/i);
-      const goalsField =
-        screen.queryByLabelText(/goals?/i) ||
-        screen.queryByPlaceholderText(/goals?/i);
-
-      if (nameField) await user.type(nameField, "Jane Doe");
-      if (aboutField) await user.type(aboutField, "Software engineer.");
-      if (goalsField) await user.type(goalsField, "Ship faster.");
-
-      await waitFor(() => {
-        const nextBtn = findNextButton();
-        if (nextBtn) {
-          expect((nextBtn as HTMLButtonElement).disabled).toBe(false);
-        }
-      });
-    });
-
-    it("advancing from step 1 with all fields filled shows step 2 content", async () => {
-      const user = userEvent.setup();
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      await fillIdentityAndAdvance(user);
-
-      await waitFor(() => {
-        // Step 2 must show starter project options
-        const text = document.body.textContent ?? "";
-        const hasProjectOptions =
-          text.match(/personal.assistant|social.media|code.worker|starter.project|choose.*project/i) !== null ||
-          document.querySelector('input[type="radio"]') !== null ||
-          document.querySelector('[role="radio"]') !== null;
-        expect(hasProjectOptions).toBe(true);
-      });
+      await waitFor(() => expect(mockGetCurrentUser).toHaveBeenCalled());
     });
   });
 
-  // ── 3. Step 2: StarterProjectPicker — pick one to advance ─────────────────
+  // ── 2. Name prefill from Google idToken ───────────────────────────────────
 
-  describe("Step 2 — StarterProjectPicker", () => {
-    it("shows three project options", async () => {
-      const user = userEvent.setup();
+  describe("name prefill", () => {
+    it("prefills the name field from the idToken `name` claim", async () => {
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
-
       await waitFor(() => {
-        const radios = document.querySelectorAll('input[type="radio"], [role="radio"]');
-        expect(radios.length).toBe(3);
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
       });
     });
 
-    it("shows a 'personal-assistant' option", async () => {
-      const user = userEvent.setup();
+    it("falls back to given+family name when `name` is absent", async () => {
+      mockGetCurrentUser.mockResolvedValueOnce({
+        sub: "sub-123",
+        email: "taylor@example.com",
+        givenName: "Taylor",
+        familyName: "Smith",
+        tokens: {
+          accessToken: "at",
+          idToken: "it",
+          refreshToken: "rt",
+          expiresAt: Date.now() + 60_000,
+        },
+      });
+
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
-
       await waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toMatch(/personal.assistant/i);
+        const input = findNameInput();
+        expect(input?.value).toBe("Taylor Smith");
       });
     });
 
-    it("shows a 'social-media' option", async () => {
-      const user = userEvent.setup();
+    it("leaves the name field blank when no user is signed in", async () => {
+      mockGetCurrentUser.mockResolvedValueOnce(null);
+
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
+      // Give the effect a tick to run.
+      await waitFor(() => expect(mockGetCurrentUser).toHaveBeenCalled());
+      const input = findNameInput();
+      expect(input?.value).toBe("");
+    });
+  });
+
+  // ── 3. Cloud companies list ───────────────────────────────────────────────
+
+  describe("cloud companies", () => {
+    it("calls listUserCompanies with the access token on mount", async () => {
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+      await waitFor(() =>
+        expect(mockListUserCompanies).toHaveBeenCalledWith("at"),
+      );
+    });
+
+    it("renders each cloud company returned by the vault", async () => {
+      mockListUserCompanies.mockResolvedValueOnce([
+        {
+          companyUid: "uid-acme",
+          companySlug: "acme",
+          companyName: "Acme Corp",
+          bucketName: "hq-vault-acme",
+          role: "admin",
+          status: "active",
+        },
+        {
+          companyUid: "uid-initech",
+          companySlug: "initech",
+          companyName: "Initech",
+          bucketName: "hq-vault-initech",
+          role: "member",
+          status: "active",
+        },
+      ]);
+
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
       await waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toMatch(/social.media/i);
+        expect(screen.getByText("Acme Corp")).toBeDefined();
+        expect(screen.getByText("Initech")).toBeDefined();
       });
     });
 
-    it("shows a 'code-worker' option", async () => {
-      const user = userEvent.setup();
+    it("shows a friendly empty-state message when the user has no cloud companies", async () => {
+      mockListUserCompanies.mockResolvedValueOnce([]);
+
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
-
       await waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toMatch(/code.worker/i);
-      });
-    });
-
-    it("Next button is disabled (or absent) until a project is selected", async () => {
-      const user = userEvent.setup();
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      await fillIdentityAndAdvance(user);
-
-      // After navigating to step 2, Next should be disabled until a choice is made
-      await waitFor(() => {
-        const nextBtn = findNextButton();
-        if (nextBtn) {
-          expect((nextBtn as HTMLButtonElement).disabled).toBe(true);
-        }
-      });
-    });
-
-    it("Next button is enabled after selecting a project", async () => {
-      const user = userEvent.setup();
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      await fillIdentityAndAdvance(user);
-
-      await waitFor(() => {
-        const radios = document.querySelectorAll('input[type="radio"], [role="radio"]');
-        expect(radios.length).toBeGreaterThan(0);
-      });
-
-      // Click the first available option
-      const firstOption =
-        document.querySelector<HTMLElement>('input[type="radio"]') ||
-        document.querySelector<HTMLElement>('[role="radio"]');
-      if (firstOption) await user.click(firstOption);
-
-      await waitFor(() => {
-        const nextBtn = findNextButton();
-        if (nextBtn) {
-          expect((nextBtn as HTMLButtonElement).disabled).toBe(false);
-        }
-      });
-    });
-
-    it("advancing to step 3 shows customization fields", async () => {
-      const user = userEvent.setup();
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
-
-      await waitFor(() => {
-        // Step 3 must show either customization fields or a submit button
-        const hasStep3 =
-          findSubmitButton() !== null ||
-          document.querySelector("textarea") !== null ||
-          document.querySelectorAll('input[type="text"]').length > 0;
-        expect(hasStep3).toBe(true);
+        expect(
+          screen.queryByText(/no connected companies/i),
+        ).not.toBeNull();
       });
     });
   });
 
-  // ── 4. Step 3: CustomizationForm — submit calls personalize() ─────────────
+  // ── 4. Continue button — validation + submit path ─────────────────────────
 
-  describe("Step 3 — CustomizationForm submit", () => {
-    it("shows a Submit button on step 3", async () => {
+  describe("Continue button", () => {
+    it("is disabled while the name field is empty", async () => {
+      mockGetCurrentUser.mockResolvedValueOnce(null); // no prefill
       const user = userEvent.setup();
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
+      await waitFor(() => expect(mockGetCurrentUser).toHaveBeenCalled());
 
-      await waitFor(() => {
-        expect(findSubmitButton()).not.toBeNull();
-      });
+      const btn = findContinueButton() as HTMLButtonElement | null;
+      expect(btn).not.toBeNull();
+      expect(btn!.disabled).toBe(true);
+
+      // Clicking a disabled button must not submit.
+      if (btn) await user.click(btn);
+      expect(mockPersonalize).not.toHaveBeenCalled();
     });
 
-    it("clicking Submit calls personalize() with the identity answers", async () => {
+    it("becomes enabled once the name field has text", async () => {
+      mockGetCurrentUser.mockResolvedValueOnce(null);
       const user = userEvent.setup();
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user, {
-        name: "Jane Doe",
-        about: "Software engineer.",
-        goals: "Ship faster.",
-      });
-      await pickProjectAndAdvance(user, "personal-assistant");
+      await waitFor(() => expect(mockGetCurrentUser).toHaveBeenCalled());
 
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
+      const input = findNameInput();
+      if (input) await user.type(input, "Jane Doe");
 
       await waitFor(() => {
-        expect(mockPersonalize).toHaveBeenCalledTimes(1);
-        const [answers] = mockPersonalize.mock.calls[0];
-        expect(answers.name).toBe("Jane Doe");
-        expect(answers.about).toBe("Software engineer.");
-        expect(answers.goals).toBe("Ship faster.");
+        const btn = findContinueButton() as HTMLButtonElement | null;
+        expect(btn?.disabled).toBe(false);
       });
     });
 
-    it("clicking Submit calls personalize() with the correct starterProject slug", async () => {
+    it("clicking Continue calls personalize() with the entered name", async () => {
       const user = userEvent.setup();
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user, "personal-assistant");
-
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
-
+      // Wait for prefill before clicking.
       await waitFor(() => {
-        expect(mockPersonalize).toHaveBeenCalledTimes(1);
-        const [answers] = mockPersonalize.mock.calls[0];
-        expect(["personal-assistant", "social-media", "code-worker"]).toContain(answers.starterProject);
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
       });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
+      const [answers] = mockPersonalize.mock.calls[0];
+      expect(answers.name).toBe("Jane Doe");
     });
 
-    it("clicking Submit passes installPath as baseDir to personalize()", async () => {
+    it("passes installPath through as baseDir to personalize()", async () => {
       const user = userEvent.setup();
-      render(<Personalize installPath="/custom/install/path" onNext={vi.fn()} />);
-
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
-
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
+      render(
+        <Personalize installPath="/custom/install/path" onNext={vi.fn()} />,
+      );
 
       await waitFor(() => {
-        expect(mockPersonalize).toHaveBeenCalledTimes(1);
-        const [, baseDir] = mockPersonalize.mock.calls[0];
-        expect(baseDir).toBe("/custom/install/path");
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
       });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
+      const [, baseDir] = mockPersonalize.mock.calls[0];
+      expect(baseDir).toBe("/custom/install/path");
     });
 
-    it("calls onNext() after successful submit", async () => {
+    it("calls onNext() and flips the personalized flag after success", async () => {
       const user = userEvent.setup();
       const onNext = vi.fn();
       render(<Personalize installPath="/tmp/hq" onNext={onNext} />);
 
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
-
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
-
       await waitFor(() => {
-        expect(onNext).toHaveBeenCalledTimes(1);
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
       });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(mockSetPersonalized).toHaveBeenCalledWith(true);
     });
 
-    it("calls onNext() only after personalize() resolves (not before)", async () => {
+    it("does NOT omit starterProject — it isn't required anymore", async () => {
       const user = userEvent.setup();
-      const onNext = vi.fn();
-      const callOrder: string[] = [];
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      mockPersonalize.mockImplementationOnce(async () => {
-        callOrder.push("personalize");
-      });
-      onNext.mockImplementation(() => {
-        callOrder.push("onNext");
+      await waitFor(() => {
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
       });
 
-      render(<Personalize installPath="/tmp/hq" onNext={onNext} />);
+      await user.click(findContinueButton()!);
 
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
-
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
-
-      await waitFor(() => expect(onNext).toHaveBeenCalled());
-      expect(callOrder).toEqual(["personalize", "onNext"]);
+      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
+      const [answers] = mockPersonalize.mock.calls[0];
+      expect(answers.starterProject).toBeUndefined();
     });
   });
 
-  // ── 5. Error state — personalize() rejects ────────────────────────────────
+  // ── 5. Cloud sync on submit ───────────────────────────────────────────────
+
+  describe("cloud sync on submit", () => {
+    it("vends STS credentials and syncs each cloud company on submit", async () => {
+      mockListUserCompanies.mockResolvedValueOnce([
+        {
+          companyUid: "uid-acme",
+          companySlug: "acme",
+          companyName: "Acme Corp",
+          bucketName: "hq-vault-acme",
+          role: "admin",
+          status: "active",
+        },
+      ]);
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Acme Corp")).toBeDefined();
+      });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => {
+        expect(mockVendSts).toHaveBeenCalledWith(
+          "at",
+          "uid-acme",
+          "hq-vault-acme",
+        );
+        expect(mockSyncFromS3).toHaveBeenCalledWith(
+          expect.objectContaining({ bucketName: "hq-vault-acme" }),
+          "/tmp/hq",
+          expect.any(Function),
+          "companies/acme",
+        );
+      });
+    });
+
+    it("skips the primary company that step 08b already synced", async () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: {
+          teamId: "person-uid",
+          companyId: "uid-acme",
+          slug: "acme",
+          name: "Acme Corp",
+          joinedViaInvite: false,
+          bucketName: "hq-vault-acme",
+        },
+        isPersonal: false,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+      });
+      mockListUserCompanies.mockResolvedValueOnce([
+        {
+          companyUid: "uid-acme",
+          companySlug: "acme",
+          companyName: "Acme Corp",
+          bucketName: "hq-vault-acme",
+          role: "admin",
+          status: "active",
+        },
+        {
+          companyUid: "uid-initech",
+          companySlug: "initech",
+          companyName: "Initech",
+          bucketName: "hq-vault-initech",
+          role: "member",
+          status: "active",
+        },
+      ]);
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Initech")).toBeDefined();
+      });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(mockSyncFromS3).toHaveBeenCalled());
+      // Only the non-primary company should have been synced.
+      expect(mockSyncFromS3).toHaveBeenCalledTimes(1);
+      const [, , , prefix] = mockSyncFromS3.mock.calls[0];
+      expect(prefix).toBe("companies/initech");
+    });
+
+    it("tags cloud companies on the personalize() payload", async () => {
+      mockListUserCompanies.mockResolvedValueOnce([
+        {
+          companyUid: "uid-acme",
+          companySlug: "acme",
+          companyName: "Acme Corp",
+          bucketName: "hq-vault-acme",
+          role: "admin",
+          status: "active",
+        },
+      ]);
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Acme Corp")).toBeDefined();
+      });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
+      const [answers] = mockPersonalize.mock.calls[0];
+      expect(answers.companies).toEqual([
+        expect.objectContaining({
+          name: "Acme Corp",
+          cloud: true,
+          cloudCompanyUid: "uid-acme",
+        }),
+      ]);
+    });
+  });
+
+  // ── 6. Error state — personalize() rejects ────────────────────────────────
 
   describe("error state", () => {
     it("shows an error message when personalize() rejects", async () => {
@@ -497,16 +527,16 @@ describe("Personalize screen (09-personalize.tsx)", () => {
 
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
+      await waitFor(() => {
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
+      });
 
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
+      await user.click(findContinueButton()!);
 
       await waitFor(() => {
         const alert = screen.queryByRole("alert");
-        const errorText = screen.queryByText(/error|failed|unable|problem|went wrong/i);
-        expect(alert || errorText).not.toBeNull();
+        expect(alert).not.toBeNull();
       });
     });
 
@@ -517,17 +547,15 @@ describe("Personalize screen (09-personalize.tsx)", () => {
 
       render(<Personalize installPath="/tmp/hq" onNext={onNext} />);
 
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
-
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
-
-      // Wait for the rejection to be handled
       await waitFor(() => {
-        const alert = screen.queryByRole("alert");
-        const errorText = screen.queryByText(/error|failed|unable|problem|went wrong/i);
-        expect(alert || errorText).not.toBeNull();
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
+      });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => {
+        expect(screen.queryByRole("alert")).not.toBeNull();
       });
 
       expect(onNext).not.toHaveBeenCalled();
@@ -535,41 +563,45 @@ describe("Personalize screen (09-personalize.tsx)", () => {
 
     it("surfaces the error message text in the UI", async () => {
       const user = userEvent.setup();
-      mockPersonalize.mockRejectedValueOnce(new Error("Permission denied: /tmp/hq"));
+      mockPersonalize.mockRejectedValueOnce(
+        new Error("Permission denied: /tmp/hq"),
+      );
 
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await fillIdentityAndAdvance(user);
-      await pickProjectAndAdvance(user);
+      await waitFor(() => {
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
+      });
 
-      await waitFor(() => expect(findSubmitButton()).not.toBeNull());
-      await user.click(findSubmitButton()!);
+      await user.click(findContinueButton()!);
 
       await waitFor(() => {
         const text = document.body.textContent ?? "";
-        // Either the specific error message or a generic error indicator
-        expect(
-          text.match(/permission denied|failed|error|unable|went wrong/i) !== null
-        ).toBe(true);
+        expect(text).toMatch(/permission denied/i);
       });
     });
   });
 
-  // ── 6. UI policy — no-purple-monochrome-ui ────────────────────────────────
+  // ── 7. UI policy — no-purple-monochrome-ui ────────────────────────────────
 
   describe("UI policy — no-purple-monochrome-ui", () => {
     it("does NOT use 'purple' class names in the DOM", () => {
-      const { container } = render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+      const { container } = render(
+        <Personalize installPath="/tmp/hq" onNext={vi.fn()} />,
+      );
       expect(container.innerHTML).not.toMatch(/\bpurple\b/);
     });
 
     it("does NOT use 'indigo' class names in the DOM", () => {
-      const { container } = render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+      const { container } = render(
+        <Personalize installPath="/tmp/hq" onNext={vi.fn()} />,
+      );
       expect(container.innerHTML).not.toMatch(/\bindigo\b/);
     });
   });
 
-  // ── 7. Tauri environment compatibility ────────────────────────────────────
+  // ── 8. Tauri environment compatibility ────────────────────────────────────
 
   describe("Tauri environment compatibility", () => {
     it("renders cleanly when Tauri APIs are mocked", () => {

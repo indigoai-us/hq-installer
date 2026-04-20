@@ -345,7 +345,7 @@ function DepRow({ dep, tool, onInstall, onRetry, onOpenPage }: DepRowProps) {
 
         <div className="flex items-center gap-2">
           {tool.status === "loading" && (
-            <span className="text-xs text-zinc-500">Checking…</span>
+            <span className="text-xs text-zinc-500 hq-text-shimmer">Checking…</span>
           )}
           {tool.status === "installed" && (
             <span
@@ -373,7 +373,7 @@ function DepRow({ dep, tool, onInstall, onRetry, onOpenPage }: DepRowProps) {
             </>
           )}
           {tool.status === "installing" && (
-            <span className="text-xs text-zinc-400">Installing…</span>
+            <span className="text-xs text-zinc-400 hq-text-shimmer">Installing…</span>
           )}
           {tool.status === "error" && (
             <div className="flex items-center gap-2">
