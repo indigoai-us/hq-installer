@@ -36,6 +36,19 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      # Starter-project templates live in the public hq repo. sync-templates.ts
+      # (run via postinstall) copies template/starter-projects/ into
+      # templates/starter-projects/ so tauri.conf.json's resource bundler picks
+      # them up. Without this checkout, postinstall's --optional path silently
+      # skips the copy and the DMG ships without starter-projects, crashing on
+      # first wizard use with "No such file or directory" at
+      # /Applications/hq-installer.app/Contents/Resources/templates/starter-projects/<slug>.
+      - name: Checkout hq (starter-project templates source)
+        uses: actions/checkout@v4
+        with:
+          repository: indigoai-us/hq
+          path: hq-source
+
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -45,7 +58,22 @@ jobs:
           node-version: 22
           cache: "pnpm"
 
-      - run: pnpm install --frozen-lockfile
+      - name: Install dependencies (syncs starter-project templates via postinstall)
+        run: pnpm install --frozen-lockfile
+        env:
+          HQ_REPO_PATH: ${{ github.workspace }}/hq-source
+
+      # Defensive guard: fail loudly if starter-projects didn't land in the
+      # bundle source tree. Prevents another silent broken DMG if the source
+      # repo layout changes under us.
+      - name: Verify starter-project templates are present
+        run: |
+          for slug in code-worker personal-assistant social-media; do
+            if [ ! -d "templates/starter-projects/$slug" ]; then
+              echo "::error::templates/starter-projects/$slug missing — Tauri bundle would ship broken"
+              exit 1
+            fi
+          done
 
       - uses: dtolnay/rust-toolchain@stable
         with:
