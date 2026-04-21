@@ -9,6 +9,11 @@ const aarch64Url = release?.dmgAarch64?.browserDownloadUrl ?? null;
 const x64Url = release?.dmgX64?.browserDownloadUrl ?? null;
 const aarch64Size = release?.dmgAarch64 ? formatBytes(release.dmgAarch64.size) : null;
 const x64Size = release?.dmgX64 ? formatBytes(release.dmgX64.size) : null;
+const universalUrl = release?.dmgUniversal?.browserDownloadUrl ?? null;
+const universalSize = release?.dmgUniversal ? formatBytes(release.dmgUniversal.size) : null;
+// v0.1.11+ ships a single universal DMG. When present we render one
+// primary button instead of the old arch-split pair.
+const showUniversal = Boolean(universalUrl);
 const releaseDate = release ? formatDate(release.publishedAt) : null;
 ---
 
@@ -21,7 +26,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
     <meta name="theme-color" content="#0a0e1a" />
     <title>HQ — Download</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='50' font-size='48'>HQ</text></svg>" />
-    <link rel="canonical" href="https://hq.getindigo.ai" />
+    <link rel="canonical" href="https://install.getindigo.ai" />
     <meta property="og:title" content="HQ — Download" />
     <meta property="og:description" content="Personal OS for orchestrating work across companies, workers, and AI." />
     <meta property="og:type" content="website" />
@@ -53,31 +58,48 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         )}
 
         <div class="buttons" id="buttons">
-          <a
-            id="btn-aarch64"
-            class="btn btn-primary"
-            href={aarch64Url ?? "#"}
-            data-arch="aarch64"
-            aria-disabled={!aarch64Url}
-            data-state={aarch64Url ? "ready" : "pending"}
-          >
-            <span class="btn-arch">Apple Silicon</span>
-            <span class="btn-os">macOS · M1 / M2 / M3 / M4</span>
-            {aarch64Size && <span class="btn-size">{aarch64Size}</span>}
-          </a>
+          {showUniversal ? (
+            <a
+              id="btn-universal"
+              class="btn btn-primary"
+              href={universalUrl ?? "#"}
+              data-arch="universal"
+              aria-disabled={!universalUrl}
+              data-state={universalUrl ? "ready" : "pending"}
+            >
+              <span class="btn-arch">Download for macOS</span>
+              <span class="btn-os">Universal · Apple Silicon + Intel</span>
+              {universalSize && <span class="btn-size">{universalSize}</span>}
+            </a>
+          ) : (
+            <>
+              <a
+                id="btn-aarch64"
+                class="btn btn-primary"
+                href={aarch64Url ?? "#"}
+                data-arch="aarch64"
+                aria-disabled={!aarch64Url}
+                data-state={aarch64Url ? "ready" : "pending"}
+              >
+                <span class="btn-arch">Apple Silicon</span>
+                <span class="btn-os">macOS · M1 / M2 / M3 / M4</span>
+                {aarch64Size && <span class="btn-size">{aarch64Size}</span>}
+              </a>
 
-          <a
-            id="btn-x64"
-            class="btn btn-secondary"
-            href={x64Url ?? "#"}
-            data-arch="x64"
-            aria-disabled={!x64Url}
-            data-state={x64Url ? "ready" : "pending"}
-          >
-            <span class="btn-arch">Intel Mac</span>
-            <span class="btn-os">macOS · x86_64</span>
-            {x64Size && <span class="btn-size">{x64Size}</span>}
-          </a>
+              <a
+                id="btn-x64"
+                class="btn btn-secondary"
+                href={x64Url ?? "#"}
+                data-arch="x64"
+                aria-disabled={!x64Url}
+                data-state={x64Url ? "ready" : "pending"}
+              >
+                <span class="btn-arch">Intel Mac</span>
+                <span class="btn-os">macOS · x86_64</span>
+                {x64Size && <span class="btn-size">{x64Size}</span>}
+              </a>
+            </>
+          )}
         </div>
 
         <p class="os-hint" id="os-hint" aria-live="polite"></p>
@@ -156,9 +178,16 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
           const hint = document.getElementById("os-hint");
           const btnA = document.getElementById("btn-aarch64");
           const btnX = document.getElementById("btn-x64");
+          const btnU = document.getElementById("btn-universal");
 
           if (isMac) {
-            if (isAppleSilicon) {
+            if (btnU) {
+              // Universal build — one button, always featured on Mac.
+              btnU.classList.add("btn-featured");
+              hint && (hint.textContent = isAppleSilicon
+                ? "Detected: macOS on Apple Silicon — this universal build runs natively."
+                : "Detected: macOS on Intel — this universal build runs natively.");
+            } else if (isAppleSilicon) {
               btnA && btnA.classList.add("btn-featured");
               hint && (hint.textContent = "Detected: macOS on Apple Silicon — the top button is the one you want.");
             } else {
@@ -169,10 +198,12 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
             hint && (hint.textContent = "Detected: Windows. Native installer coming soon — for now, try npx create-hq.");
             btnA && btnA.classList.add("btn-dim");
             btnX && btnX.classList.add("btn-dim");
+            btnU && btnU.classList.add("btn-dim");
           } else if (isLinux) {
             hint && (hint.textContent = "Detected: Linux. Native installer coming soon — for now, try npx create-hq.");
             btnA && btnA.classList.add("btn-dim");
             btnX && btnX.classList.add("btn-dim");
+            btnU && btnU.classList.add("btn-dim");
           }
         } catch {
           // Silently no-op on any runtime error — the static HTML still

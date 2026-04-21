@@ -33,6 +33,10 @@ export interface Release {
   dmgAarch64: ReleaseAsset | null;
   /** canonical Intel DMG, or null if missing */
   dmgX64: ReleaseAsset | null;
+  /** universal DMG (works on both arches), or null if missing.
+   * When present the page shows a single primary button instead of
+   * the arch-split pair — v0.1.11+ ships universal only. */
+  dmgUniversal: ReleaseAsset | null;
 }
 
 const REPO = "indigoai-us/hq-installer";
@@ -88,6 +92,13 @@ export async function fetchLatestRelease(): Promise<Release | null> {
         assets.find((a) => /aarch64.*\.dmg$/i.test(a.name)) ?? null,
       dmgX64:
         assets.find((a) => /(x64|x86_64).*\.dmg$/i.test(a.name)) ?? null,
+      // Prefer the unversioned `hq-installer_universal.dmg` (evergreen
+      // filename) when multiple universal DMGs exist — keeps the URL
+      // stable across releases. Falls back to any *universal*.dmg.
+      dmgUniversal:
+        assets.find((a) => /^hq-installer_universal\.dmg$/i.test(a.name)) ??
+        assets.find((a) => /universal.*\.dmg$/i.test(a.name)) ??
+        null,
     };
   } catch (err) {
     // eslint-disable-next-line no-console

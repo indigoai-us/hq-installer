@@ -19,6 +19,6 @@ export default defineConfig({
       enabled: true,
     },
   }),
-  site: "https://hq.getindigo.ai",
+  site: "https://install.getindigo.ai",
   compressHTML: true,
 });
