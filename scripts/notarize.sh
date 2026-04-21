@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# notarize.sh — Submit the universal .dmg to Apple notarization and staple the ticket.
+# notarize.sh — Submit the universal .app to Apple notarization and staple the ticket.
+#
+# notarytool requires a .zip, .pkg, or .dmg as input — it will not accept a
+# bare .app. We zip the .app with `ditto` (preserves xattrs + signatures),
+# submit the zip, and then staple the ticket back onto the .app itself.
+# The zip is a disposable submission wrapper; the stapled .app is the real
+# artifact that ends up in the release .zip built by CI.
 #
 # Required environment variables:
 #   APPLE_ID           — Apple ID email used for notarization (e.g. dev@example.com)
@@ -10,7 +16,7 @@
 
 set -euo pipefail
 
-DMG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+APP_DIR="src-tauri/target/universal-apple-darwin/release/bundle/macos"
 
 # ---------------------------------------------------------------------------
 # Validate environment variables
@@ -20,29 +26,36 @@ DMG_DIR="src-tauri/target/universal-apple-darwin/release/bundle/dmg"
 : "${APPLE_TEAM_ID:?APPLE_TEAM_ID is required}"
 
 # ---------------------------------------------------------------------------
-# Locate the .dmg
+# Locate the .app
 # ---------------------------------------------------------------------------
-if [[ ! -d "$DMG_DIR" ]]; then
-  echo "ERROR: DMG directory not found: $DMG_DIR" >&2
+if [[ ! -d "$APP_DIR" ]]; then
+  echo "ERROR: App bundle directory not found: $APP_DIR" >&2
   echo "       Run 'tauri build --target universal-apple-darwin' first." >&2
   exit 1
 fi
 
-DMG_PATH=$(find "$DMG_DIR" -name "*.dmg" -maxdepth 1 | head -n 1)
+APP_PATH=$(find "$APP_DIR" -maxdepth 1 -name "*.app" | head -n 1)
 
-if [[ -z "$DMG_PATH" ]]; then
-  echo "ERROR: No .dmg file found in $DMG_DIR" >&2
+if [[ -z "$APP_PATH" ]]; then
+  echo "ERROR: No .app bundle found in $APP_DIR" >&2
   exit 1
 fi
 
-echo "Found DMG: $DMG_PATH"
+echo "Found .app: $APP_PATH"
+
+# ---------------------------------------------------------------------------
+# Wrap the .app in a zip for notarytool submission
+# ---------------------------------------------------------------------------
+SUBMISSION_ZIP="$(mktemp -d)/hq-installer-notarize.zip"
+echo "Wrapping .app in notarization zip: $SUBMISSION_ZIP"
+ditto -c -k --keepParent --sequesterRsrc "$APP_PATH" "$SUBMISSION_ZIP"
 
 # ---------------------------------------------------------------------------
 # Submit to Apple notarization and wait for result
 # ---------------------------------------------------------------------------
 echo "Submitting to Apple notarization..."
 
-NOTARIZE_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" \
+NOTARIZE_OUTPUT=$(xcrun notarytool submit "$SUBMISSION_ZIP" \
   --apple-id    "$APPLE_ID" \
   --password    "$APPLE_ID_PASSWORD" \
   --team-id     "$APPLE_TEAM_ID" \
@@ -73,9 +86,9 @@ fi
 echo "Notarization accepted."
 
 # ---------------------------------------------------------------------------
-# Staple the notarization ticket to the .dmg
+# Staple the notarization ticket directly to the .app
 # ---------------------------------------------------------------------------
-echo "Stapling notarization ticket..."
-xcrun stapler staple "$DMG_PATH"
+echo "Stapling notarization ticket to .app..."
+xcrun stapler staple "$APP_PATH"
 
-echo "Done. $DMG_PATH is notarized and stapled."
+echo "Done. $APP_PATH is notarized and stapled."

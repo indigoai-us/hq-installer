@@ -4,7 +4,7 @@
  *
  * Verifies the seams between web onboarding, vault-service, and installer
  * without needing to run the Tauri app. Checks:
- *   1. GitHub release .dmg is accessible
+ *   1. GitHub release .zip is accessible
  *   2. onboarding.indigo-hq.com completion page has the download link
  *   3. vault-service returns a company for the test Cognito user
  *   4. STS vend returns valid credentials for the resolved company
@@ -13,8 +13,8 @@
  */
 
 const VAULT_API_URL = "https://tqdwdqxv75.execute-api.us-east-1.amazonaws.com";
-const DMG_URL =
-  "https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_0.1.0_universal.dmg";
+const INSTALLER_URL =
+  "https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_universal.zip";
 const ONBOARDING_URL = "https://onboarding.indigo-hq.com";
 
 // Cached Cognito tokens path — same as existing e2e scripts
@@ -35,23 +35,23 @@ function record(name: string, passed: boolean, message: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Check 1: GitHub release .dmg is accessible
+// Check 1: GitHub release .zip is accessible
 // ---------------------------------------------------------------------------
-async function checkDmgRelease() {
+async function checkInstallerRelease() {
   try {
-    const res = await fetch(DMG_URL, { method: "HEAD", redirect: "follow" });
+    const res = await fetch(INSTALLER_URL, { method: "HEAD", redirect: "follow" });
     if (res.ok || res.status === 302 || res.status === 200) {
-      record("GitHub release .dmg", true, `HEAD ${DMG_URL} → ${res.status}`);
+      record("GitHub release .zip", true, `HEAD ${INSTALLER_URL} → ${res.status}`);
     } else {
       record(
-        "GitHub release .dmg",
+        "GitHub release .zip",
         false,
-        `Unexpected status ${res.status} for ${DMG_URL}`
+        `Unexpected status ${res.status} for ${INSTALLER_URL}`
       );
     }
   } catch (err) {
     record(
-      "GitHub release .dmg",
+      "GitHub release .zip",
       false,
       `Fetch failed: ${err instanceof Error ? err.message : String(err)}`
     );
@@ -259,7 +259,7 @@ async function main() {
   console.log("\nE2E Smoke Test: Web Onboarding → Installer Handoff\n");
   console.log("─".repeat(50));
 
-  await checkDmgRelease();
+  await checkInstallerRelease();
   await checkOnboardingPage();
   const companyUid = await checkVaultCompany();
   if (companyUid) {
