@@ -76,8 +76,11 @@ git push origin v1.2.3
 The release workflow will:
 1. Build a universal binary (`x86_64` + `arm64`) via `tauri build --target universal-apple-darwin`
 2. Code-sign the `.app` bundle with the Apple Developer ID certificate from GitHub secrets
-3. Submit the `.dmg` to Apple notarization and staple the ticket
-4. Create a GitHub release with the signed `.dmg` attached
+3. Submit the `.app` to Apple notarization and staple the ticket
+4. Archive the notarized `.app` into `hq-installer_universal.zip` with `ditto` (preserves the stapled ticket and xattrs)
+5. Create a GitHub release with the signed `.zip` attached
+
+End-user install flow: download the `.zip` → Safari auto-extracts → double-click the `.app` to run the installer wizard. No DMG mount, no drag-to-Applications step.
 
 ### Required GitHub Actions secrets
 

@@ -81,9 +81,9 @@ Verifies that the GitHub Actions release workflow correctly builds, signs, notar
 
 ---
 
-## AC-5: Uploads signed .dmg as a GitHub release asset
+## AC-5: Uploads signed .zip (zipped .app) as a GitHub release asset
 
-**Check:** The workflow creates a GitHub Release for the tag and attaches the signed `.dmg` file as a release asset.
+**Check:** The workflow creates a GitHub Release for the tag and attaches the signed, notarized `.app` — archived into `hq-installer_universal.zip` via `ditto` — as a release asset.
 
 **Verification:**
 1. Open `.github/workflows/release.yml`
@@ -91,12 +91,13 @@ Verifies that the GitHub Actions release workflow correctly builds, signs, notar
    - `actions/upload-release-asset`
    - `softprops/action-gh-release`
    - Tauri's `tauri-action` with `tagName` / `releaseName` configured
-3. Navigate to the GitHub repo Releases page after a tag push and confirm:
+3. Confirm the versionless-alias step uses `ditto -c -k --keepParent --sequesterRsrc` to archive the `.app` (plain `zip -r` strips the stapled notarization ticket)
+4. Navigate to the GitHub repo Releases page after a tag push and confirm:
    - A release named after the tag (e.g. `v0.1.0`) is present
-   - A `.dmg` file is attached as a downloadable asset
-   - The `.dmg` passes Gatekeeper on a clean macOS machine: `spctl --assess --type open --context context:primary-signature path/to/app.dmg`
+   - `hq-installer_universal.zip` is attached as a downloadable asset
+   - The extracted `.app` passes Gatekeeper on a clean macOS machine: `spctl --assess --type exec --context context:primary-signature path/to/hq-installer.app`
 
-**Pass condition:** Release page shows a `.dmg` asset. Gatekeeper assessment returns `accepted` with no quarantine warning on download.
+**Pass condition:** Release page shows a `.zip` asset. Extracted `.app` passes Gatekeeper with no quarantine warning on first launch.
 
 ---
 
@@ -124,5 +125,5 @@ Verifies that the GitHub Actions release workflow correctly builds, signs, notar
 | AC-2 | Runs on `macos-latest`, universal build | Inspect `runs-on` and build command; review Actions log |
 | AC-3 | Signs using secrets (no hardcoded creds) | Inspect YAML for secret refs; verify 5 secrets set in GitHub |
 | AC-4 | Notarizes with `--wait` and checks result | Inspect notarization step; confirm `Accepted` in Actions log |
-| AC-5 | Uploads signed .dmg as release asset | Check Releases page for asset; run Gatekeeper check |
+| AC-5 | Uploads signed .zip (zipped .app) as release asset | Check Releases page for asset; run Gatekeeper check on extracted .app |
 | AC-6 | README documents release process + secrets | Read README release section for completeness |

@@ -1,6 +1,6 @@
 [package]
 name = "hq-installer"
-version = "0.1.11"
+version = "0.1.12"
 description = "HQ native macOS installer"
 authors = []
 edition = "2021"

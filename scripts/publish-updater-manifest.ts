@@ -2,8 +2,8 @@
 /**
  * publish-updater-manifest.ts
  *
- * Builds a Tauri update manifest (latest.json) and publishes it + the DMG
- * to the `indigo-hq-installer-updates` S3 bucket via presigned PUT URLs.
+ * Builds a Tauri update manifest (latest.json) and publishes it + the zipped
+ * .app to the `indigo-hq-installer-updates` S3 bucket via presigned PUT URLs.
  * No public-read ACLs are used; CloudFront fronts the bucket for distribution.
  *
  * Usage:
@@ -11,7 +11,7 @@
  *     --version 0.1.0 \
  *     --notes "Release notes" \
  *     --signature "<ed25519-sig>" \
- *     --dmg path/to/hq-installer_0.1.0_universal.dmg
+ *     --zip path/to/hq-installer_0.1.0_universal.zip
  *
  * Required env vars:
  *   AWS_REGION             (defaults to "us-east-1")
@@ -46,11 +46,11 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 const args = parseArgs(process.argv.slice(2));
 
-const { version, notes, signature, dmg } = args;
+const { version, notes, signature, zip } = args;
 
-if (!version || !notes || !signature || !dmg) {
+if (!version || !notes || !signature || !zip) {
   console.error(
-    "Usage: publish-updater-manifest.ts --version <ver> --notes <notes> --signature <sig> --dmg <path>"
+    "Usage: publish-updater-manifest.ts --version <ver> --notes <notes> --signature <sig> --zip <path>"
   );
   process.exit(1);
 }
@@ -65,10 +65,10 @@ const AWS_REGION = process.env.AWS_REGION ?? "us-east-1";
 // Presigned URL expiry: 15 minutes (upload must complete within this window)
 const PRESIGNED_EXPIRES_IN = 900;
 
-const dmgS3Key = `releases/v${version}/hq-installer-universal.dmg`;
+const zipS3Key = `releases/v${version}/hq-installer-universal.zip`;
 const manifestS3Key = "latest.json";
 
-const dmgCloudFrontUrl = `${CLOUDFRONT_ORIGIN}/releases/v${version}/hq-installer-universal.dmg`;
+const zipCloudFrontUrl = `${CLOUDFRONT_ORIGIN}/releases/v${version}/hq-installer-universal.zip`;
 
 // ---------------------------------------------------------------------------
 // Build manifest
@@ -81,7 +81,7 @@ const manifest = {
   platforms: {
     "darwin-universal": {
       signature,
-      url: dmgCloudFrontUrl,
+      url: zipCloudFrontUrl,
     },
   },
 };
@@ -133,20 +133,20 @@ async function uploadViaPresignedPut(
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  // 1. Upload DMG
-  const dmgAbsPath = path.resolve(dmg);
-  if (!fs.existsSync(dmgAbsPath)) {
-    throw new Error(`DMG not found: ${dmgAbsPath}`);
+  // 1. Upload zipped .app
+  const zipAbsPath = path.resolve(zip);
+  if (!fs.existsSync(zipAbsPath)) {
+    throw new Error(`Zip not found: ${zipAbsPath}`);
   }
-  const dmgBuffer = fs.readFileSync(dmgAbsPath);
+  const zipBuffer = fs.readFileSync(zipAbsPath);
 
-  console.log(`Uploading DMG → s3://${BUCKET}/${dmgS3Key} …`);
+  console.log(`Uploading zip → s3://${BUCKET}/${zipS3Key} …`);
   await uploadViaPresignedPut(
-    dmgS3Key,
-    dmgBuffer,
-    "application/octet-stream"
+    zipS3Key,
+    zipBuffer,
+    "application/zip"
   );
-  console.log("DMG uploaded.");
+  console.log("Zip uploaded.");
 
   // 2. Upload latest.json manifest
   const manifestBuffer = Buffer.from(manifestJson, "utf-8");
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
 
   console.log("Published latest.json to S3");
   console.log(`  version : ${version}`);
-  console.log(`  dmg url : ${dmgCloudFrontUrl}`);
+  console.log(`  zip url : ${zipCloudFrontUrl}`);
 }
 
 main().catch((err) => {

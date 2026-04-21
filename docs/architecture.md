@@ -126,9 +126,12 @@ All installs stream stdout lines to the frontend via `install:progress` Tauri ev
 
 1. Build universal macOS binary (`x86_64` + `arm64`) via `tauri build --target universal-apple-darwin`
 2. Code-sign `.app` with Apple Developer ID certificate
-3. Notarize `.dmg` via Apple notarytool, staple ticket
-4. Create GitHub release with signed `.dmg` attached
-5. Upload auto-update manifest to S3, generate presigned URL
+3. Notarize `.app` via Apple notarytool, staple ticket
+4. Archive the notarized `.app` into `hq-installer_universal.zip` with `ditto --sequesterRsrc` so the stapled ticket + xattrs survive
+5. Create GitHub release with signed `.zip` attached
+6. Upload auto-update manifest to S3, generate presigned URL
+
+Distribution format is a zipped, notarized `.app` rather than a `.dmg` so the user experience is "download → Safari auto-extracts → double-click the app" with no mount-and-drag-to-Applications step.
 
 Required GitHub Actions secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`. Certificate sourced from `companies/indigo/settings/`.
 

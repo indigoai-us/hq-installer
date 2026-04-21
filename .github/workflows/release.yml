@@ -40,9 +40,9 @@ jobs:
       # (run via postinstall) copies template/starter-projects/ into
       # templates/starter-projects/ so tauri.conf.json's resource bundler picks
       # them up. Without this checkout, postinstall's --optional path silently
-      # skips the copy and the DMG ships without starter-projects, crashing on
+      # skips the copy and the .app ships without starter-projects, crashing on
       # first wizard use with "No such file or directory" at
-      # /Applications/hq-installer.app/Contents/Resources/templates/starter-projects/<slug>.
+      # hq-installer.app/Contents/Resources/templates/starter-projects/<slug>.
       - name: Checkout hq (starter-project templates source)
         uses: actions/checkout@v4
         with:
@@ -64,7 +64,7 @@ jobs:
           HQ_REPO_PATH: ${{ github.workspace }}/hq-source
 
       # Defensive guard: fail loudly if starter-projects didn't land in the
-      # bundle source tree. Prevents another silent broken DMG if the source
+      # bundle source tree. Prevents another silent broken .app if the source
       # repo layout changes under us.
       - name: Verify starter-project templates are present
         run: |
@@ -98,13 +98,13 @@ jobs:
       #   - APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID — notarytool submits
       #     the signed bundle to Apple using an app-specific password
       #     (same method electron-builder uses on indigo-nx).
-      - name: Build, sign, and notarize universal DMG
+      - name: Build, sign, and notarize universal .app
         uses: tauri-apps/tauri-action@v0
         id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Vite inlines `import.meta.env.VITE_*` at build time. Without these
-          # the shipped DMG throws "VITE_COGNITO_CLIENT_ID is not set" on the
+          # the shipped .app throws "VITE_COGNITO_CLIENT_ID is not set" on the
           # sign-in screen. CI already sets mocks for e2e; release needs the
           # real hq-pro Cognito values.
           VITE_COGNITO_USER_POOL_ID: ${{ secrets.VITE_COGNITO_USER_POOL_ID }}
@@ -126,7 +126,7 @@ jobs:
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "HQ Installer ${{ github.event.inputs.tag || github.ref_name }}"
-          releaseBody: "Download the DMG below to install. First time? See README for prerequisites."
+          releaseBody: "Download the .zip below, double-click the extracted app to run the installer. First time? See README for prerequisites."
           releaseDraft: true
           prerelease: false
           args: --target universal-apple-darwin
@@ -185,37 +185,56 @@ jobs:
 
           gh release upload "$TAG" latest.json --clobber
 
-      # Versionless DMG alias. A second copy of the same signed/notarized
-      # DMG uploaded under a stable filename gives consumers a permanent
+      # Versionless .zip alias. A zipped copy of the same signed/notarized
+      # .app uploaded under a stable filename gives consumers a permanent
       # one-click URL:
-      #   https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_universal.dmg
+      #   https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_universal.zip
       # GitHub auto-redirects /releases/latest/download/<name> to whatever
       # the current release is. Used by hq-onboarding's "Download HQ
       # Installer" step — no API call, no rate limit, one click forever.
-      - name: Upload versionless DMG alias
+      #
+      # Shipping a zipped .app instead of a .dmg means Safari auto-extracts
+      # the download and the user double-clicks the .app to run — no
+      # mount-and-drag-to-Applications step. Gatekeeper accepts the notarized
+      # .app out of a .zip the same way it accepts one out of a .dmg.
+      #
+      # Using `ditto --keepParent -c -k --sequesterRsrc` (Apple's recommended
+      # archiver for signed bundles) preserves extended attributes, symlinks,
+      # and the notarization stapler ticket that xattr-lossy zip tools like
+      # `zip -r` would strip, which would re-trigger Gatekeeper on first
+      # launch. --sequesterRsrc keeps resource forks inside __MACOSX so the
+      # archive extracts cleanly on any macOS version.
+      - name: Upload versionless .zip alias
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          DMG_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
-          if [ -z "$DMG_PATH" ]; then
-            echo "::warning::No DMG found — skipping versionless alias"
-            exit 0
+          APP_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No .app bundle found — cannot build .zip alias"
+            exit 1
           fi
-          ALIAS_PATH="src-tauri/target/hq-installer_universal.dmg"
-          cp "$DMG_PATH" "$ALIAS_PATH"
+          ALIAS_PATH="src-tauri/target/hq-installer_universal.zip"
+          ditto -c -k --keepParent --sequesterRsrc "$APP_PATH" "$ALIAS_PATH"
           gh release upload "$TAG" "$ALIAS_PATH" --clobber
+
+          # Versioned copy, matches the DMG's old naming convention for
+          # anyone linking a specific release.
+          VERSION="${TAG#v}"
+          VERSIONED_PATH="src-tauri/target/hq-installer_${VERSION}_universal.zip"
+          cp "$ALIAS_PATH" "$VERSIONED_PATH"
+          gh release upload "$TAG" "$VERSIONED_PATH" --clobber
 
       # tauri-action creates the release as a draft so we can sanity-check
       # assets before it hits everyone's auto-updater. Publish once the
-      # .tar.gz, .sig, DMG, and latest.json are all present.
+      # .tar.gz, .sig, .zip, and latest.json are all present.
       - name: Publish draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
-          for REQUIRED in ".dmg" ".tar.gz" ".tar.gz.sig" "latest.json" "hq-installer_universal.dmg"; do
+          for REQUIRED in ".tar.gz" ".tar.gz.sig" "latest.json" "hq-installer_universal.zip"; do
             if ! echo "$ASSETS" | grep -q "$REQUIRED"; then
               echo "::error::Missing required asset: $REQUIRED"
               exit 1
