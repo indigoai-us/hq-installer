@@ -5,7 +5,7 @@
  * Verifies the seams between web onboarding, vault-service, and installer
  * without needing to run the Tauri app. Checks:
  *   1. GitHub release .zip is accessible
- *   2. onboarding.indigo-hq.com completion page has the download link
+ *   2. onboarding.getindigo.ai completion page has the download link
  *   3. vault-service returns a company for the test Cognito user
  *   4. STS vend returns valid credentials for the resolved company
  *
@@ -15,7 +15,7 @@
 const VAULT_API_URL = "https://tqdwdqxv75.execute-api.us-east-1.amazonaws.com";
 const INSTALLER_URL =
   "https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_universal.zip";
-const ONBOARDING_URL = "https://onboarding.indigo-hq.com";
+const ONBOARDING_URL = "https://onboarding.getindigo.ai";
 
 // Cached Cognito tokens path — same as existing e2e scripts
 const COGNITO_CACHE_PATH = `${process.env.HOME}/.hq-installer-e2e-tokens.json`;
