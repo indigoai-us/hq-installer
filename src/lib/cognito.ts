@@ -3,6 +3,7 @@
 // Authentication itself lives in `google-oauth.ts` (Google via Cognito Hosted
 // UI + PKCE). This module is responsible for:
 //   - Storing/loading/clearing Cognito tokens in the macOS keychain.
+//   - Writing/reading the shared token file (~/.hq/cognito-tokens.json).
 //   - Refreshing expired sessions via REFRESH_TOKEN_AUTH.
 //   - Exposing the current authenticated user derived from the stored idToken.
 //   - Global sign-out.
@@ -14,6 +15,14 @@ import {
   type InitiateAuthCommandOutput,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  writeTextFile,
+  readTextFile,
+  rename,
+  remove,
+  mkdir,
+  exists,
+} from "@tauri-apps/plugin-fs";
 
 // ---------------------------------------------------------------------------
 // Config (build-time env vars — read lazily so tests can stub import.meta.env)
@@ -76,6 +85,93 @@ const KC_SERVICE = "cognito";
 // which caused 4-12 prompts per sign-in on dev.
 const KC_ACCOUNT = "tokens";
 
+// ---------------------------------------------------------------------------
+// Shared token file (~/.hq/cognito-tokens.json)
+// ---------------------------------------------------------------------------
+
+async function getHomeDirPath(): Promise<string> {
+  return invoke<string>("home_dir");
+}
+
+const TOKEN_FILE_NAME = "cognito-tokens.json";
+const HQ_DIR_NAME = ".hq";
+
+interface SharedTokenFile {
+  accessToken: string;
+  idToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  tokenType: "Bearer";
+}
+
+async function writeSharedTokenFile(tokens: CognitoTokens): Promise<void> {
+  try {
+    const home = await getHomeDirPath();
+    const hqDir = `${home}/${HQ_DIR_NAME}`;
+    const tokenPath = `${hqDir}/${TOKEN_FILE_NAME}`;
+    const tmpPath = `${hqDir}/.${TOKEN_FILE_NAME}.tmp.${crypto.randomUUID()}`;
+
+    if (!(await exists(hqDir))) {
+      await mkdir(hqDir, { recursive: true });
+    }
+
+    const payload: SharedTokenFile = {
+      accessToken: tokens.accessToken,
+      idToken: tokens.idToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: tokens.expiresAt,
+      tokenType: "Bearer",
+    };
+
+    await writeTextFile(tmpPath, JSON.stringify(payload, null, 2));
+    await rename(tmpPath, tokenPath);
+  } catch {
+    // Best-effort — keychain is the primary store
+  }
+}
+
+async function deleteSharedTokenFile(): Promise<void> {
+  try {
+    const home = await getHomeDirPath();
+    const tokenPath = `${home}/${HQ_DIR_NAME}/${TOKEN_FILE_NAME}`;
+    if (await exists(tokenPath)) {
+      await remove(tokenPath);
+    }
+  } catch {
+    // Best-effort — keychain is the primary store
+  }
+}
+
+async function readSharedTokenFile(): Promise<CognitoTokens | null> {
+  try {
+    const home = await getHomeDirPath();
+    const tokenPath = `${home}/${HQ_DIR_NAME}/${TOKEN_FILE_NAME}`;
+
+    if (!(await exists(tokenPath))) return null;
+
+    const raw = await readTextFile(tokenPath);
+    const parsed = JSON.parse(raw) as Partial<SharedTokenFile>;
+
+    if (
+      typeof parsed.accessToken !== "string" ||
+      typeof parsed.idToken !== "string" ||
+      typeof parsed.refreshToken !== "string" ||
+      typeof parsed.expiresAt !== "number"
+    ) {
+      return null;
+    }
+
+    return {
+      accessToken: parsed.accessToken,
+      idToken: parsed.idToken,
+      refreshToken: parsed.refreshToken,
+      expiresAt: parsed.expiresAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // In-memory cache for the current session's tokens. On unsigned dev builds
 // macOS prompts the user on every keychain read, so callers like
 // getCurrentUser() — which can run on every mount, including React
@@ -106,6 +202,8 @@ export async function storeTokens(tokens: CognitoTokens): Promise<void> {
   cachedTokens = tokens;
   cacheWarmed = true;
   pendingLoad = null;
+
+  await writeSharedTokenFile(tokens);
 }
 
 async function loadTokens(): Promise<CognitoTokens | null> {
@@ -123,9 +221,10 @@ async function loadTokens(): Promise<CognitoTokens | null> {
         account: KC_ACCOUNT,
       });
       if (!raw) {
-        cachedTokens = null;
+        const fileFallback = await readSharedTokenFile();
+        cachedTokens = fileFallback;
         cacheWarmed = true;
-        return null;
+        return fileFallback;
       }
       const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
       if (
@@ -134,9 +233,10 @@ async function loadTokens(): Promise<CognitoTokens | null> {
         typeof parsed.refreshToken !== "string" ||
         typeof parsed.expiresAt !== "number"
       ) {
-        cachedTokens = null;
+        const fileFallback = await readSharedTokenFile();
+        cachedTokens = fileFallback;
         cacheWarmed = true;
-        return null;
+        return fileFallback;
       }
       cachedTokens = {
         accessToken: parsed.accessToken,
@@ -147,9 +247,10 @@ async function loadTokens(): Promise<CognitoTokens | null> {
       cacheWarmed = true;
       return cachedTokens;
     } catch {
-      cachedTokens = null;
+      const fileFallback = await readSharedTokenFile();
+      cachedTokens = fileFallback;
       cacheWarmed = true;
-      return null;
+      return fileFallback;
     } finally {
       pendingLoad = null;
     }
@@ -172,6 +273,8 @@ async function clearTokens(): Promise<void> {
   cachedTokens = null;
   cacheWarmed = true;
   pendingLoad = null;
+
+  await deleteSharedTokenFile();
 }
 
 // ---------------------------------------------------------------------------

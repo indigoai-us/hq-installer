@@ -11,6 +11,12 @@ import.meta.env.VITE_COGNITO_DOMAIN = "https://auth.example.com";
 const fakeKeychain = new Map<string, string>();
 
 // ---------------------------------------------------------------------------
+// Fake filesystem (in-memory Map, path → content)
+// ---------------------------------------------------------------------------
+const fakeFs = new Map<string, string>();
+const FAKE_HOME = "/Users/testuser";
+
+// ---------------------------------------------------------------------------
 // Module mocks — must be hoisted before any imports from the module under test
 // ---------------------------------------------------------------------------
 
@@ -29,11 +35,35 @@ vi.mock("@tauri-apps/api/core", () => ({
         case "keychain_delete":
           fakeKeychain.delete(args!.account);
           return null;
+        case "home_dir":
+          return FAKE_HOME;
         default:
           throw new Error(`Unknown command: ${command}`);
       }
     }
   ),
+}));
+
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  writeTextFile: vi.fn(async (path: string, content: string) => {
+    fakeFs.set(path, content);
+  }),
+  readTextFile: vi.fn(async (path: string) => {
+    const content = fakeFs.get(path);
+    if (content === undefined) throw new Error(`File not found: ${path}`);
+    return content;
+  }),
+  rename: vi.fn(async (oldPath: string, newPath: string) => {
+    const content = fakeFs.get(oldPath);
+    if (content === undefined) throw new Error(`File not found: ${oldPath}`);
+    fakeFs.set(newPath, content);
+    fakeFs.delete(oldPath);
+  }),
+  remove: vi.fn(async (path: string) => {
+    fakeFs.delete(path);
+  }),
+  mkdir: vi.fn(async () => {}),
+  exists: vi.fn(async (path: string) => fakeFs.has(path) || path === `${FAKE_HOME}/.hq`),
 }));
 
 // Mock the AWS SDK
@@ -106,6 +136,7 @@ async function seedKeychain(tokens: CognitoTokens) {
 
 beforeEach(() => {
   fakeKeychain.clear();
+  fakeFs.clear();
   vi.clearAllMocks();
   // Reset the in-memory token cache — otherwise state leaks across tests
   // (the cache is module-scoped, not per-test).
@@ -343,6 +374,123 @@ describe("refreshSession", () => {
 
   it("throws when no refresh token stored", async () => {
     await expect(refreshSession()).rejects.toThrow("No refresh token");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared token file — write on store, read as fallback on load
+// ---------------------------------------------------------------------------
+
+describe("shared token file", () => {
+  const tokenFilePath = `${FAKE_HOME}/.hq/cognito-tokens.json`;
+
+  it("storeTokens writes to ~/.hq/cognito-tokens.json with canonical schema", async () => {
+    const tokens = makeTokens({
+      accessToken: "acc-shared",
+      idToken: makeIdToken("sub-shared", "shared@example.com"),
+      refreshToken: "ref-shared",
+      expiresAt: 1700000000000,
+    });
+
+    await storeTokens(tokens);
+
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
+    const written = JSON.parse(fakeFs.get(tokenFilePath)!);
+    expect(written.accessToken).toBe("acc-shared");
+    expect(written.idToken).toBe(tokens.idToken);
+    expect(written.refreshToken).toBe("ref-shared");
+    expect(written.expiresAt).toBe(1700000000000);
+    expect(typeof written.expiresAt).toBe("number");
+    expect(written.tokenType).toBe("Bearer");
+  });
+
+  it("storeTokens uses atomic rename (no .tmp file remains)", async () => {
+    const tokens = makeTokens();
+    await storeTokens(tokens);
+
+    const tmpFiles = [...fakeFs.keys()].filter((k) => k.includes(".tmp."));
+    expect(tmpFiles).toHaveLength(0);
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
+  });
+
+  it("loadTokens falls back to shared token file when keychain is empty", async () => {
+    // No keychain data — keychain_get will throw "not found"
+    // Seed the shared token file directly
+    const fileTokens = {
+      accessToken: "file-acc",
+      idToken: makeIdToken("sub-file", "file@example.com"),
+      refreshToken: "file-ref",
+      expiresAt: Date.now() + 3600_000,
+      tokenType: "Bearer",
+    };
+    fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
+
+    const user = await getCurrentUser();
+
+    expect(user).not.toBeNull();
+    expect(user!.email).toBe("file@example.com");
+    expect(user!.tokens.accessToken).toBe("file-acc");
+  });
+
+  it("loadTokens returns null when both keychain and file are unavailable", async () => {
+    // No keychain, no file
+    const user = await getCurrentUser();
+    expect(user).toBeNull();
+  });
+
+  it("loadTokens prefers keychain over file", async () => {
+    const keychainTokens = makeTokens({
+      accessToken: "kc-acc",
+      idToken: makeIdToken("sub-kc", "kc@example.com"),
+    });
+    await seedKeychain(keychainTokens);
+
+    const fileTokens = {
+      accessToken: "file-acc",
+      idToken: makeIdToken("sub-file", "file@example.com"),
+      refreshToken: "file-ref",
+      expiresAt: Date.now() + 3600_000,
+      tokenType: "Bearer",
+    };
+    fakeFs.set(tokenFilePath, JSON.stringify(fileTokens));
+
+    const user = await getCurrentUser();
+
+    expect(user).not.toBeNull();
+    expect(user!.email).toBe("kc@example.com");
+  });
+
+  it("signOut deletes the shared token file", async () => {
+    const tokens = makeTokens();
+    await storeTokens(tokens);
+
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
+
+    mockSendImpl = async () => ({});
+    await signOut();
+
+    expect(fakeFs.has(tokenFilePath)).toBe(false);
+  });
+
+  it("storeTokens calls mkdir when ~/.hq does not exist", async () => {
+    const { exists: mockExists } = await import("@tauri-apps/plugin-fs");
+    const { mkdir: mockMkdir } = await import("@tauri-apps/plugin-fs");
+
+    // Override exists to return false for the .hq directory
+    vi.mocked(mockExists).mockImplementation(async (path: string | URL) => {
+      if (String(path) === `${FAKE_HOME}/.hq`) return false;
+      return fakeFs.has(String(path));
+    });
+
+    const tokens = makeTokens();
+    await storeTokens(tokens);
+
+    expect(mockMkdir).toHaveBeenCalledWith(`${FAKE_HOME}/.hq`, { recursive: true });
+
+    // Restore default exists behavior
+    vi.mocked(mockExists).mockImplementation(
+      async (path: string | URL) => fakeFs.has(String(path)) || String(path) === `${FAKE_HOME}/.hq`,
+    );
   });
 });
 
