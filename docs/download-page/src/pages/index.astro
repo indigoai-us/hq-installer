@@ -9,11 +9,23 @@ const aarch64Url = release?.dmgAarch64?.browserDownloadUrl ?? null;
 const x64Url = release?.dmgX64?.browserDownloadUrl ?? null;
 const aarch64Size = release?.dmgAarch64 ? formatBytes(release.dmgAarch64.size) : null;
 const x64Size = release?.dmgX64 ? formatBytes(release.dmgX64.size) : null;
-const universalUrl = release?.dmgUniversal?.browserDownloadUrl ?? null;
-const universalSize = release?.dmgUniversal ? formatBytes(release.dmgUniversal.size) : null;
-// v0.1.11+ ships a single universal DMG. When present we render one
-// primary button instead of the old arch-split pair.
+const universalUrl = release?.macUniversal?.asset.browserDownloadUrl ?? null;
+const universalSize = release?.macUniversal ? formatBytes(release.macUniversal.asset.size) : null;
+const universalFormat = release?.macUniversal?.format ?? null;
+// v0.1.11 shipped .dmg; v0.1.12+ ships .zip (Safari auto-extracts, no
+// drag-to-Applications). When a universal artifact is present we render
+// one primary button instead of the old arch-split pair. The subtitle
+// shows the distribution format so users know what they're getting.
 const showUniversal = Boolean(universalUrl);
+// Format-specific subtitle copy. Each arm stays short enough to fit in
+// the secondary slot on mobile (btn-os line, ~36ch).
+const universalSubtitle = universalFormat === "zip"
+  ? "Universal · Notarized .zip — opens on double-click"
+  : universalFormat === "dmg"
+    ? "Universal · Notarized .dmg — Apple Silicon + Intel"
+    : universalFormat === "app.tar.gz"
+      ? "Universal · Notarized .app.tar.gz (advanced)"
+      : "Universal · Apple Silicon + Intel";
 const releaseDate = release ? formatDate(release.publishedAt) : null;
 ---
 
@@ -80,7 +92,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
               data-state={universalUrl ? "ready" : "pending"}
             >
               <span class="btn-arch">Download for macOS</span>
-              <span class="btn-os">Universal · Apple Silicon + Intel</span>
+              <span class="btn-os">{universalSubtitle}</span>
               {universalSize && <span class="btn-size">{universalSize}</span>}
             </a>
           ) : (
