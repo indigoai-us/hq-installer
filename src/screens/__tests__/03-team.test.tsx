@@ -138,7 +138,7 @@ describe("TeamSetup (company detection)", () => {
       screen.getByRole("button", { name: /install personal hq/i }),
     ).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /create a company/i });
-    expect(link).toHaveAttribute("href", "https://onboarding.indigo-hq.com");
+    expect(link).toHaveAttribute("href", "https://onboarding.getindigo.ai");
   });
 
   it("clicking 'Install personal HQ' flags state and advances", async () => {

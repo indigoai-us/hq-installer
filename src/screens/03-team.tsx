@@ -170,7 +170,7 @@ export function TeamSetup({ onNext, onSignOutAndRetry }: CompanyDetectProps) {
             re-run the installer.
           </p>
           <a
-            href="https://onboarding.indigo-hq.com"
+            href="https://onboarding.getindigo.ai"
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-full py-2.5 text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors text-center"
