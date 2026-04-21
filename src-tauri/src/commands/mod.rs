@@ -1,3 +1,4 @@
+pub mod claude_desktop;
 pub mod deps;
 pub mod directory;
 pub mod fs;

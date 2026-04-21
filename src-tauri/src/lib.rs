@@ -41,6 +41,9 @@ pub fn run() {
             commands::fs::write_file,
             commands::fs::home_dir,
             commands::launch::launch_claude_code,
+            commands::claude_desktop::detect_claude_desktop,
+            commands::claude_desktop::launch_claude_desktop,
+            commands::claude_desktop::open_claude_download,
             commands::install_menubar::install_menubar_app,
             commands::install_menubar::launch_menubar_app,
         ])
