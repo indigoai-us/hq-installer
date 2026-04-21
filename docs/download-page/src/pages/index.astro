@@ -23,13 +23,25 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="HQ — Personal OS for orchestrating work across companies, workers, and AI. Download the native macOS installer." />
-    <meta name="theme-color" content="#0a0e1a" />
+    <meta name="theme-color" content="#09090b" />
     <title>HQ — Download</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='50' font-size='48'>HQ</text></svg>" />
     <link rel="canonical" href="https://install.getindigo.ai" />
     <meta property="og:title" content="HQ — Download" />
     <meta property="og:description" content="Personal OS for orchestrating work across companies, workers, and AI." />
     <meta property="og:type" content="website" />
+
+    <!--
+      goclaw-admin pack fonts — Barlow Condensed (display),
+      Inter (body), IBM Plex Mono (numerals). Loaded via Google
+      Fonts; preconnect reduces TTFB on the font stylesheet.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Inter:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    />
   </head>
   <body>
     <main class="root">
@@ -212,17 +224,19 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       })();
     </script>
 
+    <!--
+      Pack tokens (`--ga-*`) — copied from
+      knowledge/public/design-styles/packs/goclaw-admin/design-tokens.css
+      Do not symlink across repo boundaries (Vercel build constraint).
+    -->
+    <style>@import "../styles/goclaw-admin-tokens.css";</style>
+
     <style>
-      :root {
-        --bg: #070b14;
-        --bg-elev: #0e1526;
-        --fg: #e2e8f5;
-        --fg-muted: #8893b0;
-        --accent: #6ea8ff;
-        --accent-glow: #6ea8ff33;
-        --border: #1a2540;
-        --warn: #ffa657;
-      }
+      /* ──────────────────────────────────────────────────────────────
+         hq-installer download page — goclaw-admin consumer
+         Flat corners. Hairline rules. Status-only color. Barlow
+         Condensed display / Inter body / IBM Plex Mono numerals.
+         ────────────────────────────────────────────────────────────── */
 
       * {
         box-sizing: border-box;
@@ -231,68 +245,81 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       html, body {
         margin: 0;
         padding: 0;
-        background: var(--bg);
-        color: var(--fg);
-        font-family:
-          -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
-          system-ui, sans-serif;
-        font-feature-settings: "cv11", "ss01";
+        background: var(--ga-zinc-950);
+        color: var(--ga-fg);
+        font-family: var(--ga-font-sans);
+        font-size: var(--ga-text-sm);
+        letter-spacing: var(--ga-tracking-body);
         -webkit-font-smoothing: antialiased;
+      }
+
+      /* Focus rings — keyboard a11y floor, pack quality-gate item */
+      a:focus-visible,
+      button:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 1px solid var(--ga-fg-muted);
+        outline-offset: 2px;
       }
 
       .root {
         max-width: 640px;
         margin: 0 auto;
-        padding: 56px 24px 80px;
+        padding: 72px 24px 80px;
       }
 
       /* ── Hero ───────────────────────────────────────── */
       .hero {
         text-align: center;
-        margin-bottom: 48px;
+        margin-bottom: 56px;
       }
 
       .logo {
-        font-weight: 900;
-        font-size: 32px;
-        letter-spacing: 4px;
-        color: var(--accent);
-        margin-bottom: 24px;
-        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+        font-family: var(--ga-font-display);
+        font-weight: 700;
+        font-size: 42px;
+        letter-spacing: 0.15em;
+        color: var(--ga-fg-strong);
+        text-transform: uppercase;
+        margin-bottom: 28px;
+        line-height: 1;
       }
 
       .hero h1 {
-        font-size: 34px;
-        line-height: 1.15;
-        margin: 0 0 20px;
-        font-weight: 700;
-        letter-spacing: -0.02em;
+        font-family: var(--ga-font-sans);
+        font-size: 30px;
+        line-height: 1.2;
+        margin: 0 0 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: var(--ga-fg-strong);
       }
 
       .tagline {
-        font-size: 17px;
-        color: var(--fg-muted);
+        font-size: var(--ga-text-base);
+        color: var(--ga-fg-muted);
         line-height: 1.55;
         margin: 0 auto;
         max-width: 520px;
       }
 
       /* ── Download card ──────────────────────────────── */
+      /* No rounded corners. No fill. Hairline border only. */
       .download-card {
-        background: var(--bg-elev);
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        padding: 32px 28px 28px;
-        margin-bottom: 32px;
+        background: transparent;
+        border: 1px solid var(--ga-rule-6);
+        border-radius: var(--ga-radius-0);
+        padding: 28px 24px 24px;
+        margin-bottom: 28px;
       }
 
       .download-card h2 {
-        font-size: 13px;
+        font-family: var(--ga-font-display);
+        font-size: var(--ga-text-9);
         font-weight: 600;
-        letter-spacing: 0.12em;
+        letter-spacing: var(--ga-tracking-section);
         text-transform: uppercase;
-        color: var(--fg-muted);
-        margin: 0 0 12px;
+        color: var(--ga-fg-dim);
+        margin: 0 0 16px;
       }
 
       .release-meta {
@@ -300,53 +327,62 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         align-items: center;
         gap: 12px;
         margin-bottom: 20px;
-        font-size: 13px;
-        color: var(--fg-muted);
+        font-size: var(--ga-text-12);
+        color: var(--ga-fg-muted);
       }
 
+      /* Status badges — info (ready) / warning (pending).
+         Flat rectangles, not pills. */
       .tag {
-        display: inline-block;
-        padding: 3px 10px;
-        border-radius: 999px;
-        background: var(--accent-glow);
-        color: var(--accent);
-        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
-        font-size: 12px;
-        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 8px;
+        border-radius: var(--ga-radius-0);
+        background: var(--ga-accent-info-bg);
+        color: var(--ga-accent-info-fg);
+        font-family: var(--ga-font-mono);
+        font-size: var(--ga-text-10);
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
       }
 
       .tag--pending {
-        background: #2a1f0e;
-        color: var(--warn);
+        background: var(--ga-accent-warning-bg);
+        color: var(--ga-accent-warning-fg);
+      }
+
+      .published {
+        font-family: var(--ga-font-mono);
+        font-size: var(--ga-text-10);
+        color: var(--ga-fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
       }
 
       /* ── Buttons ────────────────────────────────────── */
       .buttons {
         display: grid;
         grid-template-columns: 1fr;
-        gap: 12px;
+        gap: 8px;
       }
 
       .btn {
         display: flex;
         align-items: center;
         gap: 16px;
-        padding: 18px 20px;
-        border: 1px solid var(--border);
-        border-radius: 12px;
+        padding: 16px 18px;
+        border: 1px solid var(--ga-rule-6);
+        border-radius: var(--ga-radius-0);
         text-decoration: none;
-        color: var(--fg);
+        color: var(--ga-fg);
         background: transparent;
-        transition: border-color 150ms, background 150ms, transform 150ms;
+        transition: background 150ms, border-color 150ms;
       }
 
       .btn:hover {
-        border-color: var(--accent);
-        background: #0a1220;
-      }
-
-      .btn:active {
-        transform: translateY(1px);
+        background: var(--ga-rule-3);
+        border-color: var(--ga-rule-8);
       }
 
       .btn[aria-disabled="true"] {
@@ -354,10 +390,12 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         pointer-events: none;
       }
 
+      /* Active-row treatment (pack implementation.md §4): inset
+         fill at rule-6 alpha. No colored glow. No brand accent. */
       .btn-featured {
-        border-color: var(--accent);
-        background: #0c1628;
-        box-shadow: 0 0 0 4px var(--accent-glow);
+        background: var(--ga-rule-6);
+        border-color: var(--ga-rule-8);
+        color: var(--ga-fg-strong);
       }
 
       .btn-dim {
@@ -365,115 +403,137 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       }
 
       .btn-arch {
+        font-family: var(--ga-font-display);
         font-weight: 600;
-        font-size: 16px;
+        font-size: var(--ga-text-base);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
         flex: 1;
       }
 
       .btn-os {
-        font-size: 13px;
-        color: var(--fg-muted);
+        font-size: var(--ga-text-12);
+        color: var(--ga-fg-muted);
       }
 
       .btn-size {
-        font-size: 12px;
-        color: var(--fg-muted);
-        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
+        font-family: var(--ga-font-mono);
+        font-size: var(--ga-text-10);
+        color: var(--ga-fg-dim);
+        letter-spacing: 0.02em;
       }
 
       .os-hint {
         margin: 16px 0 0;
-        font-size: 13px;
-        color: var(--accent);
+        font-size: var(--ga-text-12);
+        color: var(--ga-fg-muted);
         min-height: 18px;
       }
 
       .also {
         margin: 24px 0 8px;
-        font-size: 13px;
-        color: var(--fg-muted);
+        font-size: var(--ga-text-12);
+        color: var(--ga-fg-muted);
       }
 
       .soon {
-        color: var(--fg-muted);
+        color: var(--ga-fg-dim);
+        font-family: var(--ga-font-mono);
+        font-size: var(--ga-text-10);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
       }
 
       .security-note {
-        margin: 14px 0 0;
-        font-size: 12px;
-        color: var(--fg-muted);
+        margin: 16px 0 0;
+        font-size: var(--ga-text-12);
+        color: var(--ga-fg-muted);
         line-height: 1.5;
       }
 
       /* ── Dev path ───────────────────────────────────── */
       .devs {
         background: transparent;
-        border: 1px dashed var(--border);
-        border-radius: 12px;
+        border: 1px solid var(--ga-rule-6);
+        border-radius: var(--ga-radius-0);
         padding: 20px 22px;
         margin-bottom: 48px;
       }
 
       .devs h3 {
-        font-size: 12px;
+        font-family: var(--ga-font-display);
+        font-size: var(--ga-text-9);
         font-weight: 600;
-        letter-spacing: 0.1em;
+        letter-spacing: var(--ga-tracking-section);
         text-transform: uppercase;
-        color: var(--fg-muted);
-        margin: 0 0 10px;
+        color: var(--ga-fg-dim);
+        margin: 0 0 12px;
       }
 
       .devs p {
         margin: 0 0 14px;
-        font-size: 14px;
-        color: var(--fg-muted);
-        line-height: 1.5;
+        font-size: var(--ga-text-sm);
+        color: var(--ga-fg-muted);
+        line-height: 1.55;
       }
 
       .code {
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 8px;
+        background: var(--ga-zinc-900);
+        border: 1px solid var(--ga-rule-6);
+        border-radius: var(--ga-radius-0);
         padding: 12px 14px;
         margin: 0;
         overflow-x: auto;
-        font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
-        font-size: 13px;
-        color: var(--fg);
+        font-family: var(--ga-font-mono);
+        font-size: var(--ga-text-12);
+        color: var(--ga-fg-strong);
         user-select: all;
       }
 
       /* ── Footer ─────────────────────────────────────── */
       .footer {
         text-align: center;
-        font-size: 13px;
-        color: var(--fg-muted);
+        font-size: var(--ga-text-12);
+        color: var(--ga-fg-dim);
+        border-top: 1px solid var(--ga-rule-6);
+        padding-top: 24px;
       }
 
       .footer a {
-        color: var(--accent);
+        color: var(--ga-fg-muted);
         text-decoration: none;
+        border-bottom: 1px solid var(--ga-rule-6);
+        transition: color 150ms, border-color 150ms;
       }
 
       .footer a:hover {
-        text-decoration: underline;
+        color: var(--ga-fg-strong);
+        border-bottom-color: var(--ga-rule-8);
       }
 
       .copyright {
         margin-top: 12px;
-        font-size: 11px;
+        font-family: var(--ga-font-mono);
+        font-size: var(--ga-text-10);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--ga-fg-dimmer);
       }
 
       /* ── Responsive ─────────────────────────────────── */
       @media (max-width: 480px) {
         .root {
-          padding: 32px 16px 60px;
+          padding: 40px 16px 60px;
+        }
+        .logo {
+          font-size: 32px;
+          margin-bottom: 20px;
         }
         .hero h1 {
-          font-size: 26px;
+          font-size: 24px;
         }
         .download-card {
-          padding: 24px 20px;
+          padding: 20px 18px;
         }
         .btn {
           flex-direction: column;
@@ -484,6 +544,9 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
 
       @media (prefers-reduced-motion: reduce) {
         .btn {
+          transition: none;
+        }
+        .footer a {
           transition: none;
         }
       }
