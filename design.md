@@ -1,6 +1,6 @@
 # hq-installer — Design Direction
 
-style-pack: goclaw-admin
+style-pack: hq-cinematic
 scope: docs/download-page
 
 ## Surface
@@ -11,47 +11,46 @@ The rest of this repo (the Tauri installer itself) has its own retro-TUI aesthet
 
 ## Pack
 
-Consumes `goclaw-admin` (`knowledge/public/design-styles/packs/goclaw-admin/`).
+Consumes `hq-cinematic` (`knowledge/public/design-styles/packs/hq-cinematic/`).
 
-The pack ships with a Next.js 15 + Tailwind v4 implementation guide, but the download page is a plain Astro page. The pack contract that applies is the **tokens** (`--ga-*`) and the **visual rules** in `style-guide.md` §1–§3:
+The pack ships as a tokens + keyframes bundle with nine exported React primitives (in `hq-onboarding`). This download page is plain Astro, so the contract that applies is the **tokens** (`--bg-navy-*`, `--spectrum-*`, `--warm-*`), the **keyframes** (`prism-sweep`, `beam-drift`, `bloom-pulse`, etc.), and the **Do/Don't list** in `README.md`:
 
-- Background: `--ga-zinc-950` (`#09090b`) everywhere.
-- Structural borders: `rgba(255,255,255,0.06)` hairlines only. No solid 1px borders. No drop shadows.
-- Corners: flat (`--ga-radius-0`). Cards, buttons, code blocks, badges — all square.
-- Color: status-only. The download page has two status slots — "ready" (info / blue-400) and "coming soon" (warning / amber-400). No brand cyan.
-- Typography:
-  - **Display** (Barlow Condensed 600/700, uppercase, `tracking-[0.2em]`): the "HQ" wordmark, section headings ("Download HQ Installer", "For developers").
-  - **Body** (Inter 400–600, `tracking-body` 0.01em): H1, tagline, paragraph copy, button labels.
-  - **Mono** (IBM Plex Mono 400/500): version tag, file size, `npx create-hq` code block.
-- Section heading size: 9 px uppercase at `tracking-[0.2em]`, color `--ga-fg-dim` / `--ga-fg-dimmer`.
+- Background: `--bg-navy-500` (`#080F24`) as the default; a fixed radial vignette lifts the center toward `--bg-navy-400` and deepens the corners toward `--bg-navy-900`.
+- Chroma: **one hero moment per screen.** A single `--gradient-spectrum-linear` beam sits behind the "HQ" wordmark, blurred and drift-animated. The wordmark itself uses the same gradient as a text mask. No other surface in the page uses the full spectrum.
+- Counterweights: warm-yellow / warm-brown tints carry hairlines, body text, tags, and code glyphs. Status affordances use `--spectrum-gold` (ready) and `--warm-pink` (pending) — single hues, not gradients.
+- Corners: 2 px — minimal radius, not flat-square. Keeps the cinematic softness; still reads industrial.
+- Typography: **Inter 800/900 only** for display (pack rule). Body copy inherits the same family at 400–600. No new font dependencies; one Google Fonts `<link>` request.
+- Motion: `prism-sweep` on wordmark entrance (1.4 s, once). `beam-drift` infinitely alternating on the hero beam (8 s). `bloom-pulse` on featured-button focus (900 ms, once). All collapse to end-state under `prefers-reduced-motion: reduce` per the pack's hard-cut overrides in `keyframes.css`.
 
 ## Consumption
 
-Tokens are **copy-pasted** into `docs/download-page/src/styles/goclaw-admin-tokens.css` (pack rule: no symlinks across repo boundaries — Vercel build constraint).
+Tokens and keyframes are **copy-pasted** into `docs/download-page/src/styles/hq-cinematic-{tokens,keyframes}.css` (pack rule: no symlinks across repo boundaries — Vercel build constraint). Refreshed when the pack version bumps.
 
 Fonts are loaded in `<head>` via `<link rel="preconnect">` + Google Fonts CSS (single request, `display=swap`). Self-hosting via `@fontsource/*` is a follow-up if the pack moves to that pattern.
 
-The Astro page `<style>` block consumes tokens via `var(--ga-*)` — no utility classes, no Tailwind.
+The Astro page `<style>` block consumes tokens via `var(--bg-navy-*)`, `var(--spectrum-*)`, `var(--warm-*)`, and motion primitives via `var(--motion-*)` — no utility classes, no Tailwind.
 
 ## Quality gate
 
-Before landing any change to the download page, run the `goclaw-admin/implementation.md` §12 checklist. The applicable items for a single-page landing:
+Before landing any change to the download page, confirm against the hq-cinematic pack `README.md` Do/Don't list:
 
-- [ ] Background is `bg-zinc-950`.
-- [ ] Every border is `border-white/[0.06]`. No solid 1px colors. No shadows.
-- [ ] Color appears only on status affordances (`tag` / `tag--pending`).
-- [ ] Numbers, sizes, version strings render in mono (IBM Plex Mono).
-- [ ] Section headings are display-family 9 px uppercase at `tracking-[0.2em]`.
-- [ ] No rounded corners on cards, buttons, or code blocks.
-- [ ] Focus-visible rings present on every interactive element.
+- [ ] Background is navy-500 or navy-900. No light surfaces, no zinc/slate.
+- [ ] **Exactly one** spectrum beam on screen (hero). No stacked beams, no dust layer (this page doesn't need it).
+- [ ] Spectrum-gold / warm-yellow / warm-brown are the only accent hues on body surfaces. No cyan-cyberpunk, no synthwave neon.
+- [ ] Display type is Inter 800 or 900. No Barlow, no Space Grotesk, no display-serif.
+- [ ] Numerals (version tag, file size, dates) use `font-variant-numeric: tabular-nums` for column alignment.
+- [ ] Every animation has a `prefers-reduced-motion: reduce` collapse path. Beam stops drifting. Wordmark renders static-gradient.
+- [ ] Focus-visible rings present on every interactive element (warm-yellow, AAA contrast against navy).
 
 ## Off-pack moments (documented, not violations)
 
-- The "HQ" logo in the hero is styled as a display wordmark (Barlow Condensed 700 uppercase `tracking-[0.15em]`) rather than the pack's mono-numerals default — logos get display treatment per §2.1.
-- The featured-button highlight uses `bg-white/[0.06]` inset rather than a colored glow. This matches goclaw-admin's active-row treatment (`implementation.md` §4) rather than introducing brand color.
+- **Card radius 2 px.** The pack itself is silent on border-radius. `hq-onboarding` uses `rounded-md` for cards; we pick a tighter 2 px to match the utility-tool register of a download page. Still rounded (not flat), just restrained.
+- **Wordmark with gradient text mask + prism sweep on entrance.** The pack ships a `SpectrumText` React primitive for exactly this, but we're on plain Astro — we inline the `background: var(--gradient-spectrum-linear); background-clip: text;` pattern directly and rely on the pack's `@supports not (background-clip: text)` fallback in `keyframes.css`. Same contract, no React dependency.
+- **Featured-button glow uses warm-yellow + violet drop-shadow mix, not a full spectrum halo.** Keeps the hero beam as the single chroma moment and leaves the CTA reading as warm confident neutral.
+- **Tabular-nums everywhere instead of a dedicated mono family.** Pack rule: "no new font dependencies." Inter's tabular-nums feature carries version strings, sizes, and dates — no IBM Plex Mono loaded.
 
 ## Related
 
-- Pack: [`knowledge/public/design-styles/packs/goclaw-admin/`](../../knowledge/public/design-styles/packs/goclaw-admin/)
-- Sibling consumer: `hq-console` (`repos/private/hq-console/`) — the canonical data-dense implementation.
-- Divergent sibling: `hq-onboarding` (`repos/private/hq-onboarding/`) — uses `hq-cinematic` deliberately (different job-to-be-done: immersive onboarding flow vs. a console or a download utility).
+- Pack: [`knowledge/public/design-styles/packs/hq-cinematic/`](../../knowledge/public/design-styles/packs/hq-cinematic/)
+- Sibling consumer: `hq-onboarding` (`repos/private/hq-onboarding/`) — the canonical React primitive implementation. Watch for drift: when the pack rev's, both consumers need a token refresh.
+- Former consumer: this page previously consumed `goclaw-admin` (monochrome industrial admin register). Swapped to `hq-cinematic` on 2026-04-21 to align the marketing surface with `onboarding.getindigo.ai` rather than the internal `hq-console`.

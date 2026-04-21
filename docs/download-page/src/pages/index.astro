@@ -35,7 +35,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="HQ — Personal OS for orchestrating work across companies, workers, and AI. Download the native macOS installer." />
-    <meta name="theme-color" content="#09090b" />
+    <meta name="theme-color" content="#080F24" />
     <title>HQ — Download</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='50' font-size='48'>HQ</text></svg>" />
     <link rel="canonical" href="https://install.getindigo.ai" />
@@ -44,21 +44,24 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
     <meta property="og:type" content="website" />
 
     <!--
-      goclaw-admin pack fonts — Barlow Condensed (display),
-      Inter (body), IBM Plex Mono (numerals). Loaded via Google
-      Fonts; preconnect reduces TTFB on the font stylesheet.
+      hq-cinematic pack fonts — Inter only. Pack rule: "No new
+      display fonts. Inter 800/900 only." Body copy shares the
+      same family (400/500/600) so we stay on one `<link>` request.
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Inter:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800;900&display=swap"
     />
   </head>
   <body>
     <main class="root">
       <header class="hero">
-        <div class="logo">HQ</div>
+        <div class="prism-beam" aria-hidden="true"></div>
+        <div class="logo">
+          <span class="logo-mark" data-spectrum-reveal="false">HQ</span>
+        </div>
         <h1>Your own personal OS for getting things done.</h1>
         <p class="tagline">
           Orchestrate work across companies, workers, and AI — from one place,
@@ -237,17 +240,19 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
     </script>
 
     <!--
-      Pack tokens (`--ga-*`) — copied from
-      knowledge/public/design-styles/packs/goclaw-admin/design-tokens.css
+      Pack assets — copied from
+      knowledge/public/design-styles/packs/hq-cinematic/{tokens,keyframes}.css
       Do not symlink across repo boundaries (Vercel build constraint).
     -->
-    <style>@import "../styles/goclaw-admin-tokens.css";</style>
+    <style>@import "../styles/hq-cinematic-tokens.css";</style>
+    <style>@import "../styles/hq-cinematic-keyframes.css";</style>
 
     <style>
       /* ──────────────────────────────────────────────────────────────
-         hq-installer download page — goclaw-admin consumer
-         Flat corners. Hairline rules. Status-only color. Barlow
-         Condensed display / Inter body / IBM Plex Mono numerals.
+         hq-installer download page — hq-cinematic consumer
+         Navy-void background. One prism beam behind the hero carries
+         chroma (not surfaces). Warm-neutral hairlines. Inter 800/900
+         display. Honors prefers-reduced-motion via the pack's keyframes.
          ────────────────────────────────────────────────────────────── */
 
       * {
@@ -257,19 +262,31 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       html, body {
         margin: 0;
         padding: 0;
-        background: var(--ga-zinc-950);
-        color: var(--ga-fg);
-        font-family: var(--ga-font-sans);
-        font-size: var(--ga-text-sm);
-        letter-spacing: var(--ga-tracking-body);
+        background: var(--bg-navy-500);
+        color: rgba(255, 255, 255, 0.88);
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        letter-spacing: 0.005em;
         -webkit-font-smoothing: antialiased;
+        /* Subtle vignette — deepest navy at the corners, mid navy in the
+           center. Pack "CrtVignette" primitive in CSS form (no component
+           dependency). Keeps focus on the download card. */
+        background-image: radial-gradient(
+          ellipse at center,
+          var(--bg-navy-400) 0%,
+          var(--bg-navy-600) 60%,
+          var(--bg-navy-900) 100%
+        );
+        background-attachment: fixed;
+        min-height: 100vh;
       }
 
-      /* Focus rings — keyboard a11y floor, pack quality-gate item */
+      /* Focus rings — keyboard a11y floor, quality-gate item.
+         Warm-yellow against navy ≈ 11.9:1 (AAA). */
       a:focus-visible,
       button:focus-visible,
       [tabindex]:focus-visible {
-        outline: 1px solid var(--ga-fg-muted);
+        outline: 1px solid var(--warm-yellow);
         outline-offset: 2px;
       }
 
@@ -277,259 +294,338 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         max-width: 640px;
         margin: 0 auto;
         padding: 72px 24px 80px;
+        position: relative;
       }
 
       /* ── Hero ───────────────────────────────────────── */
       .hero {
         text-align: center;
         margin-bottom: 56px;
+        position: relative;
+        isolation: isolate;
       }
 
+      /* Single prism beam behind the wordmark. Pack rule: "reserve the
+         full spectrum gradient for one or two hero moments per screen."
+         This is the one for this page — everything else uses warm
+         neutrals or a single accent hue. */
+      .prism-beam {
+        position: absolute;
+        inset: -40px -20% auto -20%;
+        height: 220px;
+        background: var(--gradient-spectrum-linear);
+        filter: blur(48px);
+        opacity: 0.38;
+        z-index: -1;
+        pointer-events: none;
+        transform-origin: 50% 50%;
+        animation: beam-drift var(--motion-duration-drift)
+          var(--motion-ease-drift) infinite alternate;
+      }
+
+      /* Logo — Inter 900, spectrum gradient text mask. */
       .logo {
-        font-family: var(--ga-font-display);
-        font-weight: 700;
-        font-size: 42px;
-        letter-spacing: 0.15em;
-        color: var(--ga-fg-strong);
-        text-transform: uppercase;
         margin-bottom: 28px;
         line-height: 1;
       }
 
+      .logo-mark {
+        display: inline-block;
+        font-family: var(--font-display);
+        font-weight: var(--font-display-weight-black);
+        font-size: 72px;
+        letter-spacing: -0.02em;
+        text-transform: uppercase;
+        background: var(--gradient-spectrum-linear);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        /* Headline reveal — one-shot prism sweep across the mark.
+           Pack keyframes use background-position, which matches our
+           gradient text mask cleanly. */
+        background-size: 200% 100%;
+        animation: prism-sweep var(--motion-duration-sweep)
+          var(--motion-ease-cinematic) both;
+        animation-delay: 120ms;
+      }
+
+      /* Solid-color fallback already handled by
+         hq-cinematic-keyframes.css `@supports not (background-clip: text)` */
+
       .hero h1 {
-        font-family: var(--ga-font-sans);
-        font-size: 30px;
-        line-height: 1.2;
+        font-family: var(--font-display);
+        font-weight: var(--font-display-weight-bold);
+        font-size: 34px;
+        line-height: 1.15;
         margin: 0 0 16px;
-        font-weight: 600;
-        letter-spacing: -0.01em;
-        color: var(--ga-fg-strong);
+        letter-spacing: -0.015em;
+        color: rgba(255, 255, 255, 0.96);
       }
 
       .tagline {
-        font-size: var(--ga-text-base);
-        color: var(--ga-fg-muted);
-        line-height: 1.55;
+        font-size: 15px;
+        color: var(--warm-yellow-80);
+        line-height: 1.6;
         margin: 0 auto;
         max-width: 520px;
       }
 
       /* ── Download card ──────────────────────────────── */
-      /* No rounded corners. No fill. Hairline border only. */
+      /* Transparent, warm-yellow hairline — counterweight to the
+         navy + spectrum hero. Pack rule: "pair spectrum accents with
+         warm-neutral hairlines and glyphs for counterweight." */
       .download-card {
-        background: transparent;
-        border: 1px solid var(--ga-rule-6);
-        border-radius: var(--ga-radius-0);
+        position: relative;
+        background: rgba(10, 18, 40, 0.45); /* bg-navy-100 @ 45% — subtle lift */
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        border: 1px solid var(--warm-yellow-40);
+        border-radius: 2px;
         padding: 28px 24px 24px;
         margin-bottom: 28px;
       }
 
       .download-card h2 {
-        font-family: var(--ga-font-display);
-        font-size: var(--ga-text-9);
-        font-weight: 600;
-        letter-spacing: var(--ga-tracking-section);
+        font-family: var(--font-display);
+        font-size: 10px;
+        font-weight: var(--font-display-weight-bold);
+        letter-spacing: 0.2em;
         text-transform: uppercase;
-        color: var(--ga-fg-dim);
-        margin: 0 0 16px;
+        color: var(--warm-yellow-80);
+        margin: 0 0 18px;
       }
 
       .release-meta {
         display: flex;
         align-items: center;
         gap: 12px;
-        margin-bottom: 20px;
-        font-size: var(--ga-text-12);
-        color: var(--ga-fg-muted);
+        margin-bottom: 22px;
+        font-size: 12px;
+        color: var(--warm-yellow-80);
       }
 
-      /* Status badges — info (ready) / warning (pending).
-         Flat rectangles, not pills. */
+      /* Status badges — ready (spectrum-gold) / pending (warm-pink).
+         Tabular nums, slight uppercase affectation. */
       .tag {
         display: inline-flex;
         align-items: center;
         padding: 3px 8px;
-        border-radius: var(--ga-radius-0);
-        background: var(--ga-accent-info-bg);
-        color: var(--ga-accent-info-fg);
-        font-family: var(--ga-font-mono);
-        font-size: var(--ga-text-10);
-        font-weight: 500;
+        border-radius: 2px;
+        background: rgba(232, 199, 122, 0.12);
+        color: var(--spectrum-gold);
+        border: 1px solid var(--warm-yellow-40);
+        font-family: "Inter", system-ui, sans-serif;
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
+        font-weight: 600;
         letter-spacing: 0.05em;
         text-transform: uppercase;
       }
 
       .tag--pending {
-        background: var(--ga-accent-warning-bg);
-        color: var(--ga-accent-warning-fg);
+        background: rgba(169, 119, 145, 0.12);
+        color: var(--warm-pink);
+        border-color: var(--warm-pink-40);
       }
 
       .published {
-        font-family: var(--ga-font-mono);
-        font-size: var(--ga-text-10);
-        color: var(--ga-fg-dim);
+        font-family: "Inter", system-ui, sans-serif;
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
+        color: var(--warm-yellow-60);
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.06em;
       }
 
       /* ── Buttons ────────────────────────────────────── */
       .buttons {
         display: grid;
         grid-template-columns: 1fr;
-        gap: 8px;
+        gap: 10px;
       }
 
       .btn {
         display: flex;
         align-items: center;
         gap: 16px;
-        padding: 16px 18px;
-        border: 1px solid var(--ga-rule-6);
-        border-radius: var(--ga-radius-0);
+        padding: 18px 20px;
+        border: 1px solid var(--warm-yellow-40);
+        border-radius: 2px;
         text-decoration: none;
-        color: var(--ga-fg);
-        background: transparent;
-        transition: background 150ms, border-color 150ms;
+        color: rgba(255, 255, 255, 0.92);
+        background: rgba(14, 23, 51, 0.55); /* bg-navy-000 @ 55% */
+        transition:
+          background 200ms var(--motion-ease-cinematic),
+          border-color 200ms var(--motion-ease-cinematic),
+          box-shadow 200ms var(--motion-ease-cinematic);
+        position: relative;
       }
 
       .btn:hover {
-        background: var(--ga-rule-3);
-        border-color: var(--ga-rule-8);
+        background: rgba(10, 18, 40, 0.75);
+        border-color: var(--warm-yellow-60);
+        box-shadow:
+          0 0 0 1px rgba(232, 199, 122, 0.1),
+          0 8px 32px -12px rgba(139, 109, 240, 0.35);
       }
 
       .btn[aria-disabled="true"] {
-        opacity: 0.4;
+        opacity: 0.35;
         pointer-events: none;
       }
 
-      /* Active-row treatment (pack implementation.md §4): inset
-         fill at rule-6 alpha. No colored glow. No brand accent. */
+      /* Featured state (OS-detection match) — bloom pulse + spectrum
+         rim. Pack's bloom-pulse keyframe is single-shot; we replay it
+         on focus-visible and as a one-time entrance. Rim uses a thin
+         spectrum gradient border (no colored drop shadow). */
       .btn-featured {
-        background: var(--ga-rule-6);
-        border-color: var(--ga-rule-8);
-        color: var(--ga-fg-strong);
+        border-color: var(--spectrum-gold);
+        background: linear-gradient(
+          180deg,
+          rgba(232, 199, 122, 0.08) 0%,
+          rgba(10, 18, 40, 0.65) 100%
+        );
+        color: #fff;
+        box-shadow:
+          inset 0 1px 0 rgba(232, 199, 122, 0.2),
+          0 12px 40px -16px rgba(232, 199, 122, 0.4),
+          0 6px 24px -12px rgba(139, 109, 240, 0.35);
+      }
+
+      .btn-featured:focus-visible {
+        animation: bloom-pulse var(--motion-duration-bloom)
+          var(--motion-ease-cinematic) both;
       }
 
       .btn-dim {
-        opacity: 0.5;
+        opacity: 0.45;
       }
 
       .btn-arch {
-        font-family: var(--ga-font-display);
-        font-weight: 600;
-        font-size: var(--ga-text-base);
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
+        font-family: var(--font-display);
+        font-weight: var(--font-display-weight-bold);
+        font-size: 15px;
+        letter-spacing: 0.01em;
         flex: 1;
       }
 
       .btn-os {
-        font-size: var(--ga-text-12);
-        color: var(--ga-fg-muted);
+        font-size: 12px;
+        color: var(--warm-yellow-80);
       }
 
       .btn-size {
-        font-family: var(--ga-font-mono);
-        font-size: var(--ga-text-10);
-        color: var(--ga-fg-dim);
+        font-family: "Inter", system-ui, sans-serif;
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
+        color: var(--warm-yellow-60);
         letter-spacing: 0.02em;
       }
 
       .os-hint {
-        margin: 16px 0 0;
-        font-size: var(--ga-text-12);
-        color: var(--ga-fg-muted);
+        margin: 18px 0 0;
+        font-size: 12px;
+        color: var(--warm-yellow-80);
         min-height: 18px;
       }
 
       .also {
         margin: 24px 0 8px;
-        font-size: var(--ga-text-12);
-        color: var(--ga-fg-muted);
+        font-size: 12px;
+        color: var(--warm-yellow-80);
       }
 
       .soon {
-        color: var(--ga-fg-dim);
-        font-family: var(--ga-font-mono);
-        font-size: var(--ga-text-10);
+        color: var(--warm-yellow-60);
+        font-family: "Inter", system-ui, sans-serif;
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
         letter-spacing: 0.05em;
         text-transform: uppercase;
       }
 
       .security-note {
         margin: 16px 0 0;
-        font-size: var(--ga-text-12);
-        color: var(--ga-fg-muted);
-        line-height: 1.5;
+        font-size: 12px;
+        color: var(--warm-yellow-80);
+        line-height: 1.55;
       }
 
       /* ── Dev path ───────────────────────────────────── */
       .devs {
-        background: transparent;
-        border: 1px solid var(--ga-rule-6);
-        border-radius: var(--ga-radius-0);
-        padding: 20px 22px;
+        position: relative;
+        background: rgba(10, 18, 40, 0.35);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        border: 1px solid var(--warm-brown-60);
+        border-radius: 2px;
+        padding: 22px 22px;
         margin-bottom: 48px;
       }
 
       .devs h3 {
-        font-family: var(--ga-font-display);
-        font-size: var(--ga-text-9);
-        font-weight: 600;
-        letter-spacing: var(--ga-tracking-section);
+        font-family: var(--font-display);
+        font-size: 10px;
+        font-weight: var(--font-display-weight-bold);
+        letter-spacing: 0.2em;
         text-transform: uppercase;
-        color: var(--ga-fg-dim);
-        margin: 0 0 12px;
+        color: var(--warm-yellow-80);
+        margin: 0 0 14px;
       }
 
       .devs p {
         margin: 0 0 14px;
-        font-size: var(--ga-text-sm);
-        color: var(--ga-fg-muted);
-        line-height: 1.55;
+        font-size: 14px;
+        color: var(--warm-yellow-80);
+        line-height: 1.6;
       }
 
       .code {
-        background: var(--ga-zinc-900);
-        border: 1px solid var(--ga-rule-6);
-        border-radius: var(--ga-radius-0);
+        background: var(--bg-navy-900);
+        border: 1px solid var(--warm-brown-60);
+        border-radius: 2px;
         padding: 12px 14px;
         margin: 0;
         overflow-x: auto;
-        font-family: var(--ga-font-mono);
-        font-size: var(--ga-text-12);
-        color: var(--ga-fg-strong);
+        font-family: "Inter", system-ui, sans-serif;
+        font-variant-numeric: tabular-nums;
+        font-size: 13px;
+        color: var(--spectrum-gold);
         user-select: all;
       }
 
       /* ── Footer ─────────────────────────────────────── */
       .footer {
         text-align: center;
-        font-size: var(--ga-text-12);
-        color: var(--ga-fg-dim);
-        border-top: 1px solid var(--ga-rule-6);
-        padding-top: 24px;
+        font-size: 12px;
+        color: var(--warm-yellow-60);
+        border-top: 1px solid var(--warm-brown-60);
+        padding-top: 28px;
       }
 
       .footer a {
-        color: var(--ga-fg-muted);
+        color: var(--warm-yellow-80);
         text-decoration: none;
-        border-bottom: 1px solid var(--ga-rule-6);
-        transition: color 150ms, border-color 150ms;
+        border-bottom: 1px solid var(--warm-yellow-40);
+        transition:
+          color 200ms var(--motion-ease-cinematic),
+          border-color 200ms var(--motion-ease-cinematic);
       }
 
       .footer a:hover {
-        color: var(--ga-fg-strong);
-        border-bottom-color: var(--ga-rule-8);
+        color: var(--spectrum-gold);
+        border-bottom-color: var(--spectrum-gold);
       }
 
       .copyright {
-        margin-top: 12px;
-        font-family: var(--ga-font-mono);
-        font-size: var(--ga-text-10);
-        letter-spacing: 0.05em;
+        margin-top: 14px;
+        font-family: "Inter", system-ui, sans-serif;
+        font-variant-numeric: tabular-nums;
+        font-size: 10px;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
-        color: var(--ga-fg-dimmer);
+        color: var(--warm-yellow-60);
       }
 
       /* ── Responsive ─────────────────────────────────── */
@@ -537,27 +633,42 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         .root {
           padding: 40px 16px 60px;
         }
-        .logo {
-          font-size: 32px;
-          margin-bottom: 20px;
+        .logo-mark {
+          font-size: 56px;
         }
         .hero h1 {
-          font-size: 24px;
+          font-size: 26px;
         }
         .download-card {
-          padding: 20px 18px;
+          padding: 22px 18px 20px;
         }
         .btn {
           flex-direction: column;
           align-items: flex-start;
           gap: 6px;
+          padding: 16px;
+        }
+        .prism-beam {
+          height: 180px;
+          opacity: 0.3;
         }
       }
 
+      /* Reduced motion — stop the beam drift and the intro sweep.
+         Pack's keyframes.css already collapses animations to
+         end-state; we additionally skip the sweep entirely so the
+         wordmark renders with a static gradient (no mid-animation
+         background-position glitch). */
       @media (prefers-reduced-motion: reduce) {
-        .btn {
-          transition: none;
+        .prism-beam {
+          animation: none;
+          opacity: 0.28;
         }
+        .logo-mark {
+          animation: none;
+          background-position: 50% 0;
+        }
+        .btn,
         .footer a {
           transition: none;
         }
