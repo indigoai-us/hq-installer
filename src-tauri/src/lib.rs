@@ -23,7 +23,6 @@ pub fn run() {
             commands::deps::install_gh,
             commands::deps::install_claude_code,
             commands::deps::install_qmd,
-            commands::deps::install_hq_cloud,
             commands::deps::cancel_install,
             commands::directory::pick_directory,
             commands::directory::detect_hq,
