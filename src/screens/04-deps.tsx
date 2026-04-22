@@ -37,6 +37,11 @@ const DEPS: DepDef[] = [
     installCmd: "xcode_clt_install",
     installUrl: "https://developer.apple.com/xcode/resources/",
     useXcodeCheck: true,
+    // HQ's runtime stack (bun/node + shell + Go binaries via Homebrew bottles)
+    // doesn't require a local C toolchain day-to-day. If CLT ever is needed,
+    // macOS transparently re-prompts the first time `cc`/`clang` is invoked,
+    // so skipping at install time isn't a one-way door.
+    optional: true,
   },
   {
     id: "node",
