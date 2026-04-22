@@ -37,8 +37,8 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       # Starter-project templates live in the public hq repo. sync-templates.ts
-      # (run via postinstall) copies template/starter-projects/ into
-      # templates/starter-projects/ so tauri.conf.json's resource bundler picks
+      # (run via postinstall) copies hq-core's root-level starter-projects/
+      # into this repo's templates/starter-projects/ so tauri.conf.json's resource bundler picks
       # them up. Without this checkout, postinstall's --optional path silently
       # skips the copy and the .app ships without starter-projects, crashing on
       # first wizard use with "No such file or directory" at
