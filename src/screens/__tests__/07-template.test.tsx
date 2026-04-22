@@ -73,8 +73,38 @@ vi.mock("@/lib/template-fetcher", () => {
 
 // Mock the Tauri core `invoke` too so we can prove the component never falls
 // back to the legacy `fetch_template` command (guard against regression).
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async () => undefined),
+// For `spawn_process` (the pack-install phase) return a unique handle per
+// call so `listen` subscriptions don't collide across packs.
+vi.mock("@tauri-apps/api/core", () => {
+  let handleCounter = 0;
+  return {
+    invoke: vi.fn(async (cmd: string) => {
+      if (cmd === "spawn_process") return `h${++handleCounter}`;
+      return undefined;
+    }),
+  };
+});
+
+// Mock the Tauri event bus. Pack-install listens on three event names per
+// spawned process: `process://<h>/stdout`, `/stderr`, `/exit`. We only need
+// `/exit` to fire with success so the loop proceeds — stdout/stderr are
+// noise. Firing via `queueMicrotask` lets the component's `await listen()`
+// resolve and register the unlisten before the callback runs.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (event: string, cb: (e: { payload: unknown }) => void) => {
+    if (typeof event === "string" && event.endsWith("/exit")) {
+      queueMicrotask(() =>
+        cb({ payload: { code: 0, success: true } }),
+      );
+    }
+    return () => {};
+  }),
+}));
+
+// Disk-log writes go through plugin-fs; no-op in tests.
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  mkdir: vi.fn(async () => {}),
+  writeTextFile: vi.fn(async () => {}),
 }));
 
 // Bridge: expose fetchCalls via globalThis so the hoisted factory can reach it.
@@ -319,5 +349,52 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     expect(() => {
       render(<TemplateFetch targetDir="/tmp/hq" />);
     }).not.toThrow();
+  });
+
+  // ── 9. Pack install phase spawns `hq install` for each HQ pack ────────────
+  // Regression guard for v0.1.20 → v0.1.21: pack install used to run silently
+  // in the git-init step, which hid an hq-onboarding 404 from the user. This
+  // test asserts the TemplateFetch screen drives the 4-pack install via
+  // `spawn_process` — not silently, and not elsewhere in the wizard.
+
+  it("spawns `hq install` for each of the 4 HQ packs after template resolves", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockInvoke = vi.mocked(invoke);
+    render(<TemplateFetch targetDir="/tmp/hq" onNext={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(mockFetchAndExtract).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      latestCall().resolve({ version: "v1.2.3" });
+    });
+
+    // Continue only appears after all 4 packs exit. If the pack loop silently
+    // drops a failure (the v0.1.20 bug), Continue won't appear either.
+    await waitFor(() => {
+      const btn = screen.queryByRole("button", { name: /continue/i });
+      expect(btn).not.toBeNull();
+    });
+
+    const spawnCalls = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "spawn_process",
+    );
+    expect(spawnCalls).toHaveLength(4);
+
+    const expectedPacks = [
+      "@indigoai-us/hq-pack-design-quality",
+      "@indigoai-us/hq-pack-design-styles",
+      "@indigoai-us/hq-pack-gemini",
+      "@indigoai-us/hq-pack-gstack",
+    ];
+    for (let i = 0; i < expectedPacks.length; i++) {
+      const payload = spawnCalls[i][1] as { args: { cmd: string; args: string[]; cwd: string } };
+      expect(payload.args.cmd).toBe("npx");
+      expect(payload.args.args).toContain("install");
+      expect(payload.args.args).toContain(expectedPacks[i]);
+      // cwd must be the install target so packs land in the fresh HQ.
+      expect(payload.args.cwd).toBe("/tmp/hq");
+    }
   });
 });
