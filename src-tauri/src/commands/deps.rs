@@ -369,6 +369,26 @@ async fn run_streaming(
     }
 }
 
+/// Emit a single progress line to the frontend before a preflight check
+/// rejects the install.
+///
+/// The DepsInstall screen routes `install:progress` lines into the active
+/// tool's terminal panel by `activeToolRef`, not by handle — so emitting here
+/// surfaces useful context in the UI even though no real process ever ran.
+/// Without this, `install_node` / `install_gh` return a bare `Err(…)` and
+/// the panel is empty: the user sees "Installation failed" with no clue why.
+fn emit_preflight_line(app: &AppHandle, msg: &str) {
+    let _ = app.emit(
+        "install:progress",
+        InstallProgress {
+            handle: "preflight".to_string(),
+            line: msg.to_string(),
+            finished: false,
+            error: None,
+        },
+    );
+}
+
 /// Format a human-friendly error message from an exit code plus the stderr
 /// lines captured by `run_streaming`. Keeps the last few non-empty lines so
 /// the UI stays readable when tools dump multi-KB of output.
@@ -400,6 +420,22 @@ pub fn format_install_error(exit_code: i32, stderr_lines: &[String]) -> String {
 
 /// Install Homebrew using the official curl-pipe-bash installer.
 ///
+/// The canonical Homebrew install command is:
+///   `/bin/bash -c "$(curl -fsSL https://.../install.sh)"`
+///
+/// That relies on a *parent* shell to evaluate `$(curl …)` before invoking
+/// `/bin/bash -c`. When we spawn `/bin/bash -c …` directly from Rust there
+/// is no parent shell: the substitution happens inside bash itself, but the
+/// resulting script text is then a bare quoted-string expression — not a
+/// command — and bash tries to exec the first word (`#!/bin/bash`), producing
+/// "No such file or directory".
+///
+/// The nested form below restores the two-shell semantics: the *outer* bash
+/// evaluates `"$(curl …)"` and hands the expanded script to the *inner*
+/// `bash -c` for execution. `NONINTERACTIVE=1` is set so the installer
+/// skips the "press RETURN to continue" prompt that would otherwise hang
+/// silently in our Stdio::piped setup.
+///
 /// Returns the install handle so the frontend can correlate progress events.
 #[tauri::command]
 pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
@@ -408,7 +444,7 @@ pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
         "/bin/bash",
         &[
             "-c",
-            r#"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"#,
+            r#"NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)""#,
         ],
     )
     .await
@@ -420,11 +456,22 @@ pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
 
 /// Install Node.js via `brew install node`.
 ///
-/// Errors if Homebrew is not available.
+/// Errors if Homebrew is not available — surfaces the reason in the terminal
+/// panel via `emit_preflight_line` before returning.
 #[tauri::command]
 pub async fn install_node(app: AppHandle) -> Result<String, String> {
-    let brew = which::which_in("brew", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
-        .map_err(|_| "Homebrew is not installed. Install Homebrew first.".to_string())?;
+    let brew = match which::which_in(
+        "brew",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            let msg = "Homebrew is not installed. Install Homebrew first.";
+            emit_preflight_line(&app, msg);
+            return Err(msg.to_string());
+        }
+    };
     run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "node"]).await
 }
 
@@ -435,8 +482,18 @@ pub async fn install_node(app: AppHandle) -> Result<String, String> {
 /// Install git via `brew install git`.
 #[tauri::command]
 pub async fn install_git(app: AppHandle) -> Result<String, String> {
-    let brew = which::which_in("brew", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
-        .map_err(|_| "Homebrew is not installed. Install Homebrew first.".to_string())?;
+    let brew = match which::which_in(
+        "brew",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            let msg = "Homebrew is not installed. Install Homebrew first.";
+            emit_preflight_line(&app, msg);
+            return Err(msg.to_string());
+        }
+    };
     run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "git"]).await
 }
 
@@ -447,8 +504,18 @@ pub async fn install_git(app: AppHandle) -> Result<String, String> {
 /// Install the GitHub CLI via `brew install gh`.
 #[tauri::command]
 pub async fn install_gh(app: AppHandle) -> Result<String, String> {
-    let brew = which::which_in("brew", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
-        .map_err(|_| "Homebrew is not installed. Install Homebrew first.".to_string())?;
+    let brew = match which::which_in(
+        "brew",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            let msg = "Homebrew is not installed. Install Homebrew first.";
+            emit_preflight_line(&app, msg);
+            return Err(msg.to_string());
+        }
+    };
     run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "gh"]).await
 }
 
@@ -461,8 +528,18 @@ pub async fn install_gh(app: AppHandle) -> Result<String, String> {
 /// Errors if npm is not available.
 #[tauri::command]
 pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
-    let npm = which::which_in("npm", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
-        .map_err(|_| "npm is not installed. Install Node.js first.".to_string())?;
+    let npm = match which::which_in(
+        "npm",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            let msg = "npm is not installed. Install Node.js first.";
+            emit_preflight_line(&app, msg);
+            return Err(msg.to_string());
+        }
+    };
     run_streaming(
         &app,
         npm.to_str().unwrap_or("npm"),
@@ -480,8 +557,18 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
 /// Errors if npm is not available.
 #[tauri::command]
 pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
-    let npm = which::which_in("npm", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
-        .map_err(|_| "npm is not installed. Install Node.js first.".to_string())?;
+    let npm = match which::which_in(
+        "npm",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            let msg = "npm is not installed. Install Node.js first.";
+            emit_preflight_line(&app, msg);
+            return Err(msg.to_string());
+        }
+    };
     run_streaming(
         &app,
         npm.to_str().unwrap_or("npm"),
