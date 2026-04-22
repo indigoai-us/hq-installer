@@ -368,7 +368,13 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     // installs), but none should reference core-integrity.
     const spawnCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "spawn_process");
     const coreIntegritySpawned = spawnCalls.some((call) => {
-      const args = (call[1] as { args: { args: string[] } })?.args?.args ?? [];
+      // `vi.fn(async (command: string) => ...)` types mock.calls as a 1-tuple,
+      // but invoke() is actually called with 2 args. Cast to unknown[] to reach
+      // index 1 — matches the pattern used on line 269.
+      const payload = (call as unknown[])[1] as
+        | { args?: { args?: unknown[] } }
+        | undefined;
+      const args = payload?.args?.args ?? [];
       return args.some((a) => typeof a === "string" && a.includes("core-integrity"));
     });
     expect(coreIntegritySpawned).toBe(false);
