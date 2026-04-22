@@ -246,6 +246,21 @@ pub fn cancel_install(handle: String) -> bool {
 /// Spawn `program` with `args`, stream stdout line-by-line as
 /// `install:progress` events, and respect the cancel flag.
 ///
+/// Both stdout and stderr are drained concurrently:
+///   - stdout lines are forwarded verbatim as progress events.
+///   - stderr lines are forwarded as progress events AND retained so the
+///     final error message carries actual context. Many installers (npm,
+///     brew) write EACCES / registry / post-install-script failures to
+///     stderr, not stdout — without draining stderr the installer just
+///     said "exit code 1" and the user was stuck.
+///   - Draining stderr in a thread also prevents the child from blocking
+///     on a full stderr pipe (macOS default pipe buffer is 32 KB).
+///
+/// The spawned child inherits `PATH = extended_search_path()` so that any
+/// sub-tools invoked by the installer (npm post-install scripts reaching
+/// for `node`, `git`, `python3`, etc.) can be resolved from the full set
+/// of macOS locations a GUI-launched Tauri app does NOT inherit.
+///
 /// Returns `Ok(handle)` on success or `Err(message)` on failure.
 async fn run_streaming(
     app: &AppHandle,
@@ -257,18 +272,46 @@ async fn run_streaming(
 
     let mut child = Command::new(program)
         .args(args)
+        .env("PATH", extended_search_path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to spawn '{}': {}", program, e))?;
 
     let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+
+    // Drain stderr in a background thread — see the function doc above for why.
+    let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_thread = {
+        let app = app.clone();
+        let handle_id = handle_id.clone();
+        let stderr_lines = Arc::clone(&stderr_lines);
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line_result in reader.lines() {
+                let Ok(line) = line_result else { break };
+                stderr_lines.lock().unwrap().push(line.clone());
+                let _ = app.emit(
+                    "install:progress",
+                    InstallProgress {
+                        handle: handle_id.clone(),
+                        line,
+                        finished: false,
+                        error: None,
+                    },
+                );
+            }
+        })
+    };
+
     let reader = BufReader::new(stdout);
 
     for line_result in reader.lines() {
         // Honour cancel.
         if is_cancelled(&handle_id) {
             let _ = child.kill();
+            let _ = stderr_thread.join();
             deregister_handle(&handle_id);
             let _ = app.emit(
                 "install:progress",
@@ -295,6 +338,7 @@ async fn run_streaming(
     }
 
     let status = child.wait().map_err(|e| e.to_string())?;
+    let _ = stderr_thread.join();
     deregister_handle(&handle_id);
 
     if status.success() {
@@ -310,7 +354,8 @@ async fn run_streaming(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
-        let msg = format!("Process exited with code {}", code);
+        let captured = stderr_lines.lock().unwrap().clone();
+        let msg = format_install_error(code, &captured);
         let _ = app.emit(
             "install:progress",
             InstallProgress {
@@ -321,6 +366,31 @@ async fn run_streaming(
             },
         );
         Err(msg)
+    }
+}
+
+/// Format a human-friendly error message from an exit code plus the stderr
+/// lines captured by `run_streaming`. Keeps the last few non-empty lines so
+/// the UI stays readable when tools dump multi-KB of output.
+///
+/// Exposed for unit tests; no Tauri runtime needed.
+pub fn format_install_error(exit_code: i32, stderr_lines: &[String]) -> String {
+    let mut tail: Vec<String> = stderr_lines
+        .iter()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(5)
+        .cloned()
+        .collect();
+    tail.reverse();
+    if tail.is_empty() {
+        format!("Process exited with code {}", exit_code)
+    } else {
+        format!(
+            "Process exited with code {}: {}",
+            exit_code,
+            tail.join(" | ")
+        )
     }
 }
 

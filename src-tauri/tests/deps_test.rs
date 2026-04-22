@@ -7,7 +7,8 @@
 #[cfg(test)]
 mod deps_tests {
     use hq_installer_lib::commands::deps::{
-        cancel_install, check_dep_in, extended_search_path, register_cancel_handle,
+        cancel_install, check_dep_in, extended_search_path, format_install_error,
+        register_cancel_handle,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -213,6 +214,92 @@ mod deps_tests {
             path.contains("/usr/local/bin"),
             "should include Intel Homebrew / generic prefix, got: {}",
             path
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 12: format_install_error surfaces stderr when available.
+    //          Regression guard for the "npm -g fails silently" bug — before
+    //          this, `install_claude_code` / `install_qmd` failures reported
+    //          only "Process exited with code 1" because stderr was never
+    //          drained. The new run_streaming drains stderr and the error
+    //          message must include the real npm output so the UI can show
+    //          users what actually went wrong (EACCES, registry, engine, etc.)
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_install_error_includes_stderr_tail() {
+        let lines = vec![
+            "npm WARN config global `--global` is deprecated".to_string(),
+            "npm ERR! code EACCES".to_string(),
+            "npm ERR! syscall mkdir".to_string(),
+            "npm ERR! path /opt/homebrew/lib/node_modules/@anthropic-ai".to_string(),
+            "npm ERR! errno -13".to_string(),
+        ];
+        let msg = format_install_error(1, &lines);
+        assert!(msg.contains("code 1"), "should include exit code, got: {}", msg);
+        assert!(
+            msg.contains("EACCES"),
+            "should surface the real error from stderr, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("mkdir"),
+            "should include recent stderr context, got: {}",
+            msg
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 13: format_install_error keeps only the last few non-empty lines
+    //          so the UI doesn't get flooded when an installer dumps kilobytes
+    //          of output before failing.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_install_error_caps_at_five_lines() {
+        let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
+        let msg = format_install_error(2, &lines);
+        // Last five lines should appear; earlier ones should not.
+        assert!(msg.contains("line 19"), "should include last line, got: {}", msg);
+        assert!(msg.contains("line 15"), "should include 5th-from-last, got: {}", msg);
+        assert!(
+            !msg.contains("line 14"),
+            "should not include lines older than last 5, got: {}",
+            msg
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 14: format_install_error filters blank lines so messages stay
+    //          compact even when a tool pads its output with whitespace.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_install_error_skips_blank_lines() {
+        let lines = vec![
+            "real error here".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "second real line".to_string(),
+        ];
+        let msg = format_install_error(1, &lines);
+        assert!(msg.contains("real error here"));
+        assert!(msg.contains("second real line"));
+        // Delimiter between real lines only — no double-pipe from blanks.
+        assert!(!msg.contains("| |"), "should not double-delimit blanks: {}", msg);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 15: format_install_error falls back to a generic message when
+    //          there's no stderr (e.g. the tool wrote only to stdout before
+    //          dying). The generic form must still mention the exit code.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_install_error_empty_stderr_uses_exit_code() {
+        let msg = format_install_error(127, &[]);
+        assert!(msg.contains("127"), "should mention exit code, got: {}", msg);
+        assert!(
+            !msg.contains(":"),
+            "should not have 'code N:' separator when stderr is empty, got: {}",
+            msg
         );
     }
 }
