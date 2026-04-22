@@ -2,9 +2,10 @@
 /**
  * sync-templates.ts
  *
- * Copies starter-project templates from the hq public repo into this repo's
- * templates/starter-projects/ directory, and mirrors them into any existing
- * src-tauri/target/{debug,release}/templates/starter-projects/ dev builds.
+ * Copies starter-project templates from the hq-core public repo into this
+ * repo's templates/starter-projects/ directory, and mirrors them into any
+ * existing src-tauri/target/{debug,release}/templates/starter-projects/ dev
+ * builds.
  *
  * profile.md.hbs and voice-style.md.hbs are hand-authored and are NOT
  * overwritten by this script.
@@ -20,13 +21,13 @@
  *   pnpm run sync-templates
  *
  * Environment:
- *   HQ_REPO_PATH  Absolute path to the checked-out hq public repo.
+ *   HQ_REPO_PATH  Absolute path to the checked-out hq-core public repo.
  *                 Defaults to a sibling lookup: assumes this repo lives at
- *                 `<root>/repos/private/hq-installer/` and the hq public repo
- *                 is at `<root>/repos/public/hq/` (the canonical HQ layout on
- *                 every contributor's machine). Override on CI or
+ *                 `<root>/repos/private/hq-installer/` and the hq-core public
+ *                 repo is at `<root>/repos/public/hq-core/` (the canonical HQ
+ *                 layout on every contributor's machine). Override on CI or
  *                 non-standard checkouts:
- *                   HQ_REPO_PATH=/path/to/hq pnpm run sync-templates
+ *                   HQ_REPO_PATH=/path/to/hq-core pnpm run sync-templates
  */
 
 import { cpSync, existsSync, rmSync, mkdirSync } from "node:fs";
@@ -38,17 +39,22 @@ const __dirname = dirname(__filename);
 
 const REPO_ROOT = resolve(__dirname, "..");
 
-// Sibling-lookup default: <repo-root>/../../public/hq from this script's
-// REPO_ROOT, i.e. <root>/repos/private/hq-installer → <root>/repos/public/hq.
+// Sibling-lookup default: <repo-root>/../../public/hq-core from this script's
+// REPO_ROOT, i.e. <root>/repos/private/hq-installer → <root>/repos/public/hq-core.
 // Matches the HQ canonical checkout layout so fresh clones work without env.
-const DEFAULT_HQ_REPO_PATH = resolve(REPO_ROOT, "..", "..", "public", "hq");
+const DEFAULT_HQ_REPO_PATH = resolve(REPO_ROOT, "..", "..", "public", "hq-core");
 
 const HQ_REPO_PATH = resolve(
   process.env.HQ_REPO_PATH ?? DEFAULT_HQ_REPO_PATH,
 );
 
-/** Absolute path to the hq public repo's starter-projects directory. */
-const HQ_STARTER_PROJECTS = resolve(HQ_REPO_PATH, "template/starter-projects");
+/**
+ * Absolute path to the hq-core repo's starter-projects directory.
+ * hq-core's root IS the template, so starter-projects lives at the repo root
+ * (not under a `template/` subdirectory — that was the old indigoai-us/hq
+ * layout before the v12 split).
+ */
+const HQ_STARTER_PROJECTS = resolve(HQ_REPO_PATH, "starter-projects");
 
 /** Canonical destination — source of truth for bundle-time resource copy. */
 const DEST_STARTER_PROJECTS = resolve(REPO_ROOT, "templates/starter-projects");
