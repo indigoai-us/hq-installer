@@ -1,14 +1,13 @@
 {
   "_comment": "Screens traversed AFTER auth succeeds on 02. Each entry asserts a text fragment in the snapshot, then clicks the CTA whose label matches (case-insensitive substring). Tune these labels after first run if the driver reports mismatches.",
   "screens": [
-    { "id": "03-team",              "assert_text": "Set up your team",        "cta_text": "Continue",  "advance_timeout_secs": 10 },
     { "id": "04-deps",              "assert_text": "Install dependencies",    "cta_text": "Install",   "advance_timeout_secs": 600 },
-    { "id": "05-github",            "assert_text": "Set up GitHub",            "cta_text": "Continue",  "advance_timeout_secs": 10 },
     { "id": "06-directory",         "assert_text": "Choose install directory", "cta_text": "Continue",  "advance_timeout_secs": 10 },
     { "id": "07-template",          "assert_text": "Fetching template",        "cta_text": "Continue",  "advance_timeout_secs": 300 },
     { "id": "08-git-init",          "assert_text": "Git setup",                "cta_text": "Continue",  "advance_timeout_secs": 120 },
     { "id": "09-personalize",       "assert_text": "Personalize your HQ",      "cta_text": "Continue",  "advance_timeout_secs": 10 },
     { "id": "10-indexing",          "assert_text": "Indexing HQ",              "cta_text": "Continue",  "advance_timeout_secs": 600 },
+    { "id": "menubar-install",      "assert_text": "HQ Sync",                  "cta_text": "Skip",      "advance_timeout_secs": 10 },
     { "id": "11-summary",           "assert_text": "HQ is ready",              "cta_text": "",          "advance_timeout_secs": 10 }
   ]
 }

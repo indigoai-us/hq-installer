@@ -1,14 +1,17 @@
 // 09-personalize.tsx — US-017
 // Personalization screen: single-step form.
 //
-// Redesign (2026-04-18):
-//  - Only asks for the user's full name (prefilled from the Google idToken).
+// Also the de-facto "company detection" point now that the old Step 3
+// (company-detect) has been removed: on mount, calls listUserCompanies(),
+// seeds wizard-state.team from the first cloud company, and records the
+// total count so App.tsx can conditionally skip the HQ Sync install step
+// when the user has nothing to sync.
+//
+//  - Asks for the user's full name (prefilled from the Google idToken).
 //  - Auto-lists every HQ-Cloud company the signed-in Cognito user belongs to
-//    as a read-only "Connected" section; each is synced into companies/{slug}/
-//    on submit.
+//    as a read-only "Connected" section. Continuous S3 reconciliation is
+//    handled by the HQ-Sync menu bar app (Step 9) — not the installer.
 //  - Keeps the manual "add companies" list for brand-new local companies.
-//  - No more about/goals/starter-project questions — the writer accepts these
-//    as optional now, so we just don't pass them.
 
 import { useEffect, useState } from "react";
 import { personalize } from "@/lib/personalize-writer";
@@ -18,12 +21,12 @@ import {
   listUserCompanies,
   type UserCompanyEntry,
 } from "@/lib/vault-handoff";
-import { getWizardState, setPersonalized } from "@/lib/wizard-state";
 import {
-  vendStsCredentials,
-  syncFromS3,
-  type SyncProgress,
-} from "@/lib/s3-sync";
+  setPersonalized,
+  setTeam,
+  setIsPersonal,
+  setConnectedCompanyCount,
+} from "@/lib/wizard-state";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -93,6 +96,26 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
             const entries = await listUserCompanies(user.tokens.accessToken);
             if (cancelled) return;
             setCloudCompanies(entries);
+            // Persist company-count globally so App.tsx can skip the HQ Sync
+            // menu bar install when there's nothing to sync. Also seed the
+            // wizard `team` slot from the first cloud company (old Step 3's
+            // job) so Summary has something to display; or flip isPersonal
+            // when the user genuinely has no cloud companies.
+            setConnectedCompanyCount(entries.length);
+            if (entries.length > 0) {
+              const first = entries[0];
+              setTeam({
+                teamId: first.companyUid,
+                companyId: first.companyUid,
+                slug: first.companySlug,
+                name: first.companyName,
+                joinedViaInvite: false,
+                bucketName: first.bucketName,
+                role: first.role,
+              });
+            } else {
+              setIsPersonal(true);
+            }
           } catch (err) {
             if (cancelled) return;
             setCloudError(
@@ -145,46 +168,10 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
     setErrorMsg(null);
 
     try {
-      // --- 1. Sync every cloud company we haven't already synced in 08b. ---
-      // Step 08b already handled the primary team (`state.team`); skip that
-      // one here so we don't redo work or thrash its files.
-      const state = getWizardState();
-      const alreadySyncedCompanyUid = state.team?.companyId ?? null;
-
-      const user = await getCurrentUser();
-      if (user && cloudCompanies.length > 0) {
-        for (const co of cloudCompanies) {
-          if (co.companyUid === alreadySyncedCompanyUid) continue;
-
-          setSubmitStage(`Syncing ${co.companyName}…`);
-          try {
-            const creds = await vendStsCredentials(
-              user.tokens.accessToken,
-              co.companyUid,
-              co.bucketName,
-            );
-            // No per-file progress surfaced here — the Personalize screen
-            // shows a single "Syncing {name}…" line; detailed per-file
-            // progress already lives on the dedicated Sync screen (08b).
-            const noopProgress: (p: SyncProgress) => void = () => {};
-            await syncFromS3(
-              creds,
-              installPath,
-              noopProgress,
-              `companies/${co.companySlug}`,
-            );
-          } catch (err) {
-            // Cloud sync failure shouldn't block personalize — surface it in
-            // the error area but keep going with local scaffolding.
-            console.warn(`Failed to sync ${co.companySlug}:`, err);
-          }
-        }
-      }
-
-      // --- 2. Merge cloud + manual companies for the writer. ---
-      // Cloud companies that were just synced above still need their
-      // companies/{slug}/ yaml written by the writer (sync won't have
-      // overwritten company.yaml from S3 unless the bucket ships one).
+      // Merge cloud + manual companies for the writer. S3 reconciliation is
+      // no longer the installer's job — the HQ-Sync menu bar app (installed
+      // in Step 9) handles continuous sync post-install. We just scaffold
+      // the local companies/{slug}/ directories with their yaml files here.
       const cloudSeeds: CompanySeed[] = cloudCompanies.map((c) => ({
         name: c.companyName,
         cloud: true,

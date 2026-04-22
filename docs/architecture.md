@@ -1,6 +1,6 @@
 # hq-installer Architecture
 
-Native macOS installer for HQ. Guided 11-screen wizard built on Tauri 2 + React 19 + TypeScript.
+Native macOS installer for HQ. Guided 10-step wizard built on Tauri 2 + React 19 + TypeScript.
 
 ## Stack
 
@@ -11,7 +11,7 @@ Native macOS installer for HQ. Guided 11-screen wizard built on Tauri 2 + React 
 | Auth | AWS Cognito (email/password + GitHub OAuth) | Identity, session tokens |
 | Build | Vite 6, pnpm | Dev server, bundling |
 | CI | GitHub Actions (macos-latest) | Type-check, lint, test, release |
-| E2E | Playwright | Full 11-screen walkthrough |
+| E2E | Playwright | Full 10-step walkthrough |
 
 ## Rust ↔ TypeScript Boundary
 
@@ -31,23 +31,24 @@ All OS-level work lives in Rust (`src-tauri/src/commands/`). TypeScript calls ac
 
 ## Wizard Flow
 
-11 screens in sequence:
+10 steps in sequence:
 
-| Screen | File | Key action |
+| Step | File | Key action |
 |---|---|---|
 | 1 — Welcome | `01-welcome.tsx` | Intro + telemetry opt-in |
-| 2 — Cognito auth | `02-cognito-auth.tsx` | Sign in / sign up (email+pw or GitHub OAuth) |
-| 3 — Team | `03-team.tsx` | Create or join a team via hq-ops API |
-| 4 — Dependencies | `04-deps.tsx` | Probe + install system deps |
-| 5 — GitHub walkthrough | `05-github-walkthrough.tsx` | gh auth + SSH key setup |
-| 6 — Directory | `06-directory.tsx` | Native directory picker for HQ install path |
-| 7 — Template fetch | `07-template.tsx` | Download + extract HQ tarball from GitHub releases |
-| 8 — Git init | `08-git-init.tsx` | `git_init` command + initial commit |
-| 9 — Personalize | `09-personalize.tsx` | Name, about, goals, starter project selection |
-| 10 — Indexing | `10-indexing.tsx` | `qmd update` via `spawn_process` |
-| 11 — Summary | `11-summary.tsx` | Launch Claude Code |
+| 2 — Sign In | `02-cognito-auth.tsx` | Sign in / sign up (email+pw or GitHub OAuth) |
+| 3 — Prerequisites | `04-deps.tsx` | Probe + install system deps |
+| 4 — Install | `06-directory.tsx` | Native directory picker for HQ install path |
+| 5 — Templates | `07-template.tsx` | Download + extract HQ tarball from GitHub releases |
+| 6 — Workspace | `08-git-init.tsx` | `git_init` command + initial commit |
+| 7 — Personalize | `09-personalize.tsx` | Name + detect cloud companies (lists user's HQ-Cloud memberships, seeds `team` + `connectedCompanyCount` in wizard state) |
+| 8 — Verify | `10-indexing.tsx` | `qmd update` via `spawn_process` |
+| 9 — HQ Sync | `InstallMenubarStep.tsx` | Install HQ Sync menu bar app for continuous S3 reconciliation. Auto-skipped when `connectedCompanyCount === 0` (nothing to sync) |
+| 10 — Done | `11-summary.tsx` | Launch Claude Code |
 
-Navigation is managed by `wizard-router.ts` (plain JS state machine, no React context). Step 3 is auth-gated: no back navigation allowed. Wizard session data (team, installPath, gitIdentity) is held in the `wizard-state.ts` module singleton.
+Navigation is managed by `wizard-router.ts` (plain JS state machine, no React context). Step 3 (Prerequisites) is auth-gated: no back navigation allowed once the user has signed in. Wizard session data (team, installPath, gitIdentity, personalized flag, connectedCompanyCount) is held in the `wizard-state.ts` module singleton.
+
+Two screens were removed from the earlier 12-step flow: the old Step 3 (`03-team.tsx`, "create/join team") was folded into Step 7 — Personalize auto-lists the user's HQ-Cloud companies on mount instead. The old Step 8 (`08b-sync.tsx`, "S3 sync") was removed entirely because the HQ-Sync menu bar app (installed in Step 9) now owns continuous S3 reconciliation post-install.
 
 ## Auth Architecture
 
@@ -141,7 +142,7 @@ Required GitHub Actions secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWOR
 |---|---|---|
 | Unit | Vitest | cognito.ts, template-fetcher.ts, personalize-writer.ts, updater.ts |
 | Regression | Vitest (`vitest.config.regression.ts`) | Installer output vs canonical `create-hq + /setup` layout |
-| E2E | Playwright | Full 11-screen walkthrough on macOS CI |
+| E2E | Playwright | Full 10-step walkthrough on macOS CI |
 
 Unit tests use dependency injection for Tauri APIs (injected template strings, stub `invoke`) — no real Tauri runtime required.
 
