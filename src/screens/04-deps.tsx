@@ -255,10 +255,18 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
       });
       updateTool(dep.id, { status: result.installed ? "installed" : "missing" });
     } catch (err) {
-      updateTool(dep.id, {
-        status: "error",
-        errorMsg: err instanceof Error ? err.message : "Installation failed",
-      });
+      // Tauri's `invoke` rejects with the raw Err value — for our Rust
+      // commands that's a plain string, not an Error instance. The old
+      // `err instanceof Error` check always fell through to the generic
+      // "Installation failed" message, hiding real context like
+      // "Homebrew is not installed. Install Homebrew first."
+      const errorMsg =
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+            ? err.message
+            : "Installation failed";
+      updateTool(dep.id, { status: "error", errorMsg });
     } finally {
       // For xcode, activeToolRef is cleared by the xcode:progress listener.
       if (!dep.useXcodeCheck) {

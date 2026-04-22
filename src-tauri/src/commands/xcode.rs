@@ -193,6 +193,17 @@ pub async fn xcode_clt_poll_impl(
 }
 
 /// Same as `xcode_clt_poll_impl` but also emits Tauri progress events.
+///
+/// Emission strategy: we poll the filesystem frequently (every
+/// `poll_interval_ms`) so the *completion* event fires within a second of the
+/// CLT dir appearing, but we only emit a status *line* to the UI at a slower
+/// cadence so the terminal panel doesn't fill up with 450 copies of
+/// "Waiting…" during the 15-minute timeout window. A single initial line is
+/// emitted immediately, then progress heartbeats with elapsed time every
+/// ~30s. After 2 minutes of no progress we add a one-shot hint that the
+/// system dialog may have been dismissed — Apple's install UI runs in a
+/// separate helper process we can't observe, so this is the best signal
+/// we can give the user.
 async fn xcode_clt_poll_with_events(
     app: AppHandle,
     clt_dir: PathBuf,
@@ -200,8 +211,27 @@ async fn xcode_clt_poll_with_events(
     timeout_secs: u64,
     poll_interval_ms: u64,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let start = std::time::Instant::now();
+    let deadline = start + std::time::Duration::from_secs(timeout_secs);
     let interval = std::time::Duration::from_millis(poll_interval_ms);
+    // Emit a heartbeat roughly every this many seconds of real time.
+    const HEARTBEAT_SECS: u64 = 30;
+    // One-shot "dialog may have been dismissed" hint after this much silence.
+    const DISMISS_HINT_SECS: u64 = 120;
+
+    // Initial line — always shown once.
+    let _ = app.emit(
+        "xcode:progress",
+        XcodeProgress {
+            handle: handle.clone(),
+            line: "Waiting for the Xcode Command Line Tools installer to finish…".to_string(),
+            finished: false,
+            error: None,
+        },
+    );
+
+    let mut last_heartbeat = start;
+    let mut dismiss_hint_sent = false;
 
     loop {
         if clt_dir.is_dir() {
@@ -227,7 +257,7 @@ async fn xcode_clt_poll_with_events(
                     line: String::new(),
                     finished: true,
                     error: Some(format!(
-                        "Xcode CLT installation timed out after {} seconds",
+                        "Xcode CLT installation timed out after {} seconds. If the system dialog never appeared, close and retry; otherwise install manually from https://developer.apple.com/download/all/",
                         timeout_secs
                     )),
                 },
@@ -235,15 +265,38 @@ async fn xcode_clt_poll_with_events(
             return;
         }
 
-        let _ = app.emit(
-            "xcode:progress",
-            XcodeProgress {
-                handle: handle.clone(),
-                line: "Waiting for Xcode Command Line Tools to install…".to_string(),
-                finished: false,
-                error: None,
-            },
-        );
+        let elapsed = start.elapsed();
+        let elapsed_secs = elapsed.as_secs();
+
+        // One-shot hint at 2 minutes in case the dialog was dismissed.
+        if !dismiss_hint_sent && elapsed_secs >= DISMISS_HINT_SECS {
+            dismiss_hint_sent = true;
+            let _ = app.emit(
+                "xcode:progress",
+                XcodeProgress {
+                    handle: handle.clone(),
+                    line: "Still waiting. If no system dialog appeared, click Retry to re-trigger it.".to_string(),
+                    finished: false,
+                    error: None,
+                },
+            );
+            last_heartbeat = std::time::Instant::now();
+        } else if last_heartbeat.elapsed().as_secs() >= HEARTBEAT_SECS {
+            last_heartbeat = std::time::Instant::now();
+            let _ = app.emit(
+                "xcode:progress",
+                XcodeProgress {
+                    handle: handle.clone(),
+                    line: format!(
+                        "Still installing… ({}m{:02}s elapsed)",
+                        elapsed_secs / 60,
+                        elapsed_secs % 60
+                    ),
+                    finished: false,
+                    error: None,
+                },
+            );
+        }
 
         tokio::time::sleep(interval).await;
     }
