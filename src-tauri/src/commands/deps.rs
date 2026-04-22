@@ -420,26 +420,10 @@ pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
     .await
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// install_hq_cloud
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Install the HQ Cloud sync runner via `npm install -g @indigoai-us/hq-cloud`.
-///
-/// Provides the `hq-sync-runner` binary that the HQ Sync menubar app spawns
-/// for every sync. Without this, the menubar installs cleanly but every
-/// "Sync Now" click fails with "command not found" because the runner isn't
-/// on PATH.
-///
-/// Errors if npm is not available.
-#[tauri::command]
-pub async fn install_hq_cloud(app: AppHandle) -> Result<String, String> {
-    let npm = which::which_in("npm", Some(extended_search_path()), std::env::current_dir().unwrap_or_default())
-        .map_err(|_| "npm is not installed. Install Node.js first.".to_string())?;
-    run_streaming(
-        &app,
-        npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "@indigoai-us/hq-cloud"],
-    )
-    .await
-}
+// NOTE (2026-04-21): `install_hq_cloud` was removed along with the
+// `hq-cloud` DEPS row in 04-deps.tsx. The HQ Sync menubar app now spawns
+// the runner via `npx -y --package=@indigoai-us/hq-cloud@<ver>
+// hq-sync-runner …` (see hq-sync/src-tauri/src/commands/sync.rs), which
+// removes the need for a global install. Do NOT re-add this command
+// unless you're also re-adding a frontend invocation — the previous
+// backend-only re-add stranded a dead Tauri handler.
