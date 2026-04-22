@@ -363,9 +363,15 @@ describe("GitInit screen (08-git-init.tsx)", () => {
       expect(btn).not.toBeNull();
     });
 
-    // Only one spawn_process call — no attempt to run the missing script.
+    // core-integrity.sh was never spawned (step skipped via exists=false).
+    // Other spawn_process calls may occur (compute-checksums + silent hq-pack
+    // installs), but none should reference core-integrity.
     const spawnCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "spawn_process");
-    expect(spawnCalls.length).toBe(1);
+    const coreIntegritySpawned = spawnCalls.some((call) => {
+      const args = (call[1] as { args: { args: string[] } })?.args?.args ?? [];
+      return args.some((a) => typeof a === "string" && a.includes("core-integrity"));
+    });
+    expect(coreIntegritySpawned).toBe(false);
 
     // exists() was asked about core-integrity.sh at the expected path.
     expect(mockExists).toHaveBeenCalledWith("/tmp/hq/scripts/core-integrity.sh");
