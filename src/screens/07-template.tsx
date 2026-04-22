@@ -2,7 +2,7 @@
 // Template fetch screen — downloads and extracts the HQ template tarball.
 //
 // Transport: `fetchAndExtract()` from `@/lib/template-fetcher`. That helper
-// resolves the latest non-prerelease release on `indigoai-us/hq` via the
+// resolves the latest non-prerelease release on `indigoai-us/hq-core` via the
 // GitHub Release API, streams the tarball through `@tauri-apps/plugin-http`
 // (which bypasses CORS via the Rust reqwest client), gunzips + parses tar
 // in-memory, and writes each entry with `@tauri-apps/plugin-fs`. No shell

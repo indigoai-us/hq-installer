@@ -13,7 +13,7 @@
 //   6. Store tokens in the macOS keychain via the existing helpers.
 //   7. Advance the wizard.
 
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openInBrowser } from "@tauri-apps/plugin-shell";
 import { storeTokens } from "@/lib/cognito";
@@ -37,7 +37,16 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Monotonic call counter. If the user re-clicks "Continue with Google"
+  // while a prior OAuth flow is still in flight (browser tab closed, wrong
+  // window, etc.), the Rust side cancels the old loopback listener — which
+  // rejects the old listenerPromise with "Sign-in cancelled." We use this
+  // ref to swallow that stale rejection so it doesn't overwrite the new
+  // attempt's loading/error state.
+  const currentCallRef = useRef(0);
+
   async function handleSignIn() {
+    const myCall = ++currentCallRef.current;
     setError(null);
     setLoading(true);
     try {
@@ -52,6 +61,8 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
 
       // Start the loopback listener FIRST so we never miss the redirect,
       // then open the browser. The listener awaits the GET /callback.
+      // The Rust command auto-cancels any prior invocation so re-clicks
+      // transparently reopen the browser.
       const listenerPromise = invoke<OAuthResult>("oauth_listen_for_code", {
         expectedState: state,
       });
@@ -59,14 +70,20 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       await openInBrowser(authorizeUrl);
 
       const { code } = await listenerPromise;
+      if (myCall !== currentCallRef.current) return;
       const tokens = await exchangeCodeForTokens({
         config,
         code,
         verifier: pkce.verifier,
       });
+      if (myCall !== currentCallRef.current) return;
       await storeTokens(tokens);
+      if (myCall !== currentCallRef.current) return;
       onNext?.();
     } catch (err) {
+      // Swallow errors that belong to a superseded attempt — the fresh call
+      // owns the UI now.
+      if (myCall !== currentCallRef.current) return;
       const msg =
         err instanceof Error
           ? err.message
@@ -77,7 +94,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       console.error("[google-oauth] sign-in failed:", err);
       setError(msg || "Sign-in failed");
     } finally {
-      setLoading(false);
+      if (myCall === currentCallRef.current) setLoading(false);
     }
   }
 
@@ -100,17 +117,17 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       <button
         type="button"
         onClick={handleSignIn}
-        disabled={loading}
-        className="flex items-center justify-center gap-3 rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-60"
+        className="flex items-center justify-center gap-3 rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
       >
         <GoogleGlyph />
-        {loading ? "Waiting for browser…" : "Continue with Google"}
+        {loading ? "Reopen Google sign-in" : "Continue with Google"}
       </button>
 
       {loading && (
         <p className="text-xs text-zinc-500 text-center">
           A browser window opened for Google sign-in. Complete it there and
-          you'll return here automatically.
+          you'll return here automatically. If the tab closed or opened in the
+          wrong window, click the button above to try again.
         </p>
       )}
     </div>

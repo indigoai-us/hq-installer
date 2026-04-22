@@ -20,14 +20,77 @@
 //   - 5-minute timeout so a stalled/abandoned flow doesn't leak a socket.
 
 use serde::Serialize;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const LOOPBACK_PORT: u16 = 53682;
 const LOOPBACK_HOST: &str = "127.0.0.1";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Global slot holding the cancel flag of the currently-active listener (if
+/// any). On re-invocation we flip the prior flag so the old listener bails
+/// out, releases its bound socket, and lets the new invocation claim the
+/// loopback port. This is what lets the sign-in button stay clickable: the
+/// user can re-click to reopen the browser without waiting for the 5-minute
+/// idle timeout when the previous tab was closed.
+fn cancel_slot() -> &'static Mutex<Option<Arc<AtomicBool>>> {
+    static SLOT: OnceLock<Mutex<Option<Arc<AtomicBool>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn install_cancel_flag(flag: Arc<AtomicBool>) {
+    let prior = {
+        let mut slot = cancel_slot()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prior = slot.take();
+        *slot = Some(flag);
+        prior
+    };
+    if let Some(prior) = prior {
+        prior.store(true, Ordering::SeqCst);
+        // Poke a TCP connect at the prior listener so its blocking accept()
+        // wakes up immediately rather than waiting for the next poll tick.
+        // This is a best-effort nudge — if it fails (listener already gone),
+        // the prior task's own poll loop will catch the flag within ~100ms.
+        let _ = TcpStream::connect((LOOPBACK_HOST, LOOPBACK_PORT));
+    }
+}
+
+fn clear_cancel_flag(flag: &Arc<AtomicBool>) {
+    let mut slot = cancel_slot()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // Only clear if the slot still holds *our* flag. If a newer listener has
+    // already installed itself, don't yank its flag.
+    if let Some(current) = slot.as_ref() {
+        if Arc::ptr_eq(current, flag) {
+            *slot = None;
+        }
+    }
+}
+
+/// `TcpListener::bind` on a recently-released port can race with the prior
+/// listener's drop. Retry briefly so a fresh sign-in click never fails just
+/// because the old listener hasn't finished tearing down yet.
+fn try_bind_with_retries() -> io::Result<TcpListener> {
+    let mut last_err: Option<io::Error> = None;
+    for _ in 0..10 {
+        match TcpListener::bind((LOOPBACK_HOST, LOOPBACK_PORT)) {
+            Ok(l) => return Ok(l),
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| io::Error::other("bind failed")))
+}
 
 /// `eprintln!` panics on stderr write failure (EPIPE). Under some dev-server
 /// launchers the parent closes our stderr pipe while the async OAuth task is
@@ -173,30 +236,42 @@ fn urldecode(input: &str) -> String {
 /// Block until the browser hits /callback with a valid code and matching state.
 ///
 /// Runs the blocking TcpListener on a tokio blocking thread so the Tauri
-/// command stays async-friendly.
+/// command stays async-friendly. Cancellable: a subsequent invocation of
+/// this command triggers the prior listener to bail out and release the
+/// loopback port — so the user can re-click "Continue with Google" after
+/// closing a stale browser tab without waiting for the 5-min idle timeout.
 #[tauri::command]
 pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult, String> {
     let state_copy = expected_state.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
-        let listener =
-            TcpListener::bind((LOOPBACK_HOST, LOOPBACK_PORT)).map_err(|e| {
-                format!(
-                    "Failed to bind OAuth loopback listener on {}:{} — {}. \
-                     Another instance may already be waiting for sign-in.",
-                    LOOPBACK_HOST, LOOPBACK_PORT, e
-                )
-            })?;
+    // Install our cancel flag *before* spawning the blocking task. This
+    // signals any prior listener to exit so the port is free when we bind.
+    let my_flag = Arc::new(AtomicBool::new(false));
+    install_cancel_flag(my_flag.clone());
 
-        // Wake up every second to check the overall timeout.
+    let flag_for_task = my_flag.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
+        let listener = try_bind_with_retries().map_err(|e| {
+            format!(
+                "Failed to bind OAuth loopback listener on {}:{} — {}. \
+                 Another instance may already be waiting for sign-in.",
+                LOOPBACK_HOST, LOOPBACK_PORT, e
+            )
+        })?;
+
+        // Non-blocking accept so we can poll the cancel flag + deadline every
+        // POLL_INTERVAL instead of being stuck in a blocking accept() call.
         listener
-            .set_nonblocking(false)
+            .set_nonblocking(true)
             .map_err(|e| format!("set_nonblocking: {e}"))?;
 
-        let deadline = std::time::Instant::now() + IDLE_TIMEOUT;
+        let deadline = Instant::now() + IDLE_TIMEOUT;
 
         loop {
-            if std::time::Instant::now() > deadline {
+            if flag_for_task.load(Ordering::SeqCst) {
+                return Err("Sign-in cancelled.".into());
+            }
+            if Instant::now() > deadline {
                 return Err("Timed out waiting for sign-in (5 minutes).".into());
             }
 
@@ -205,6 +280,12 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
             // our /callback.
             match listener.accept() {
                 Ok((mut stream, _addr)) => {
+                    // Flip the accepted stream back to blocking so the
+                    // existing read_request_line / write_response helpers
+                    // behave normally — we only need non-blocking on the
+                    // *listener* for the poll-cancel pattern.
+                    let _ = stream.set_nonblocking(false);
+
                     let request = match read_request_line(&mut stream) {
                         Ok(r) => r,
                         Err(_) => {
@@ -250,8 +331,9 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                             return Ok(OAuthResult { code });
                         }
                         None => {
-                            // Not a /callback request (e.g. /favicon.ico).
-                            // Respond 404 and keep listening.
+                            // Not a /callback request (e.g. /favicon.ico or
+                            // the dummy self-connect we use to wake ourselves
+                            // up during cancel). Respond 404 and keep polling.
                             write_response(
                                 &mut stream,
                                 "404 Not Found",
@@ -261,6 +343,10 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                         }
                     }
                 }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(POLL_INTERVAL);
+                    continue;
+                }
                 Err(e) => {
                     return Err(format!("accept failed: {e}"));
                 }
@@ -268,7 +354,12 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
         }
     })
     .await
-    .map_err(|e| format!("OAuth listener task panicked: {e}"))?
+    .map_err(|e| format!("OAuth listener task panicked: {e}"));
+
+    // Clear our cancel flag on every return path (success, error, panic).
+    clear_cancel_flag(&my_flag);
+
+    result?
 }
 
 #[cfg(test)]

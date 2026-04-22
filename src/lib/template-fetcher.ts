@@ -7,7 +7,7 @@ import { fetch } from "@tauri-apps/plugin-http";
 // ---------------------------------------------------------------------------
 
 const GITHUB_API = "https://api.github.com";
-const REPO = "indigoai-us/hq";
+const REPO = "indigoai-us/hq-core";
 const GITHUB_HEADERS = { Accept: "application/vnd.github+json" };
 
 /** Minimum ms between onProgress callbacks (≈60fps cadence) */
@@ -354,32 +354,21 @@ function parseTar(buf: Uint8Array): TarEntry[] {
  * Map a raw tarball entry name to the path (relative to `targetDir`) where it
  * should be extracted, or return `null` to skip the entry entirely.
  *
- * GitHub tarballs wrap everything in a top-level dir (`indigoai-us-hq-<sha>/`)
- * and we're extracting from a monorepo, so we need TWO levels of stripping:
+ * GitHub tarballs wrap everything in a top-level dir (`indigoai-us-hq-core-<sha>/`).
+ * hq-core is a standalone template repo — the repo root IS the template — so we
+ * strip only the wrapper and keep everything inside:
  *
- *   indigoai-us-hq-abc123/template/core.yaml   →  "core.yaml"          (keep)
- *   indigoai-us-hq-abc123/template/.claude/... →  ".claude/..."        (keep)
- *   indigoai-us-hq-abc123/template/            →  "" (dir marker — caller skips)
- *   indigoai-us-hq-abc123/README.md            →  null (outside template/)
- *   indigoai-us-hq-abc123/packages/create-hq/  →  null (outside template/)
- *   indigoai-us-hq-abc123/                     →  null (top-level dir itself)
- *
- * Returning `null` means "not our concern" — the caller skips the entry,
- * which avoids dumping the entire 500MB monorepo into the user's install dir.
+ *   indigoai-us-hq-core-abc123/core.yaml       →  "core.yaml"          (keep)
+ *   indigoai-us-hq-core-abc123/.claude/...     →  ".claude/..."        (keep)
+ *   indigoai-us-hq-core-abc123/README.md       →  "README.md"          (keep)
+ *   indigoai-us-hq-core-abc123/                →  null (the wrapper itself)
  */
 function mapEntryToTemplatePath(entryName: string): string | null {
   const firstSlash = entryName.indexOf("/");
   if (firstSlash === -1) return null; // top-level dir entry with no inner path
   const afterRoot = entryName.slice(firstSlash + 1);
   if (!afterRoot) return null;
-
-  // The `template/` dir marker itself (either `template` or `template/`).
-  if (afterRoot === "template" || afterRoot === "template/") return "";
-
-  // Anything else must live under `template/` to be kept.
-  if (!afterRoot.startsWith("template/")) return null;
-
-  return afterRoot.slice("template/".length);
+  return afterRoot;
 }
 
 /**
@@ -422,14 +411,14 @@ async function extractTarball(
   // 2. Parse tar entries
   const entries = parseTar(tarBytes);
 
-  // 3. Write each entry via Tauri plugin-fs, filtering to the `template/`
-  //    subtree. Entries outside `template/` (e.g. packages/, docs/, README.md)
-  //    are dropped so we don't shovel the whole monorepo into targetDir.
+  // 3. Write each entry via Tauri plugin-fs. hq-core is a standalone template
+  //    repo, so we strip only the tarball wrapper (indigoai-us-hq-core-<sha>/)
+  //    and extract everything inside it.
   for (const entry of entries) {
     const relative = mapEntryToTemplatePath(entry.name);
-    if (relative === null) continue; // outside template/ — drop
+    if (relative === null) continue; // tarball wrapper — drop
     const trimmed = relative.replace(/\/+$/, "");
-    if (!trimmed || trimmed === ".") continue; // the template/ dir marker itself
+    if (!trimmed || trimmed === ".") continue;
 
     const isDir = entry.typeflag === "5" || entry.name.endsWith("/");
     const destPath = safeJoin(targetDir, trimmed);
@@ -448,7 +437,7 @@ async function extractTarball(
       await mkdir(destPath.slice(0, lastSlash), { recursive: true });
     }
     // Preserve the executable bit from the tar header — shell scripts under
-    // `template/scripts/` are 0o755 and need to stay that way, or later
+    // `scripts/` are 0o755 and need to stay that way, or later
     // `bash -c <path>` invocations fail with exit code 126.
     await writeFile(destPath, entry.data, { mode: entry.mode });
   }
@@ -470,10 +459,9 @@ async function extractTarball(
  *      - If the repo has no stable release yet, fall back to the branch
  *        snapshot endpoint (`/tarball/HEAD`). This is what `gh api
  *        repos/.../tarball/HEAD` does under the hood, and it's how create-hq
- *        kept working during periods where `indigoai-us/hq` had no releases.
+ *        kept working during periods where `indigoai-us/hq-core` had no releases.
  *
- * Extraction filters to the `template/` subtree of the monorepo — see
- * `mapEntryToTemplatePath`.
+ * Extraction strips only the GitHub tarball wrapper — see `mapEntryToTemplatePath`.
  *
  * @param targetDir - Absolute path where the template should be extracted
  * @param tag - Optional: pin to a specific release tag. Defaults to latest non-prerelease.
@@ -520,7 +508,7 @@ export async function fetchAndExtract(
   // 3. Ensure target directory exists
   await mkdir(targetDir, { recursive: true });
 
-  // 4. Extract (filters to `template/` subtree internally)
+  // 4. Extract (strips tarball wrapper internally)
   await extractTarball(compressedBytes, targetDir);
 
   return { version };

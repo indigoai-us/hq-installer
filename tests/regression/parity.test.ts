@@ -39,7 +39,7 @@ import allowedDiffs from "./allowed-diffs.json" with { type: "json" };
 // ---------------------------------------------------------------------------
 
 const GITHUB_API = "https://api.github.com";
-const REPO = "indigoai-us/hq";
+const REPO = "indigoai-us/hq-core";
 const GITHUB_HEADERS = { Accept: "application/vnd.github+json" };
 
 /** Timeout for the beforeAll network + extraction step (ms) */

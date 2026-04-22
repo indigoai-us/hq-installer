@@ -166,7 +166,7 @@ function makeRelease(overrides?: Partial<{
 }>) {
   return {
     tag_name: "v1.2.3",
-    tarball_url: "https://codeload.github.com/indigoai-us/hq/legacy.tar.gz/abc123",
+    tarball_url: "https://codeload.github.com/indigoai-us/hq-core/legacy.tar.gz/abc123",
     prerelease: false,
     draft: false,
     ...overrides,
@@ -192,17 +192,15 @@ beforeEach(() => {
 
 describe("fetchAndExtract", () => {
   // -------------------------------------------------------------------------
-  it("success: extracts template/ subtree into targetDir and returns version", async () => {
-    // GitHub tarballs of the monorepo contain everything, including files
-    // OUTSIDE template/. The fetcher must keep only the template/ subtree.
+  it("success: extracts tarball contents into targetDir and returns version", async () => {
+    // hq-core is a standalone template repo — the repo root IS the template.
+    // The fetcher strips only the GitHub tarball wrapper (indigoai-us-hq-core-<sha>/)
+    // and writes everything inside it.
     const tarGzBytes = buildGitHubTarGz([
-      // Inside template/ — should be extracted, with the `template/` prefix
-      // stripped so they land at the root of targetDir.
-      { name: "template/core.yaml", content: "version: 10.2.0" },
-      { name: "template/.claude/CLAUDE.md", content: "# HQ template" },
-      // Outside template/ — must be dropped.
-      { name: "README.md", content: "monorepo readme" },
-      { name: "packages/create-hq/src/index.ts", content: "export {};" },
+      { name: "core.yaml", content: "version: 10.2.0" },
+      { name: ".claude/CLAUDE.md", content: "# HQ template" },
+      { name: "README.md", content: "hq-core readme" },
+      { name: "starter-projects/personal-site.md", content: "starter" },
     ]);
 
     // First fetch call = releases list
@@ -232,14 +230,12 @@ describe("fetchAndExtract", () => {
     // mkdir called for targetDir
     expect(mockMkdir).toHaveBeenCalledWith("/tmp/target", { recursive: true });
 
-    // template/ entries extracted with the prefix stripped
+    // All entries extracted with the tarball wrapper stripped
     const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
     expect(writePaths).toContain("/tmp/target/core.yaml");
     expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
-
-    // Files outside template/ must NOT be extracted
-    expect(writePaths.every((p) => !p.endsWith("README.md"))).toBe(true);
-    expect(writePaths.every((p) => !p.includes("packages/create-hq"))).toBe(true);
+    expect(writePaths).toContain("/tmp/target/README.md");
+    expect(writePaths).toContain("/tmp/target/starter-projects/personal-site.md");
 
     // Correct content for core.yaml
     const coreCall = mockWriteFile.mock.calls.find(
@@ -252,9 +248,8 @@ describe("fetchAndExtract", () => {
 
   // -------------------------------------------------------------------------
   it("success with pinned tag: uses tags endpoint", async () => {
-    // Put the entry under template/ so it survives the subtree filter.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "template/README.md", content: "# HQ" },
+      { name: "README.md", content: "# HQ" },
     ]);
 
     mockFetch
@@ -273,8 +268,7 @@ describe("fetchAndExtract", () => {
     const firstUrl = mockFetch.mock.calls[0][0] as string;
     expect(firstUrl).toContain("releases/tags/v0.9.0");
 
-    // The README lived under template/ in the tarball, so it should land at
-    // the root of targetDir (not at targetDir/template/README.md).
+    // After stripping the tarball wrapper, README lands at the root of targetDir.
     const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
     expect(writePaths).toContain("/tmp/pinned/README.md");
   });
@@ -349,15 +343,12 @@ describe("fetchAndExtract", () => {
 
   // -------------------------------------------------------------------------
   it("path traversal: entries with '..' segments are silently skipped", async () => {
-    // Build a tar with two kinds of malicious entries:
-    //  (a) A traversal that lives inside template/ — exercises safeJoin after
-    //      the template/ prefix has been stripped.
-    //  (b) A traversal that lives OUTSIDE template/ — dropped by the subtree
-    //      filter before it even reaches safeJoin. Both defenses matter.
+    // Build a tar with malicious entries that try to escape targetDir via "..".
+    // safeJoin must reject them after the wrapper is stripped.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "template/safe.txt", content: "safe" },
-      { name: "template/../../etc/passwd", content: "root:x:0:0" }, // (a)
-      { name: "../../../etc/shadow", content: "denied" },           // (b)
+      { name: "safe.txt", content: "safe" },
+      { name: "../../etc/passwd", content: "root:x:0:0" },
+      { name: "../../../etc/shadow", content: "denied" },
     ]);
 
     mockFetch
@@ -382,7 +373,7 @@ describe("fetchAndExtract", () => {
   // -------------------------------------------------------------------------
   it("mid-stream cancellation: AbortSignal aborted during stream read throws non-retriable error", async () => {
     const tarGzBytes = buildGitHubTarGz([
-      { name: "template/big-file.ts", content: "x".repeat(1000) },
+      { name: "big-file.ts", content: "x".repeat(1000) },
     ]);
 
     const controller = new AbortController();
@@ -440,7 +431,7 @@ describe("fetchAndExtract", () => {
     // empty array — NOT 404) and the fetcher falls back to
     // `api.github.com/repos/{REPO}/tarball/HEAD` which 302s to codeload.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "template/core.yaml", content: "version: HEAD" },
+      { name: "core.yaml", content: "version: HEAD" },
     ]);
 
     mockFetch
@@ -460,27 +451,26 @@ describe("fetchAndExtract", () => {
     // Second fetch must target the branch-snapshot endpoint.
     const secondUrl = mockFetch.mock.calls[1][0] as string;
     expect(secondUrl).toBe(
-      "https://api.github.com/repos/indigoai-us/hq/tarball/HEAD",
+      "https://api.github.com/repos/indigoai-us/hq-core/tarball/HEAD",
     );
 
-    // Template entries still filtered correctly on the fallback path.
+    // Entries land at the root of targetDir on the fallback path too.
     const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
     expect(writePaths).toContain("/tmp/target/core.yaml");
   });
 
   // -------------------------------------------------------------------------
-  it("monorepo filter: drops everything outside template/", async () => {
-    // Isolated test for the subtree filter — no other behavior under test.
-    // This is the regression guard against "curl exit 56 → swap to fetcher
-    // → suddenly the whole monorepo lands in the user's install dir".
+  it("wrapper strip: GitHub tarball wrapper dir is stripped but contents kept", async () => {
+    // Regression guard: the wrapper dir that GitHub prepends to tarballs
+    // (e.g. `indigoai-us-hq-core-abc123/`) must never leak into the user's
+    // install dir. Everything inside the wrapper should land at the root.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "template/keep.txt", content: "kept" },
-      { name: "template/nested/deep.txt", content: "also kept" },
-      { name: "docs/architecture.md", content: "monorepo docs" },
-      { name: "packages/hq-cli/src/cli.ts", content: "cli code" },
-      { name: "apps/web/package.json", content: "{}" },
-      { name: ".github/workflows/ci.yml", content: "ci" },
-      { name: "README.md", content: "monorepo readme" },
+      { name: "core.yaml", content: "kept" },
+      { name: "nested/deep.txt", content: "also kept" },
+      { name: "docs/architecture.md", content: "hq-core docs" },
+      { name: "starter-projects/personal-site.md", content: "starter" },
+      { name: ".claude/CLAUDE.md", content: "claude config" },
+      { name: "README.md", content: "hq-core readme" },
     ]);
 
     mockFetch
@@ -495,24 +485,18 @@ describe("fetchAndExtract", () => {
 
     const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
 
-    // Kept:
-    expect(writePaths).toContain("/tmp/target/keep.txt");
+    // All entries kept, landing at root of targetDir
+    expect(writePaths).toContain("/tmp/target/core.yaml");
     expect(writePaths).toContain("/tmp/target/nested/deep.txt");
+    expect(writePaths).toContain("/tmp/target/docs/architecture.md");
+    expect(writePaths).toContain("/tmp/target/starter-projects/personal-site.md");
+    expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
+    expect(writePaths).toContain("/tmp/target/README.md");
 
-    // Dropped: NONE of these paths should appear as extraction targets.
-    const droppedMarkers = [
-      "docs/",
-      "packages/",
-      "apps/",
-      ".github/",
-      "README.md",
-      "/template/", // the `template/` prefix itself must be stripped
-    ];
-    for (const marker of droppedMarkers) {
-      expect(
-        writePaths.every((p) => !p.includes(marker)),
-        `expected no write path to contain "${marker}", got: ${writePaths.join(", ")}`,
-      ).toBe(true);
-    }
+    // The wrapper dir itself must never appear in an extraction path
+    expect(
+      writePaths.every((p) => !p.includes("indigoai-us-hq-core-")),
+      `expected wrapper dir to be stripped, got: ${writePaths.join(", ")}`,
+    ).toBe(true);
   });
 });

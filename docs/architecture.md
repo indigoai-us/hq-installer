@@ -88,7 +88,7 @@ Templates are bundled Tauri resources (`templates/`). The `loadTemplate()` helpe
 
 ## Template Fetching
 
-`src/lib/template-fetcher.ts` fetches the latest non-prerelease, non-draft GitHub release from `indigoai-us/hq`, downloads the tarball, decompresses with `fflate` (gunzip), and extracts the tar in-memory using a manual parser — all in the browser context. Progress events are throttled to 60fps. A `TemplateFetchError` class carries a `retriable` flag for UI retry logic.
+`src/lib/template-fetcher.ts` fetches the latest non-prerelease, non-draft GitHub release from `indigoai-us/hq-core`, downloads the tarball, decompresses with `fflate` (gunzip), and extracts the tar in-memory using a manual parser — all in the browser context. hq-core is a standalone template repo (the repo root IS the template), so extraction strips only the GitHub tarball wrapper. Progress events are throttled to 60fps. A `TemplateFetchError` class carries a `retriable` flag for UI retry logic.
 
 ## Auto-Update
 
