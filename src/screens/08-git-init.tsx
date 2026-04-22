@@ -47,18 +47,10 @@ const STEP_LABELS = [
   "Verify kernel integrity",
 ];
 
-/** HQ packages installed silently after the visible setup steps finish.
- *  Runs via `npx -y --package=@indigoai-us/hq-cli hq install <name>` with
- *  cwd = HQ root. `hq install` detects the `@scope/name` pattern and runs the
- *  npm-tarball path (no Cognito auth). Intentionally not shown in the UI —
- *  Continue stays disabled via the top-level `running` flag until all four
- *  finish, and failures surface as a subtle error under the step rows. */
-const HQ_PACKAGES = [
-  "@indigoai-us/hq-pack-design-quality",
-  "@indigoai-us/hq-pack-design-styles",
-  "@indigoai-us/hq-pack-gemini",
-  "@indigoai-us/hq-pack-gstack",
-];
+// HQ pack installation moved to the template-fetch screen (07-template.tsx)
+// in v0.1.21 — packs now run visibly alongside the template download with
+// stdout/stderr streamed into the log panel. The silent path here hid the
+// hq-onboarding 404 in v0.1.20.
 
 // ---------------------------------------------------------------------------
 // Component
@@ -76,14 +68,6 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
   ]);
   const [running, setRunning] = useState(false);
   const [failedStep, setFailedStep] = useState<number | null>(null);
-
-  // Silent pack-install state (not rendered as its own step row).
-  // `active` keeps the Continue button disabled while installs run.
-  // `error` surfaces a subtle message if the sequence fails.
-  const [packs, setPacks] = useState<{ active: boolean; error: string | null }>({
-    active: false,
-    error: null,
-  });
 
   // Listeners registered during a run — tracked so we can clean them up.
   const unlistenRefs = useRef<Array<(() => void) | undefined>>([]);
@@ -203,55 +187,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
       }
     }
 
-    // ── Silent: install HQ packages ─────────────────────────────────────────
-    // Behind-the-scenes install of the HQ_PACKAGES list — no step row, but
-    // keeps `running` (and therefore disables Continue) until finished.
-    setPacks({ active: true, error: null });
-    const packsOk = await runPackInstalls();
-    setPacks({ active: false, error: packsOk ? null : "One or more HQ packages failed to install. You can continue — run `hq install <pkg>` later to retry." });
-
     setRunning(false);
-  }
-
-  // Install the HQ_PACKAGES list sequentially via the hq CLI. Runs silently —
-  // no log panel, no step row. Each spawn uses runProcessSilent so stdout and
-  // stderr are dropped on the floor. Returns false on first failure.
-  async function runPackInstalls(): Promise<boolean> {
-    for (const pkg of HQ_PACKAGES) {
-      const ok = await runProcessSilent("npx", [
-        "-y",
-        "--package=@indigoai-us/hq-cli",
-        "hq",
-        "install",
-        pkg,
-      ]);
-      if (!ok) return false;
-    }
-    return true;
-  }
-
-  // Spawn a process in `installPath` without wiring log listeners.
-  // Used by the silent pack-install phase.
-  async function runProcessSilent(cmd: string, cmdArgs: string[]): Promise<boolean> {
-    let handle: string;
-    try {
-      handle = await invoke<string>("spawn_process", {
-        args: { cmd, args: cmdArgs, cwd: installPath },
-      });
-    } catch {
-      return false;
-    }
-    return new Promise<boolean>((resolve) => {
-      listen(
-        `process://${handle}/exit`,
-        (event: { payload: unknown }) => {
-          const payload = event.payload as { success: boolean };
-          resolve(payload.success === true);
-        },
-      ).then((exitUnlisten) => {
-        unlistenRefs.current.push(exitUnlisten as () => void);
-      });
-    });
   }
 
   // Spawn a shell script and wait for its exit event.
@@ -264,8 +200,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
 
   // Generic process runner — spawns cmd with args in `installPath`, streams
   // stdout/stderr into step `stepIdx`'s log, and resolves true on exit 0.
-  // Patches step state to error on failure. The pack-install step calls this
-  // multiple times (once per package) without patching done between runs.
+  // Patches step state to error on failure.
   async function runProcess(
     stepIdx: number,
     cmd: string,
@@ -321,9 +256,6 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
         (event: { payload: unknown }) => {
           const payload = event.payload as { code: number | null; success: boolean };
           if (payload.success) {
-            // NOTE: caller is responsible for patching status:done — this
-            // function may be invoked multiple times per step (pack-install
-            // loop), so flipping done mid-sequence would flicker the UI.
             resolve(true);
           } else {
             const msg = `Process exited with code ${payload.code ?? -1}`;
@@ -412,10 +344,6 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
           />
         ))}
       </div>
-
-      {packs.error && (
-        <p data-packs-error className="text-xs text-red-400">{packs.error}</p>
-      )}
 
       {/* Action buttons */}
       <div className="flex gap-3">

@@ -1,14 +1,29 @@
 // 07-template.tsx — US-016
-// Template fetch screen — downloads and extracts the HQ template tarball.
+// Template fetch + HQ pack install.
 //
-// Transport: `fetchAndExtract()` from `@/lib/template-fetcher`. That helper
-// resolves the latest non-prerelease release on `indigoai-us/hq-core` via the
-// GitHub Release API, streams the tarball through `@tauri-apps/plugin-http`
-// (which bypasses CORS via the Rust reqwest client), gunzips + parses tar
-// in-memory, and writes each entry with `@tauri-apps/plugin-fs`. No shell
-// curl; no event bus; progress flows in-process via an onProgress callback.
+// Phase 1 — Template:
+//   `fetchAndExtract()` from `@/lib/template-fetcher` resolves the latest
+//   non-prerelease release on `indigoai-us/hq-core` via the GitHub Release
+//   API, streams the tarball through `@tauri-apps/plugin-http` (reqwest
+//   bypasses CORS), gunzips + parses tar in-memory, and writes each entry
+//   with `@tauri-apps/plugin-fs`.
+//
+// Phase 2 — HQ packs:
+//   After the template lands we install the 4 host-side HQ packs
+//   (`HQ_PACKAGES`) via `npx --package=@indigoai-us/hq-cli hq install <pkg>`,
+//   running one pack at a time with `cwd = installPath`. Stdout/stderr is
+//   streamed into the visible log panel AND flushed to
+//   `{installPath}/.hq-install-log/packs.log` on exit so post-mortem is
+//   possible. Previously this ran silently in the git-init step — pack
+//   failures (notably the hq-onboarding 404 that gated install in v0.1.20)
+//   were invisible to the user. Pack errors are non-fatal: Continue stays
+//   enabled with a warning so the user can retry individual packs with
+//   `hq install <pkg>` later.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   fetchAndExtract,
   TemplateFetchError,
@@ -16,10 +31,48 @@ import {
 } from "@/lib/template-fetcher";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Pinned to the first hq-cli build that ships with a published hq-onboarding
+ *  dep (5.5.1 shipped with `@indigoai-us/hq-onboarding@0.1.0` which was never
+ *  published, breaking the npx resolver). Bump this deliberately — a floating
+ *  `latest` hid the 404 once already. */
+const HQ_CLI_PIN = "@indigoai-us/hq-cli@5.5.2";
+
+const HQ_PACKAGES = [
+  "@indigoai-us/hq-pack-design-quality",
+  "@indigoai-us/hq-pack-design-styles",
+  "@indigoai-us/hq-pack-gemini",
+  "@indigoai-us/hq-pack-gstack",
+] as const;
+
+const PACK_LOG_DIR = ".hq-install-log";
+const PACK_LOG_FILE = "packs.log";
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type FetchStatus = "idle" | "fetching" | "done" | "error";
+type Phase =
+  | "idle"
+  | "fetching"
+  | "installing-packs"
+  | "done"
+  | "done-with-warnings"
+  | "error";
+
+type PackStatus = "pending" | "running" | "done" | "error";
+
+interface PackState {
+  name: string;
+  status: PackStatus;
+  errorMsg: string | null;
+}
+
+function initialPacks(): PackState[] {
+  return HQ_PACKAGES.map((name) => ({ name, status: "pending", errorMsg: null }));
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -35,96 +88,221 @@ export interface TemplateFetchProps {
 // ---------------------------------------------------------------------------
 
 export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
-  const [status, setStatus] = useState<FetchStatus>("idle");
+  const [phase, setPhase] = useState<Phase>("idle");
   const [downloaded, setDownloaded] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
+  const [packs, setPacks] = useState<PackState[]>(initialPacks);
 
   // Prevent double-starts in strict mode, and allow in-flight cancellation.
-  const fetchingRef = useRef(false);
+  const runningRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Listeners registered during the pack-install phase — tracked so we can
+  // clean them up on unmount or retry.
+  const unlistenRefs = useRef<Array<() => void>>([]);
+  // Accumulated log (template + all packs) — flushed to disk on completion.
+  const diskLogRef = useRef<string[]>([]);
 
-  const startFetch = useCallback(async () => {
-    if (fetchingRef.current) return;
-    fetchingRef.current = true;
+  // -------------------------------------------------------------------------
+  // Log helpers
+  // -------------------------------------------------------------------------
 
-    // Abort any stale in-flight fetch (unlikely but cheap insurance).
+  function appendLog(line: string) {
+    setLogLines((prev) => [...prev, line]);
+    diskLogRef.current.push(line);
+  }
+
+  async function flushDiskLog() {
+    // Best-effort diagnostic write — don't surface failures in the UI.
+    try {
+      const dir = `${targetDir}/${PACK_LOG_DIR}`;
+      await mkdir(dir, { recursive: true });
+      const body =
+        `# HQ install log — ${new Date().toISOString()}\n` +
+        `# target: ${targetDir}\n\n` +
+        diskLogRef.current.join("\n") + "\n";
+      await writeTextFile(`${dir}/${PACK_LOG_FILE}`, body);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 2: install HQ packs
+  // -------------------------------------------------------------------------
+
+  function patchPack(idx: number, patch: Partial<PackState>) {
+    setPacks((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
+  }
+
+  /** Spawn `npx ... hq install <pkg>` with cwd = targetDir and stream
+   *  stdout/stderr into the visible log. Resolves true on exit 0. */
+  async function installOnePack(idx: number, pkg: string): Promise<boolean> {
+    patchPack(idx, { status: "running" });
+    appendLog(`→ Installing ${pkg}`);
+
+    let handle: string;
+    try {
+      handle = await invoke<string>("spawn_process", {
+        args: {
+          cmd: "npx",
+          args: ["-y", `--package=${HQ_CLI_PIN}`, "hq", "install", pkg],
+          cwd: targetDir,
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchPack(idx, { status: "error", errorMsg: msg });
+      appendLog(`[spawn error] ${msg}`);
+      return false;
+    }
+
+    const stdoutUnlisten = await listen(
+      `process://${handle}/stdout`,
+      (event: { payload: unknown }) => {
+        const payload = event.payload as { line: string };
+        appendLog(payload.line ?? "");
+      },
+    );
+    const stderrUnlisten = await listen(
+      `process://${handle}/stderr`,
+      (event: { payload: unknown }) => {
+        const payload = event.payload as { line: string };
+        appendLog(`[stderr] ${payload.line ?? ""}`);
+      },
+    );
+
+    return new Promise<boolean>((resolve) => {
+      listen(
+        `process://${handle}/exit`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as { code: number | null; success: boolean };
+          if (payload.success) {
+            patchPack(idx, { status: "done" });
+            resolve(true);
+          } else {
+            const msg = `exit ${payload.code ?? -1}`;
+            patchPack(idx, { status: "error", errorMsg: msg });
+            appendLog(`✗ ${pkg} failed (${msg})`);
+            resolve(false);
+          }
+          (stdoutUnlisten as () => void)();
+          (stderrUnlisten as () => void)();
+        },
+      ).then((exitUnlisten) => {
+        unlistenRefs.current.push(
+          stdoutUnlisten as () => void,
+          stderrUnlisten as () => void,
+          exitUnlisten as () => void,
+        );
+      });
+    });
+  }
+
+  async function installPacks(): Promise<"done" | "done-with-warnings"> {
+    let anyFailed = false;
+    for (let i = 0; i < HQ_PACKAGES.length; i++) {
+      const ok = await installOnePack(i, HQ_PACKAGES[i]);
+      if (!ok) anyFailed = true;
+    }
+    return anyFailed ? "done-with-warnings" : "done";
+  }
+
+  // -------------------------------------------------------------------------
+  // Orchestration
+  // -------------------------------------------------------------------------
+
+  const startRun = useCallback(async () => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setStatus("fetching");
+    setPhase("fetching");
     setDownloaded(0);
     setTotal(null);
     setErrorMsg(null);
     setLogLines(["Resolving latest release…"]);
+    setPacks(initialPacks());
+    diskLogRef.current = ["Resolving latest release…"];
 
     const handleProgress = (event: TemplateProgressEvent) => {
       setDownloaded(event.bytes);
       if (event.total > 0) setTotal(event.total);
     };
 
+    // Phase 1 — template
     try {
       const { version } = await fetchAndExtract(
         targetDir,
-        undefined, // latest non-prerelease
+        undefined,
         handleProgress,
         controller.signal,
       );
-      setStatus("done");
-      setLogLines((prev) => [
-        ...prev,
-        `Downloaded release ${version}.`,
-        "Template extracted successfully.",
-      ]);
+      appendLog(`Downloaded release ${version}.`);
+      appendLog("Template extracted successfully.");
     } catch (err) {
-      // Swallow cancellation (intentional unmount / retry) rather than
-      // surfacing it as a user-facing error.
-      if (controller.signal.aborted) {
-        return;
-      }
+      if (controller.signal.aborted) return;
       const msg =
         err instanceof TemplateFetchError
           ? err.message
           : err instanceof Error
-          ? err.message
-          : String(err);
-      setStatus("error");
+            ? err.message
+            : String(err);
+      setPhase("error");
       setErrorMsg(msg);
-      setLogLines((prev) => [...prev, `Error: ${msg}`]);
-    } finally {
-      fetchingRef.current = false;
+      appendLog(`Error: ${msg}`);
+      await flushDiskLog();
+      runningRef.current = false;
+      return;
     }
+
+    // Phase 2 — packs
+    setPhase("installing-packs");
+    const packsOutcome = await installPacks();
+    setPhase(packsOutcome);
+    await flushDiskLog();
+    runningRef.current = false;
+    // flushDiskLog and installPacks close over state setters and refs that
+    // don't change across renders — safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetDir]);
 
   useEffect(() => {
-    // Auto-start on mount.
-    startFetch();
-
+    startRun();
     return () => {
-      // Cancel in-flight fetch on unmount so we don't leak bytes or writes.
       abortRef.current?.abort();
-      fetchingRef.current = false;
+      for (const u of unlistenRefs.current) u?.();
+      unlistenRefs.current = [];
+      runningRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleRetry() {
-    fetchingRef.current = false;
-    startFetch();
+    runningRef.current = false;
+    for (const u of unlistenRefs.current) u?.();
+    unlistenRefs.current = [];
+    startRun();
   }
 
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
   // Derived
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
 
   const progressPct =
     total !== null && total > 0 ? Math.min(100, (downloaded / total) * 100) : null;
 
-  // ---------------------------------------------------------------------------
+  const templateDone = phase !== "idle" && phase !== "fetching" && phase !== "error";
+  const finalDone = phase === "done" || phase === "done-with-warnings";
+  const failedPacks = packs.filter((p) => p.status === "error");
+
+  // -------------------------------------------------------------------------
   // Render
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
 
   return (
     <div className="flex flex-col gap-6 max-w-lg">
@@ -136,28 +314,26 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         </p>
       </div>
 
-      {/* Progress area */}
+      {/* Template phase */}
       <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-4">
-        {/* Status label */}
         <div className="flex items-center gap-2">
-          {status === "fetching" && (
-            <span className="text-sm text-zinc-400 hq-text-shimmer">Downloading…</span>
+          {phase === "fetching" && (
+            <span className="text-sm text-zinc-400 hq-text-shimmer">Downloading template…</span>
           )}
-          {status === "done" && (
-            <span className="text-sm text-zinc-200">Download complete</span>
+          {templateDone && (
+            <span className="text-sm text-zinc-200">Template ready</span>
           )}
-          {status === "error" && (
+          {phase === "error" && (
             <span className="text-sm text-red-400">Download failed</span>
           )}
-          {status === "idle" && (
+          {phase === "idle" && (
             <span className="text-sm text-zinc-500 hq-text-shimmer">Starting…</span>
           )}
         </div>
 
-        {/* Progress bar */}
         <div
           role="progressbar"
-          aria-valuenow={progressPct ?? (status === "fetching" ? 0 : undefined)}
+          aria-valuenow={progressPct ?? (phase === "fetching" ? 0 : undefined)}
           aria-valuemin={0}
           aria-valuemax={100}
           className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden"
@@ -168,17 +344,16 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
               width:
                 progressPct !== null
                   ? `${progressPct}%`
-                  : status === "fetching"
-                  ? "60%"  // indeterminate — show partial bar
-                  : status === "done"
-                  ? "100%"
-                  : "0%",
+                  : phase === "fetching"
+                    ? "60%"
+                    : templateDone
+                      ? "100%"
+                      : "0%",
             }}
           />
         </div>
 
-        {/* Byte counter */}
-        {(status === "fetching" || status === "done") && (
+        {(phase === "fetching" || templateDone) && (
           <p className="text-xs text-zinc-500">
             {formatBytes(downloaded)}
             {total !== null ? ` / ${formatBytes(total)}` : ""}
@@ -186,9 +361,58 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         )}
       </div>
 
+      {/* Pack install phase */}
+      {(phase === "installing-packs" || finalDone) && (
+        <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+          <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
+            HQ packages
+          </p>
+          {packs.map((pack) => (
+            <div
+              key={pack.name}
+              className="flex items-center justify-between gap-3"
+              data-pack={pack.name}
+              data-pack-status={pack.status}
+            >
+              <span className="text-sm font-mono text-zinc-300 truncate">
+                {pack.name}
+              </span>
+              <span className="text-xs shrink-0">
+                {pack.status === "pending" && (
+                  <span className="text-zinc-600">Waiting</span>
+                )}
+                {pack.status === "running" && (
+                  <span className="text-zinc-400 hq-text-shimmer">Installing…</span>
+                )}
+                {pack.status === "done" && (
+                  <span className="text-green-400">Done</span>
+                )}
+                {pack.status === "error" && (
+                  <span className="text-amber-400">Skipped</span>
+                )}
+              </span>
+            </div>
+          ))}
+          {phase === "done-with-warnings" && failedPacks.length > 0 && (
+            <p className="text-xs text-amber-400 mt-1">
+              {failedPacks.length} pack
+              {failedPacks.length === 1 ? "" : "s"} failed — you can continue and
+              retry later with{" "}
+              <span className="font-mono">hq install &lt;pkg&gt;</span>. Log:{" "}
+              <span className="font-mono break-all">
+                {PACK_LOG_DIR}/{PACK_LOG_FILE}
+              </span>
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Log panel */}
       {logLines.length > 0 && (
-        <div className="text-xs font-mono text-zinc-500 bg-black/20 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
+        <div
+          data-log-panel
+          className="text-xs font-mono text-zinc-500 bg-black/20 rounded-lg px-3 py-2 max-h-40 overflow-y-auto"
+        >
           {logLines.map((line, i) => (
             <div key={i}>{line}</div>
           ))}
@@ -196,13 +420,13 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       )}
 
       {/* Error message */}
-      {status === "error" && errorMsg && (
+      {phase === "error" && errorMsg && (
         <p className="text-xs text-red-400">{errorMsg}</p>
       )}
 
       {/* Action buttons */}
       <div className="flex gap-3">
-        {status === "done" && (
+        {finalDone && (
           <button
             type="button"
             onClick={onNext}
@@ -212,7 +436,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
           </button>
         )}
 
-        {status === "error" && (
+        {phase === "error" && (
           <>
             <button
               type="button"
@@ -224,7 +448,6 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
             <button
               type="button"
               onClick={() => {
-                // Scroll log panel into view / expand it
                 const log = document.querySelector("[data-log-panel]");
                 log?.scrollIntoView({ behavior: "smooth" });
               }}
