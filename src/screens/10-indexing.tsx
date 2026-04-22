@@ -81,6 +81,9 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   // Listeners registered during a run — tracked so we can clean them up.
   const unlistenRefs = useRef<Array<(() => void) | undefined>>([]);
 
+  // Handle of the currently-spawned child, so the Skip button can cancel it.
+  const activeHandleRef = useRef<string | null>(null);
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -103,6 +106,26 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
     setSteps((prev) =>
       prev.map((s, i) => (i === idx ? { ...s, expanded: !s.expanded } : s))
     );
+  }
+
+  // Skip the currently-running step. Used for the embed step on slow / GPU-less
+  // machines (e.g. VMs) where CPU inference can take 10+ minutes. Safe by
+  // design — semantic search falls back to BM25 via `qmd search` until the
+  // user runs `qmd embed` later from the CLI.
+  async function skipRunning() {
+    const h = activeHandleRef.current;
+    if (h) {
+      try {
+        await invoke("cancel_process", { handle: h });
+      } catch {
+        // Best-effort: if cancel fails, still advance the UI.
+      }
+      activeHandleRef.current = null;
+    }
+    for (const u of unlistenRefs.current) u?.();
+    unlistenRefs.current = [];
+    setRunning(false);
+    onNext?.();
   }
 
   // ---------------------------------------------------------------------------
@@ -133,6 +156,9 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
       return false;
     }
 
+    // Track the live handle so a mid-run Skip can SIGTERM the child.
+    activeHandleRef.current = handle;
+
     // Listen for stdout lines.
     const stdoutUnlisten = await listen(
       `process://${handle}/stdout`,
@@ -162,6 +188,12 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         `process://${handle}/exit`,
         (event: { payload: unknown }) => {
           const payload = event.payload as { code: number | null; success: boolean };
+          // Clear active handle first so a late Skip click doesn't signal a
+          // dead pid (cancel_process is a no-op on unregistered handles, but
+          // this keeps the UI state truthful).
+          if (activeHandleRef.current === handle) {
+            activeHandleRef.current = null;
+          }
           if (payload.success) {
             patchStep(stepIdx, { status: "done" });
             resolve(true);
@@ -305,8 +337,32 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         ))}
       </div>
 
+      {/* Embed-step warning — shown while step 1 is running. CPU-only
+          inference (e.g. VMs without GPU passthrough) can take 10+ minutes;
+          without this hint the screen looks hung. */}
+      {steps[1].status === "running" && (
+        <p className="text-xs text-zinc-500 leading-relaxed -mt-1">
+          First-run embeddings can take several minutes — longer on VMs or
+          machines without a GPU. It's safe to skip: semantic search falls back
+          to keyword search, and you can run <code className="px-1 py-0.5 rounded bg-white/10 text-zinc-300">qmd embed</code> later from the terminal.
+        </p>
+      )}
+
       {/* Action buttons */}
       <div className="flex gap-3">
+        {/* Skip during an active run — only meaningful for the embed step
+            (step 1); skipping the index step (step 0) would leave HQ
+            unsearchable. */}
+        {running && steps[1].status === "running" && (
+          <button
+            type="button"
+            onClick={skipRunning}
+            className="px-6 py-2.5 rounded-full text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors"
+          >
+            Skip embeddings
+          </button>
+        )}
+
         {failedStep !== null && !running && (
           <>
             <button
