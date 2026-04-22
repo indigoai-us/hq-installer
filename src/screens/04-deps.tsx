@@ -53,6 +53,13 @@ const DEPS: DepDef[] = [
     useXcodeCheck: false,
   },
   {
+    id: "yq",
+    label: "yq",
+    installCmd: "install_yq",
+    installUrl: "https://github.com/mikefarah/yq",
+    useXcodeCheck: false,
+  },
+  {
     id: "gh",
     label: "gh",
     installCmd: "install_gh",
