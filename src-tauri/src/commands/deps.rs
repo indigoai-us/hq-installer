@@ -520,6 +520,31 @@ pub async fn install_gh(app: AppHandle) -> Result<String, String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// install_yq
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Install yq via `brew install yq`.
+///
+/// Required by the Workspace integrity scripts (compute-checksums.sh,
+/// core-integrity.sh) that read/write scripts/core.yaml.
+#[tauri::command]
+pub async fn install_yq(app: AppHandle) -> Result<String, String> {
+    let brew = match which::which_in(
+        "brew",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            let msg = "Homebrew is not installed. Install Homebrew first.";
+            emit_preflight_line(&app, msg);
+            return Err(msg.to_string());
+        }
+    };
+    run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "yq"]).await
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // install_claude_code
 // ─────────────────────────────────────────────────────────────────────────────
 

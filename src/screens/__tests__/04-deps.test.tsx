@@ -166,13 +166,13 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
-    it("checks all 7 tools on mount (no extras, no fewer)", async () => {
+    it("checks all 8 tools on mount (no extras, no fewer)", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
-        // 6 check_dep calls + 1 xcode_clt_status = 7 total dep checks
+        // 7 check_dep calls + 1 xcode_clt_status = 8 total dep checks
         const checkDepCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "check_dep");
         const xcodeCall = mockInvoke.mock.calls.some(([cmd]) => cmd === "xcode_clt_status");
-        expect(checkDepCalls).toHaveLength(6);
+        expect(checkDepCalls).toHaveLength(7);
         expect(xcodeCall).toBe(true);
       });
     });
@@ -630,13 +630,13 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
   // -------------------------------------------------------------------------
   describe("dep state matrix — React test coverage", () => {
-    it("all installed: shows 7 installed statuses, no Install buttons", async () => {
+    it("all installed: shows 8 installed statuses, no Install buttons", async () => {
       mockInvoke.mockImplementation(buildInvokeMock());
       render(<DepsInstall onNext={vi.fn()} />);
 
       await waitFor(() => {
         const checkDepCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "check_dep");
-        expect(checkDepCalls).toHaveLength(6);
+        expect(checkDepCalls).toHaveLength(7);
       });
 
       const installBtns = screen.queryAllByRole("button", { name: /^install/i });
