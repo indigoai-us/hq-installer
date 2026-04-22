@@ -11,15 +11,15 @@ import { ProgressIndicator } from "../ProgressIndicator.js";
 
 // Step labels are defined here as the source of truth for the test assertions.
 // The implementation must render labels that match these strings.
+// Updated after removal of old Step 3 (Company) and old Step 8 (Sync) —
+// 10 steps total now.
 const STEP_LABELS = [
   "Welcome",
   "Sign In",
-  "Company",
   "Prerequisites",
   "Install",
   "Templates",
   "Workspace",
-  "Sync",
   "Personalize",
   "Verify",
   "HQ Sync",
@@ -29,10 +29,10 @@ const STEP_LABELS = [
 describe("ProgressIndicator", () => {
   // -------------------------------------------------------------------------
   describe("step count", () => {
-    it("renders exactly 12 step entries", () => {
+    it("renders exactly 10 step entries", () => {
       render(<ProgressIndicator currentStep={1} />);
-      // Each step should have a visible step number (1..12)
-      for (let i = 1; i <= 12; i++) {
+      // Each step should have a visible step number (1..10)
+      for (let i = 1; i <= 10; i++) {
         expect(screen.getByText(String(i))).toBeTruthy();
       }
     });
@@ -64,10 +64,10 @@ describe("ProgressIndicator", () => {
       expect(activeEl.textContent).toContain(STEP_LABELS[4]); // 0-indexed
     });
 
-    it("highlights step 12 when currentStep=12", () => {
-      render(<ProgressIndicator currentStep={12} />);
+    it("highlights step 10 when currentStep=10", () => {
+      render(<ProgressIndicator currentStep={10} />);
       const activeEl = screen.getByRole("listitem", { current: "step" });
-      expect(activeEl.textContent).toContain(STEP_LABELS[11]);
+      expect(activeEl.textContent).toContain(STEP_LABELS[9]);
     });
 
     it("marks exactly one step as current", () => {

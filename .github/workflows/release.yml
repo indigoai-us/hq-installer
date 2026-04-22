@@ -43,10 +43,10 @@ jobs:
       # skips the copy and the .app ships without starter-projects, crashing on
       # first wizard use with "No such file or directory" at
       # hq-installer.app/Contents/Resources/templates/starter-projects/<slug>.
-      - name: Checkout hq (starter-project templates source)
+      - name: Checkout hq-core (starter-project templates source)
         uses: actions/checkout@v4
         with:
-          repository: indigoai-us/hq
+          repository: indigoai-us/hq-core
           path: hq-source
 
       - uses: pnpm/action-setup@v4

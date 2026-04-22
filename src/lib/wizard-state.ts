@@ -16,17 +16,20 @@ export interface WizardState {
   telemetryEnabled: boolean;
   team: TeamMetadata | null;
   /** True when the user opted into a personal HQ (no company connection).
-   *  When set, screens like 08b-sync self-skip because there's no bucket to
-   *  pull from, and 11-summary shows "Personal HQ" instead of em-dashes. */
+   *  When set, the Summary screen shows "Personal HQ" instead of team info,
+   *  and the HQ Sync menu bar install step is skipped (no bucket to sync). */
   isPersonal: boolean;
   installPath: string | null;
   gitName: string | null;
   gitEmail: string | null;
-  /** True once Screen 09 (Personalize) has successfully written profile.md,
-   *  voice-style.md, the starter project, and any user-supplied companies.
-   *  Gates the global Next button so users can't bypass the screen and end
-   *  up with a scaffold that's missing profile + companies. */
+  /** True once Personalize has successfully written profile.md, voice-style.md,
+   *  the starter project, and any user-supplied companies. Gates the global
+   *  Next button so users can't bypass the screen. */
   personalized: boolean;
+  /** Count of HQ-Cloud companies detected at Personalize time. Drives the
+   *  conditional skip of the HQ Sync menu bar install: if 0, the app has
+   *  nothing to sync, so there's no value in installing it right now. */
+  connectedCompanyCount: number;
 }
 
 const state: WizardState = {
@@ -37,6 +40,7 @@ const state: WizardState = {
   gitName: null,
   gitEmail: null,
   personalized: false,
+  connectedCompanyCount: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -97,10 +101,18 @@ export function setGitIdentity(name: string, email: string): void {
   notify();
 }
 
-/** Mark Screen 09 (Personalize) as successfully completed. Read by
- *  getStepValidity(9, …) to unlock the global Next button. */
+/** Mark Screen 07 (Personalize) as successfully completed. Read by
+ *  getStepValidity(7, …) to unlock the global Next button. */
 export function setPersonalized(value: boolean): void {
   state.personalized = value;
+  notify();
+}
+
+/** Record how many HQ-Cloud companies the user has connected. Set by
+ *  Personalize when it resolves the cloud-companies list; read by App.tsx
+ *  to decide whether to auto-skip the HQ Sync menu bar install step. */
+export function setConnectedCompanyCount(count: number): void {
+  state.connectedCompanyCount = count;
   notify();
 }
 
@@ -113,5 +125,6 @@ export function clearWizardState(): void {
   state.gitName = null;
   state.gitEmail = null;
   state.personalized = false;
+  state.connectedCompanyCount = 0;
   notify();
 }

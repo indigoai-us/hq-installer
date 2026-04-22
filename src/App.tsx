@@ -9,17 +9,22 @@ import {
 } from "@/lib/wizard-state";
 import { Welcome } from "@/screens/01-welcome";
 import { CognitoAuth } from "@/screens/02-cognito-auth";
-import { TeamSetup } from "@/screens/03-team";
 import { DepsInstall } from "@/screens/04-deps";
-// 05-github-walkthrough removed from default flow (US-006)
+// 05-github-walkthrough removed from default flow (US-006).
+// Company-detect (old step 3) and S3-sync (old step 8) removed — the
+// HQ-Sync menu bar app handles continuous S3 reconciliation after install.
 import { DirectoryPicker } from "@/screens/06-directory";
 import { TemplateFetch } from "@/screens/07-template";
 import { GitInit } from "@/screens/08-git-init";
-import { SyncScreen } from "@/screens/08b-sync";
 import { Personalize } from "@/screens/09-personalize";
 import { QmdIndexing } from "@/screens/10-indexing";
 import { InstallMenubarStep } from "@/components/InstallMenubarStep";
 import { Summary } from "@/screens/11-summary";
+
+// Step 9 in the renumbered flow: the HQ Sync menu bar installer. Extracted
+// as a constant so the conditional-skip effect and the switch case don't
+// drift out of sync if a future step is reordered.
+const HQ_SYNC_STEP = 9;
 
 function App() {
   const [router] = useState(() => createWizardRouter());
@@ -80,10 +85,26 @@ function App() {
   const wizardState = getWizardState();
   const { currentStep } = router;
 
-  // Screen flow (US-006 + US-013):
-  //   1 Welcome → 2 Cognito Auth → 3 Company Detect → 4 Deps →
-  //   5 Directory → 6 Template → 7 Git Init → 8 Sync →
-  //   9 Personalize → 10 Indexing → 11 HQ Sync → 12 Summary
+  // Conditional skip: the HQ Sync menu bar app is only useful when the user
+  // has at least one HQ-Cloud company to sync. If Personalize detected none,
+  // there's nothing for the menu bar app to reconcile — auto-advance past it
+  // straight to Summary. Works both for forward walks (Next) and sidebar
+  // jumps because the effect keys on `currentStep`.
+  useEffect(() => {
+    if (
+      currentStep === HQ_SYNC_STEP &&
+      wizardState.connectedCompanyCount === 0
+    ) {
+      router.next();
+      setMaxReachedStep((m) => Math.max(m, router.currentStep));
+      forceRender((n) => n + 1);
+    }
+  }, [currentStep, wizardState.connectedCompanyCount, router]);
+
+  // Screen flow (post-removal):
+  //   1 Welcome → 2 Cognito Auth → 3 Prerequisites → 4 Install (dir) →
+  //   5 Templates → 6 Workspace (git init) → 7 Personalize →
+  //   8 Verify (indexing) → 9 HQ Sync (menubar) → 10 Done
   function renderStep() {
     switch (currentStep) {
       case 1:
@@ -100,54 +121,40 @@ function App() {
       case 2:
         return <CognitoAuth onNext={handleNext} />;
       case 3:
-        return (
-          <TeamSetup
-            onNext={handleNext}
-            onSignOutAndRetry={() => {
-              router.goTo(2);
-              // Reset high-water mark — auth sign-out invalidates progress past auth.
-              setMaxReachedStep(2);
-              forceRender((n) => n + 1);
-            }}
-          />
-        );
-      case 4:
         return <DepsInstall onNext={handleNext} />;
-      case 5:
+      case 4:
         return <DirectoryPicker onNext={handleNext} />;
-      case 6:
+      case 5:
         return (
           <TemplateFetch
             targetDir={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
-      case 7:
+      case 6:
         return (
           <GitInit
             installPath={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
-      case 8:
-        return <SyncScreen onNext={handleNext} />;
-      case 9:
+      case 7:
         return (
           <Personalize
             installPath={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
-      case 10:
+      case 8:
         return (
           <QmdIndexing
             installPath={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
-      case 11:
+      case 9:
         return <InstallMenubarStep onNext={handleNext} />;
-      case 12:
+      case 10:
         return <Summary wizardState={wizardState} onLaunch={handleLaunch} />;
       default:
         return null;

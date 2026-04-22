@@ -4,14 +4,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Personalize } from "../09-personalize.js";
 
 // ---------------------------------------------------------------------------
-// Personalize screen tests (US-017, redesigned 2026-04-18)
+// Personalize screen tests (US-017, redesigned 2026-04-18, S3 sync removed
+// 2026-04-22)
 //
 // Screen: single-step form
 //   - Full-name input prefilled from the Google idToken (via getCurrentUser)
-//   - Read-only list of HQ-Cloud companies the user is a member of
+//   - Read-only list of HQ-Cloud companies the user is a member of. On mount
+//     the screen persists `connectedCompanyCount` (for App.tsx HQ Sync skip),
+//     seeds `team` from the first company, or flips `isPersonal` if empty.
 //   - Optional manual companies list (free-text rows the user adds)
-//   - Single "Continue" button: triggers cloud-company sync, then calls
-//     personalize() with merged company seeds, then onNext().
+//   - Single "Continue" button: calls personalize() with merged company seeds,
+//     then onNext(). S3 reconciliation is no longer the installer's job — the
+//     HQ-Sync menu bar app (Step 9) owns continuous sync post-install.
 //
 // The earlier 3-step form (Identity / StarterProject / Customization) was
 // replaced; tests here cover the new surface.
@@ -64,19 +68,6 @@ vi.mock("../../lib/vault-handoff.js", () => ({
   listUserCompanies: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("../../lib/s3-sync.js", () => ({
-  vendStsCredentials: vi.fn().mockResolvedValue({
-    accessKeyId: "AKIA",
-    secretAccessKey: "secret",
-    sessionToken: "session",
-    bucketName: "hq-vault-acme",
-    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-  }),
-  syncFromS3: vi
-    .fn()
-    .mockResolvedValue({ fileCount: 0, totalBytes: 0 }),
-}));
-
 vi.mock("../../lib/wizard-state.js", () => ({
   getWizardState: vi.fn(() => ({
     telemetryEnabled: true,
@@ -86,23 +77,33 @@ vi.mock("../../lib/wizard-state.js", () => ({
     gitName: null,
     gitEmail: null,
     personalized: false,
+    connectedCompanyCount: 0,
   })),
   setPersonalized: vi.fn(),
+  setTeam: vi.fn(),
+  setIsPersonal: vi.fn(),
+  setConnectedCompanyCount: vi.fn(),
 }));
 
 import { personalize } from "../../lib/personalize-writer.js";
 import { getCurrentUser } from "../../lib/cognito.js";
 import { listUserCompanies } from "../../lib/vault-handoff.js";
-import { syncFromS3, vendStsCredentials } from "../../lib/s3-sync.js";
-import { getWizardState, setPersonalized } from "../../lib/wizard-state.js";
+import {
+  getWizardState,
+  setPersonalized,
+  setTeam,
+  setIsPersonal,
+  setConnectedCompanyCount,
+} from "../../lib/wizard-state.js";
 
 const mockPersonalize = vi.mocked(personalize);
 const mockGetCurrentUser = vi.mocked(getCurrentUser);
 const mockListUserCompanies = vi.mocked(listUserCompanies);
-const mockVendSts = vi.mocked(vendStsCredentials);
-const mockSyncFromS3 = vi.mocked(syncFromS3);
 const mockGetWizardState = vi.mocked(getWizardState);
 const mockSetPersonalized = vi.mocked(setPersonalized);
+const mockSetTeam = vi.mocked(setTeam);
+const mockSetIsPersonal = vi.mocked(setIsPersonal);
+const mockSetConnectedCompanyCount = vi.mocked(setConnectedCompanyCount);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -144,14 +145,6 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
       },
     });
     mockListUserCompanies.mockResolvedValue([]);
-    mockVendSts.mockResolvedValue({
-      accessKeyId: "AKIA",
-      secretAccessKey: "secret",
-      sessionToken: "session",
-      bucketName: "hq-vault-acme",
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-    });
-    mockSyncFromS3.mockResolvedValue({ fileCount: 0, totalBytes: 0 });
     mockGetWizardState.mockReturnValue({
       telemetryEnabled: true,
       team: null,
@@ -160,6 +153,7 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
       gitName: null,
       gitEmail: null,
       personalized: false,
+      connectedCompanyCount: 0,
     });
   });
 
@@ -394,62 +388,29 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
     });
   });
 
-  // ── 5. Cloud sync on submit ───────────────────────────────────────────────
+  // ── 5. Wizard-state seeding on mount ──────────────────────────────────────
+  //
+  // The installer no longer performs S3 reconciliation directly — the
+  // HQ-Sync menu bar app (Step 9) owns continuous sync. But Personalize is
+  // still the de-facto "company detection" point (old Step 3 was removed),
+  // so on mount it must:
+  //   • Call setConnectedCompanyCount(entries.length) so App.tsx can skip
+  //     the HQ Sync install step when the user has no cloud companies.
+  //   • setTeam() from the first cloud company, or setIsPersonal(true)
+  //     when the user has none.
 
-  describe("cloud sync on submit", () => {
-    it("vends STS credentials and syncs each cloud company on submit", async () => {
-      mockListUserCompanies.mockResolvedValueOnce([
-        {
-          companyUid: "uid-acme",
-          companySlug: "acme",
-          companyName: "Acme Corp",
-          bucketName: "hq-vault-acme",
-          role: "admin",
-          status: "active",
-        },
-      ]);
+  describe("wizard-state seeding on mount", () => {
+    it("persists the cloud-company count (0) when the user has none", async () => {
+      mockListUserCompanies.mockResolvedValueOnce([]);
 
-      const user = userEvent.setup();
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await waitFor(() => {
-        expect(screen.getByText("Acme Corp")).toBeDefined();
-      });
-
-      await user.click(findContinueButton()!);
-
-      await waitFor(() => {
-        expect(mockVendSts).toHaveBeenCalledWith(
-          "at",
-          "uid-acme",
-          "hq-vault-acme",
-        );
-        expect(mockSyncFromS3).toHaveBeenCalledWith(
-          expect.objectContaining({ bucketName: "hq-vault-acme" }),
-          "/tmp/hq",
-          expect.any(Function),
-          "companies/acme",
-        );
-      });
+      await waitFor(() =>
+        expect(mockSetConnectedCompanyCount).toHaveBeenCalledWith(0),
+      );
     });
 
-    it("skips the primary company that step 08b already synced", async () => {
-      mockGetWizardState.mockReturnValue({
-        telemetryEnabled: true,
-        team: {
-          teamId: "person-uid",
-          companyId: "uid-acme",
-          slug: "acme",
-          name: "Acme Corp",
-          joinedViaInvite: false,
-          bucketName: "hq-vault-acme",
-        },
-        isPersonal: false,
-        installPath: "/tmp/hq",
-        gitName: null,
-        gitEmail: null,
-        personalized: false,
-      });
+    it("persists the cloud-company count when the user has multiple", async () => {
       mockListUserCompanies.mockResolvedValueOnce([
         {
           companyUid: "uid-acme",
@@ -469,20 +430,49 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
         },
       ]);
 
-      const user = userEvent.setup();
       render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
 
-      await waitFor(() => {
-        expect(screen.getByText("Initech")).toBeDefined();
-      });
+      await waitFor(() =>
+        expect(mockSetConnectedCompanyCount).toHaveBeenCalledWith(2),
+      );
+    });
 
-      await user.click(findContinueButton()!);
+    it("seeds wizard `team` from the first cloud company", async () => {
+      mockListUserCompanies.mockResolvedValueOnce([
+        {
+          companyUid: "uid-acme",
+          companySlug: "acme",
+          companyName: "Acme Corp",
+          bucketName: "hq-vault-acme",
+          role: "admin",
+          status: "active",
+        },
+      ]);
 
-      await waitFor(() => expect(mockSyncFromS3).toHaveBeenCalled());
-      // Only the non-primary company should have been synced.
-      expect(mockSyncFromS3).toHaveBeenCalledTimes(1);
-      const [, , , prefix] = mockSyncFromS3.mock.calls[0];
-      expect(prefix).toBe("companies/initech");
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => expect(mockSetTeam).toHaveBeenCalledTimes(1));
+      expect(mockSetTeam).toHaveBeenCalledWith(
+        expect.objectContaining({
+          teamId: "uid-acme",
+          companyId: "uid-acme",
+          slug: "acme",
+          name: "Acme Corp",
+          joinedViaInvite: false,
+          bucketName: "hq-vault-acme",
+          role: "admin",
+        }),
+      );
+    });
+
+    it("flips isPersonal=true when the user has no cloud companies", async () => {
+      mockListUserCompanies.mockResolvedValueOnce([]);
+
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => expect(mockSetIsPersonal).toHaveBeenCalledWith(true));
+      // And no team should have been set — nothing to seed from.
+      expect(mockSetTeam).not.toHaveBeenCalled();
     });
 
     it("tags cloud companies on the personalize() payload", async () => {
