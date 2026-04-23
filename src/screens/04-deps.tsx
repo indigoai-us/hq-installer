@@ -1,5 +1,16 @@
 // 04-deps.tsx — US-014
 // Dependency detection and auto-install screen.
+//
+// Each row is gated by its `dependsOn` list — a dep stays locked ("Waiting
+// for X") until every parent reports `status: "installed"`. When the last
+// blocker flips, the Install button fades + scales in so the unlock reads
+// as a small reward instead of a dead-button surprise.
+//
+// Xcode CLT was removed in v0.1.22: Homebrew's installer bootstraps the
+// commandline tools itself, and the separate row used to race Homebrew's
+// own CLT prompt and fail. The `xcode_clt_*` Tauri commands are still
+// registered on the Rust side as dead IPC — safe to leave, trivial to
+// delete in a follow-up.
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,81 +26,75 @@ interface DepDef {
   label: string;
   installCmd: string;
   installUrl: string;
-  useXcodeCheck: boolean;
   /** CLI binary name for `which` lookup. Defaults to `id` when omitted. */
   binary?: string;
   /** When true, a missing/failed state does NOT block the Continue button. */
   optional?: boolean;
+  /** IDs that must be `installed` before this row unlocks. Empty = root. */
+  dependsOn?: readonly string[];
 }
 
-const DEPS: DepDef[] = [
+const DEPS: readonly DepDef[] = [
   {
     id: "homebrew",
     label: "Homebrew",
     installCmd: "install_homebrew",
     installUrl: "https://brew.sh",
-    useXcodeCheck: false,
     binary: "brew",
-  },
-  {
-    id: "xcode-clt",
-    label: "Xcode CLT",
-    installCmd: "xcode_clt_install",
-    installUrl: "https://developer.apple.com/xcode/resources/",
-    useXcodeCheck: true,
-    // HQ's runtime stack (bun/node + shell + Go binaries via Homebrew bottles)
-    // doesn't require a local C toolchain day-to-day. If CLT ever is needed,
-    // macOS transparently re-prompts the first time `cc`/`clang` is invoked,
-    // so skipping at install time isn't a one-way door.
-    optional: true,
   },
   {
     id: "node",
     label: "Node.js",
     installCmd: "install_node",
     installUrl: "https://nodejs.org",
-    useXcodeCheck: false,
+    dependsOn: ["homebrew"],
   },
   {
     id: "git",
     label: "Git",
     installCmd: "install_git",
     installUrl: "https://git-scm.com",
-    useXcodeCheck: false,
+    dependsOn: ["homebrew"],
   },
   {
     id: "yq",
     label: "yq",
     installCmd: "install_yq",
     installUrl: "https://github.com/mikefarah/yq",
-    useXcodeCheck: false,
+    // Serialized behind `node` (not `homebrew`) on purpose: brew holds a
+    // per-prefix lock (~/.../var/homebrew/locks) while a formula installs,
+    // and kicking off `brew install yq` mid-`brew install node` aborts
+    // with "Another active Homebrew process is already in progress". Gating
+    // yq on node's completion removes the race without adding any custom
+    // locking logic on the Rust side.
+    dependsOn: ["node"],
   },
   {
     id: "gh",
     label: "gh",
     installCmd: "install_gh",
     installUrl: "https://cli.github.com",
-    useXcodeCheck: false,
     optional: true,
+    dependsOn: ["homebrew"],
   },
   {
     id: "claude-code",
     label: "Claude Code",
     installCmd: "install_claude_code",
     installUrl: "https://docs.anthropic.com/en/claude-code",
-    useXcodeCheck: false,
     binary: "claude",
     optional: true,
+    dependsOn: ["node"],
   },
   {
     id: "qmd",
     label: "qmd",
     installCmd: "install_qmd",
     installUrl: "https://github.com/tobi/qmd",
-    useXcodeCheck: false,
     optional: true,
+    dependsOn: ["node"],
   },
-];
+] as const;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,21 +119,6 @@ function initMap(): DepsMap {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Normalize both the real XcodeCltState enum ("installed" | "notInstalled" | "installing")
- *  and the test mock shape ({ installed: boolean }). */
-function parseXcodeInstalled(result: unknown): boolean {
-  if (result === null || result === undefined) return false;
-  if (typeof result === "string") return result === "installed";
-  if (typeof result === "object" && "installed" in (result as object)) {
-    return (result as { installed: boolean }).installed;
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -139,11 +129,8 @@ interface DepsInstallProps {
 export function DepsInstall({ onNext }: DepsInstallProps) {
   const [deps, setDeps] = useState<DepsMap>(initMap);
 
-  // Track which tool is currently installing so the progress listener can
-  // pipe lines to the correct row.
   const activeToolRef = useRef<string | null>(null);
 
-  // Helper: update a single tool's state immutably.
   function updateTool(id: string, patch: Partial<ToolState>) {
     setDeps((prev) => ({
       ...prev,
@@ -162,82 +149,46 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
   }
 
   // ---------------------------------------------------------------------------
-  // Mount: check all deps + register event listeners
+  // Mount: check all deps + register progress listener
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
-    // Check deps
     async function checkAll() {
       await Promise.all(
         DEPS.map(async (dep) => {
           try {
-            let installed: boolean;
-            if (dep.useXcodeCheck) {
-              const result = await invoke("xcode_clt_status");
-              installed = parseXcodeInstalled(result);
-            } else {
-              const result = await invoke<{ installed: boolean }>("check_dep", {
-                tool: dep.binary ?? dep.id,
-              });
-              installed = result.installed;
-            }
+            const result = await invoke<{ installed: boolean }>("check_dep", {
+              tool: dep.binary ?? dep.id,
+            });
             updateTool(dep.id, {
-              status: installed ? "installed" : "missing",
+              status: result.installed ? "installed" : "missing",
             });
           } catch {
             updateTool(dep.id, { status: "missing" });
           }
-        })
+        }),
       );
     }
 
     checkAll();
 
-    // Register install:progress listener
     let unlistenInstall: (() => void) | undefined;
-    let unlistenXcode: (() => void) | undefined;
-
     const installListenerPromise = listen(
       "install:progress",
       (event: { payload: unknown }) => {
-        const payload = event.payload as { line?: string; finished?: boolean; error?: string };
+        const payload = event.payload as { line?: string };
         const line = payload?.line ?? "";
         const activeId = activeToolRef.current;
         if (activeId && line) {
           appendProgress(activeId, line);
         }
-      }
+      },
     ).then((unlisten) => {
       unlistenInstall = unlisten as () => void;
     });
 
-    const xcodeListenerPromise = listen(
-      "xcode:progress",
-      (event: { payload: unknown }) => {
-        const payload = event.payload as { line?: string; finished?: boolean; error?: string | null };
-        const line = payload?.line ?? "";
-        const activeId = activeToolRef.current;
-        if (activeId && line) {
-          appendProgress(activeId, line);
-        }
-        // xcode_clt_install is async (starts a background poller).
-        // The progress event with finished=true signals the final install outcome.
-        if (payload?.finished === true && activeId) {
-          if (payload.error) {
-            updateTool(activeId, { status: "error", errorMsg: payload.error });
-          } else {
-            updateTool(activeId, { status: "installed" });
-          }
-          activeToolRef.current = null;
-        }
-      }
-    ).then((unlisten) => {
-      unlistenXcode = unlisten as () => void;
-    });
-
     return () => {
       installListenerPromise.then(() => unlistenInstall?.());
-      xcodeListenerPromise.then(() => unlistenXcode?.());
     };
   }, []);
 
@@ -254,24 +205,13 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
     });
     try {
       await invoke(dep.installCmd);
-      if (dep.useXcodeCheck) {
-        // xcode_clt_install returns quickly — it only starts the system dialog
-        // and background poller. The xcode:progress listener handles the final
-        // status transition (installed | error) when finished=true arrives.
-        // Do NOT re-check status here; leave tool in "installing" state.
-        return;
-      }
-      // For regular deps the install command is synchronous — re-check after.
       const result = await invoke<{ installed: boolean }>("check_dep", {
         tool: dep.binary ?? dep.id,
       });
       updateTool(dep.id, { status: result.installed ? "installed" : "missing" });
     } catch (err) {
       // Tauri's `invoke` rejects with the raw Err value — for our Rust
-      // commands that's a plain string, not an Error instance. The old
-      // `err instanceof Error` check always fell through to the generic
-      // "Installation failed" message, hiding real context like
-      // "Homebrew is not installed. Install Homebrew first."
+      // commands that's a plain string, not an Error instance.
       const errorMsg =
         typeof err === "string"
           ? err
@@ -280,10 +220,7 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
             : "Installation failed";
       updateTool(dep.id, { status: "error", errorMsg });
     } finally {
-      // For xcode, activeToolRef is cleared by the xcode:progress listener.
-      if (!dep.useXcodeCheck) {
-        activeToolRef.current = null;
-      }
+      activeToolRef.current = null;
     }
   }
 
@@ -298,6 +235,20 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
   const allRequiredInstalled = DEPS.filter((d) => !d.optional).every(
     (dep) => deps[dep.id].status === "installed",
   );
+
+  /** Returns unmet parent deps by label — empty array means unlocked. */
+  function unmetDepsFor(dep: DepDef): string[] {
+    if (!dep.dependsOn || dep.dependsOn.length === 0) return [];
+    const unmet: string[] = [];
+    for (const parentId of dep.dependsOn) {
+      const parent = deps[parentId];
+      if (!parent || parent.status !== "installed") {
+        const parentDef = DEPS.find((d) => d.id === parentId);
+        unmet.push(parentDef?.label ?? parentId);
+      }
+    }
+    return unmet;
+  }
 
   // ---------------------------------------------------------------------------
   // Render
@@ -315,11 +266,13 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
       <div className="flex flex-col gap-3">
         {DEPS.map((dep) => {
           const tool = deps[dep.id];
+          const unmet = unmetDepsFor(dep);
           return (
             <DepRow
               key={dep.id}
               dep={dep}
               tool={tool}
+              unmetDeps={unmet}
               onInstall={() => handleInstall(dep)}
               onOpenPage={() => handleOpenPage(dep.installUrl)}
               onRetry={() => handleInstall(dep)}
@@ -332,7 +285,7 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
         <button
           type="button"
           onClick={onNext}
-          className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+          className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors animate-in fade-in-0 zoom-in-95 duration-500"
         >
           Continue
         </button>
@@ -348,14 +301,37 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
 interface DepRowProps {
   dep: DepDef;
   tool: ToolState;
+  /** Parent labels that aren't yet `installed`. Non-empty ⇒ locked. */
+  unmetDeps: string[];
   onInstall: () => void;
   onRetry: () => void;
   onOpenPage: () => void;
 }
 
-function DepRow({ dep, tool, onInstall, onRetry, onOpenPage }: DepRowProps) {
+function DepRow({
+  dep,
+  tool,
+  unmetDeps,
+  onInstall,
+  onRetry,
+  onOpenPage,
+}: DepRowProps) {
+  // Locked = dep is missing AND at least one parent isn't installed yet.
+  // We still render the row normally — just swap the Install button for a
+  // dimmed "Waiting for X" label. When the last blocker lands, React
+  // re-renders this row, and the Install button mounts with the animate-in
+  // classes firing a one-shot fade/zoom so the unlock reads as a reward.
+  const locked = tool.status === "missing" && unmetDeps.length > 0;
+  const installable = tool.status === "missing" && unmetDeps.length === 0;
+
   return (
-    <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+    <div
+      className={`flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3 transition-opacity duration-300 ${
+        locked ? "opacity-60" : "opacity-100"
+      }`}
+      data-dep={dep.id}
+      data-locked={locked ? "true" : "false"}
+    >
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-zinc-200">
           {dep.label}
@@ -371,25 +347,28 @@ function DepRow({ dep, tool, onInstall, onRetry, onOpenPage }: DepRowProps) {
             <span className="text-xs text-zinc-500 hq-text-shimmer">Checking…</span>
           )}
           {tool.status === "installed" && (
-            <span
-              data-status="installed"
-              className="text-xs text-green-400"
-            >
+            <span data-status="installed" className="text-xs text-green-400 animate-in fade-in-0 duration-500">
               Installed
             </span>
           )}
-          {tool.status === "missing" && (
+          {locked && (
+            <span
+              data-status="locked"
+              className="text-xs text-zinc-500 italic"
+              title={`Install ${unmetDeps.join(", ")} first`}
+            >
+              Waiting for {unmetDeps.join(", ")}
+            </span>
+          )}
+          {installable && (
             <>
-              <span
-                data-status="missing"
-                className="text-xs text-zinc-500"
-              >
+              <span data-status="missing" className="text-xs text-zinc-500">
                 Missing
               </span>
               <button
                 type="button"
                 onClick={onInstall}
-                className="text-xs px-3 py-1 rounded-full bg-white text-black hover:bg-zinc-100 transition-colors font-medium"
+                className="text-xs px-3 py-1 rounded-full bg-white text-black hover:bg-zinc-100 transition-colors font-medium animate-in fade-in-0 zoom-in-95 duration-500"
               >
                 Install {dep.label}
               </button>
