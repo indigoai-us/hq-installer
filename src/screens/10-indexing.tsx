@@ -168,6 +168,10 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
       }
     );
 
+    // Internal stderr buffer for ABI-mismatch detection; populated on every
+    // invocation regardless of whether the caller passes stderrBuf.
+    const stderrLines: string[] = [];
+
     // Listen for stderr — qmd writes errors like "VOYAGE_AI_API_KEY not set"
     // to stderr, and we want those visible in the log panel. Also mirror into
     // the caller-provided buffer when present so known-benign errors (e.g.
@@ -178,6 +182,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         const payload = event.payload as { line: string };
         const line = payload.line ?? "";
         appendLog(stepIdx, `[stderr] ${line}`);
+        stderrLines.push(line);
         if (stderrBuf) stderrBuf.push(line);
       }
     );
@@ -198,7 +203,18 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
             patchStep(stepIdx, { status: "done" });
             resolve(true);
           } else {
-            const msg = `Process exited with code ${payload.code ?? -1}`;
+            // Detect Node ABI mismatch (better-sqlite3 compiled for a different
+            // Node version) and surface a targeted remediation hint instead of
+            // a cryptic exit-code message. Covers non-nvm installs where the
+            // PATH-prepend fix in process.rs cannot help.
+            const isAbiMismatch = stderrLines.some(
+              (l) =>
+                l.includes("ERR_DLOPEN_FAILED") ||
+                l.includes("NODE_MODULE_VERSION")
+            );
+            const msg = isAbiMismatch
+              ? "Node ABI mismatch: qmd was compiled for a different Node version. Fix: reinstall qmd under your current Node — npm i -g @tobilu/qmd"
+              : `Process exited with code ${payload.code ?? -1}`;
             patchStep(stepIdx, { status: "error", errorMsg: msg });
             setFailedStep(stepIdx);
             resolve(false);

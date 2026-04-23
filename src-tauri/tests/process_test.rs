@@ -324,4 +324,83 @@ mod process_tests {
             path_line
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 9: co-located node beats a search-path-first node.
+    //
+    // Simulates the nvm ABI-mismatch scenario: `qmd` lives in ~/.nvm/vX/bin/
+    // next to node vX, but the search path has a different node (vY) earlier.
+    // Without the bin_dir-prepend fix, the qmd wrapper's `command -v node`
+    // resolves to vY → ABI crash. With it, the co-located vX wins.
+    //
+    // Structure:
+    //   bin_dir  — fake `qmd` (prints path of node via `command -v node`)
+    //              + fake `node` labelled "colocated"
+    //   alt_dir  — competing fake `node` labelled "alt" (wrong version)
+    //   PATH     — alt_dir:bin_dir:system  (alt wins without the fix)
+    //
+    // Expected: output contains bin_dir (the co-located node path).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_process_impl_colocated_node_beats_search_path_node() {
+        let bin_dir = TempDir::new().unwrap();
+        let alt_dir = TempDir::new().unwrap();
+
+        // fake qmd: resolves `node` via $PATH and prints the result
+        let qmd_path = bin_dir.path().join("qmd");
+        fs::write(&qmd_path, "#!/bin/sh\ncommand -v node\n").unwrap();
+        let mut perms = fs::metadata(&qmd_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&qmd_path, perms).unwrap();
+
+        // co-located node (should win after the fix)
+        let colocated_node = bin_dir.path().join("node");
+        fs::write(&colocated_node, "#!/bin/sh\necho colocated-node\n").unwrap();
+        let mut perms = fs::metadata(&colocated_node).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&colocated_node, perms).unwrap();
+
+        // alt node (wrong version; comes first in raw search path, should lose)
+        let alt_node = alt_dir.path().join("node");
+        fs::write(&alt_node, "#!/bin/sh\necho alt-node\n").unwrap();
+        let mut perms = fs::metadata(&alt_node).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&alt_node, perms).unwrap();
+
+        let args = SpawnArgs {
+            cmd: "qmd".to_string(),
+            args: vec![],
+            cwd: None,
+            env: None,
+        };
+
+        // alt_dir precedes bin_dir — without the fix, command -v node inside
+        // the qmd wrapper would return alt_dir/node.
+        let search_path = format!(
+            "{}:{}:/usr/bin:/bin",
+            alt_dir.path().to_str().unwrap(),
+            bin_dir.path().to_str().unwrap()
+        );
+
+        let stdout_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let lines_ref = stdout_lines.clone();
+        let handle = Uuid::new_v4().to_string();
+
+        run_process_impl(&handle, &args, &search_path, move |event| {
+            if let ProcessEvent::Stdout(line) = event {
+                lines_ref.lock().unwrap().push(line);
+            }
+        })
+        .expect("fake qmd should run");
+
+        let lines = stdout_lines.lock().unwrap().clone();
+        let bin_dir_str = bin_dir.path().to_str().unwrap();
+        assert!(
+            lines.iter().any(|l| l.contains(bin_dir_str)),
+            "co-located node ({}) should have been found, but got: {:?}",
+            bin_dir_str,
+            lines
+        );
+    }
 }

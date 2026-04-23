@@ -385,7 +385,43 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     });
   });
 
-  // ── 6. No purple/indigo class names in DOM ────────────────────────────────
+  // ── 6. ABI-mismatch diagnostic ───────────────────────────────────────────
+
+  it("shows ABI-mismatch remediation hint when ERR_DLOPEN_FAILED appears in stderr", async () => {
+    const handles: string[] = [];
+    mockInvoke.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "spawn_process") {
+          const h = `handle-${handles.length + 1}`;
+          handles.push(h);
+          return h;
+        }
+        return null;
+      })
+    );
+
+    render(<QmdIndexing installPath="/tmp/hq" />);
+
+    // Wait for step 0 to be spawned.
+    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
+
+    // Emit an ERR_DLOPEN_FAILED stderr line, then fail the process.
+    act(() => {
+      fireListenEvent(`process://${handles[0]}/stderr`, {
+        line: "Error: The module '...better_sqlite3.node' ... NODE_MODULE_VERSION 137 ... code: 'ERR_DLOPEN_FAILED'",
+      });
+    });
+    failProcess(handles[0]);
+
+    // The displayed error must contain the remediation hint, not just an exit code.
+    await waitFor(() => {
+      const text = document.body.textContent ?? "";
+      expect(text).toMatch(/reinstall qmd/i);
+    });
+  });
+
+  // ── 7. No purple/indigo class names in DOM ────────────────────────────────
 
   it("does NOT use 'purple' class names in the DOM", () => {
     const { container } = render(<QmdIndexing installPath="/tmp/hq" />);

@@ -214,14 +214,47 @@ where
     }
 
     // Seed the child's PATH from the search path so grandchildren inherit
-    // the extended PATH. Caller's explicit PATH in `spawn.env` takes precedence.
+    // the extended PATH. Prepend the resolved binary's parent directory so
+    // wrapper scripts (e.g. qmd) find co-located tools first.
+    //
+    // nvm ABI-pin fix: ~/.nvm/vX/bin/qmd lives next to node vX; without the
+    // prepend the wrapper's `command -v node` picks the shell-default node (vY)
+    // and better-sqlite3 crashes with ERR_DLOPEN_FAILED.
+    //
+    // All current spawn_process callers are analysed:
+    //   git        → /usr/bin/git; /usr/bin is already first in the extended
+    //                search path → the dedup check below fires, no-op.
+    //   07-template scripts → live in the HQ install path, no competing tool
+    //                names in that dir; prepending it is benign.
+    //   qmd        → target of this fix; promotes ~/.nvm/vX/bin to the front.
+    //
+    // Dedup: skip prepend when bin_dir is already the leading PATH component
+    // to avoid duplicate entries (common when the extended search path already
+    // includes the binary's directory).
+    //
+    // Caller's explicit PATH in spawn.env takes precedence over all of this.
     let caller_sets_path = spawn
         .env
         .as_ref()
         .map(|e| e.contains_key("PATH"))
         .unwrap_or(false);
     if !caller_sets_path {
-        cmd.env("PATH", search_path);
+        let child_path = if let Some(bin_dir) = resolved.parent() {
+            let bin_str = bin_dir.to_string_lossy();
+            let already_first = search_path
+                .split(':')
+                .next()
+                .map(|first| first == bin_str.as_ref())
+                .unwrap_or(false);
+            if already_first {
+                search_path.to_string()
+            } else {
+                format!("{}:{}", bin_str, search_path)
+            }
+        } else {
+            search_path.to_string()
+        };
+        cmd.env("PATH", &child_path);
     }
     if let Some(env) = &spawn.env {
         for (k, v) in env {
