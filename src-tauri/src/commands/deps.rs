@@ -116,6 +116,15 @@ fn shell_login_path() -> &'static str {
 /// user has Homebrew installed, because LaunchServices-launched apps only
 /// get `/usr/bin:/bin:/usr/sbin:/sbin`.
 pub fn extended_search_path() -> String {
+    extended_search_path_in(None)
+}
+
+/// Same composition as `extended_search_path()` but accepts an explicit
+/// home-directory override so tests can exercise version-manager discovery
+/// against a fixture directory without mutating process-global HOME.
+///
+/// When `home` is `None`, resolves via `dirs::home_dir()` (production path).
+pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     let mut dirs: Vec<String> = Vec::new();
     if let Ok(existing) = std::env::var("PATH") {
         if !existing.is_empty() {
@@ -140,14 +149,82 @@ pub fn extended_search_path() -> String {
     for e in extras {
         dirs.push(e.to_string());
     }
+    // Resolve home directory: explicit override for tests, else dirs::home_dir().
+    let home_buf = home.map(|p| p.to_path_buf()).or_else(dirs::home_dir);
+
     // User-local installs (~/.claude/bin, ~/.cargo/bin, ~/.local/bin, ~/bin).
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home_buf.as_deref() {
         for rel in [".claude/bin", ".cargo/bin", ".local/bin", "bin"] {
             let p = home.join(rel);
             dirs.push(p.to_string_lossy().into_owned());
         }
     }
+    // Node version managers — enumerate installed Node versions so CLIs
+    // installed via `npm i -g` under nvm/fnm (plus volta and pnpm's global
+    // bin) are detected even when the shell-login PATH probe returns empty
+    // (GUI launch without inherited SHELL). Each block tolerates missing
+    // dirs and read_dir errors silently; a failed probe never blocks other
+    // managers from being tried.
+    if let Some(home) = home_buf.as_deref() {
+        for d in version_manager_dirs(home) {
+            dirs.push(d);
+        }
+    }
     dirs.join(":")
+}
+
+/// Collect bin directories from Node version managers present under `home`.
+///
+/// Covers: nvm (~/.nvm/versions/node/<v>/bin), fnm
+/// (~/.fnm/node-versions/<v>/installation/bin), volta (~/.volta/bin),
+/// pnpm (~/Library/pnpm — macOS location).
+///
+/// Missing dirs, permission errors, and stale version entries without a
+/// `/bin` subdir are silently skipped. This function never panics.
+fn version_manager_dirs(home: &std::path::Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    // nvm: enumerate ~/.nvm/versions/node/*/bin
+    let nvm_root = home.join(".nvm").join("versions").join("node");
+    if let Ok(entries) = std::fs::read_dir(&nvm_root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let bin = p.join("bin");
+                if bin.exists() {
+                    out.push(bin.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    // fnm: enumerate ~/.fnm/node-versions/*/installation/bin
+    let fnm_root = home.join(".fnm").join("node-versions");
+    if let Ok(entries) = std::fs::read_dir(&fnm_root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let bin = p.join("installation").join("bin");
+                if bin.exists() {
+                    out.push(bin.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    // volta: single dir ~/.volta/bin
+    let volta_bin = home.join(".volta").join("bin");
+    if volta_bin.is_dir() {
+        out.push(volta_bin.to_string_lossy().into_owned());
+    }
+
+    // pnpm global bin on macOS: ~/Library/pnpm
+    let pnpm_bin = home.join("Library").join("pnpm");
+    if pnpm_bin.is_dir() {
+        out.push(pnpm_bin.to_string_lossy().into_owned());
+    }
+
+    out
 }
 
 /// Internal implementation shared by `check_dep` (uses real PATH) and

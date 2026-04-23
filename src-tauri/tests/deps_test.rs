@@ -7,18 +7,22 @@
 #[cfg(test)]
 mod deps_tests {
     use hq_installer_lib::commands::deps::{
-        cancel_install, check_dep_in, extended_search_path, format_install_error,
-        register_cancel_handle,
+        cancel_install, check_dep_in, extended_search_path, extended_search_path_in,
+        format_install_error, register_cancel_handle,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use tempfile::TempDir;
 
-    /// Create a temporary directory containing a minimal shell script that:
-    ///   - prints `<name> version 1.2.3` to stdout
-    ///   - exits 0
-    fn make_fake_bin(dir: &TempDir, name: &str) {
-        let path = dir.path().join(name);
+    /// Create a fake executable named `name` inside `parent`, creating any
+    /// missing parent directories. The script prints `<name> version 1.2.3`
+    /// and exits 0 — same semantics as `make_fake_bin` but accepts an
+    /// arbitrary directory path so tests can seed fixture trees that match
+    /// nvm/fnm/volta/pnpm on-disk layouts.
+    fn make_fake_bin_at(parent: &Path, name: &str) {
+        fs::create_dir_all(parent).unwrap();
+        let path = parent.join(name);
         fs::write(
             &path,
             format!("#!/bin/sh\necho '{} version 1.2.3'\n", name),
@@ -27,6 +31,13 @@ mod deps_tests {
         let mut perms = fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&path, perms).unwrap();
+    }
+
+    /// Create a temporary directory containing a minimal shell script that:
+    ///   - prints `<name> version 1.2.3` to stdout
+    ///   - exits 0
+    fn make_fake_bin(dir: &TempDir, name: &str) {
+        make_fake_bin_at(dir.path(), name);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -213,6 +224,140 @@ mod deps_tests {
         assert!(
             path.contains("/usr/local/bin"),
             "should include Intel Homebrew / generic prefix, got: {}",
+            path
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 11a: extended_search_path_in picks up a binary installed under
+    //           ~/.nvm/versions/node/<v>/bin — the primary nvm layout. This
+    //           is the fix for qmd/claude detection when the shell-login
+    //           PATH probe returns empty (GUI launch without SHELL).
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_extended_search_path_finds_nvm_tool() {
+        let home = TempDir::new().unwrap();
+        let node_bin = home
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.17.0")
+            .join("bin");
+        make_fake_bin_at(&node_bin, "fake-tool");
+
+        let path = extended_search_path_in(Some(home.path()));
+        let status = check_dep_in("fake-tool", &path);
+
+        assert!(status.installed, "fake-tool under nvm should be detected");
+        let resolved = status.path.expect("path should be populated");
+        assert!(
+            resolved.to_string_lossy().contains(".nvm/versions/node/v22.17.0/bin"),
+            "resolved path should be the nvm bin dir, got: {:?}",
+            resolved
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 11b: extended_search_path_in picks up a binary installed under
+    //           ~/.fnm/node-versions/<v>/installation/bin — fnm's default
+    //           on-disk layout differs from nvm.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_extended_search_path_finds_fnm_tool() {
+        let home = TempDir::new().unwrap();
+        let node_bin = home
+            .path()
+            .join(".fnm")
+            .join("node-versions")
+            .join("v20.10.0")
+            .join("installation")
+            .join("bin");
+        make_fake_bin_at(&node_bin, "fake-tool");
+
+        let path = extended_search_path_in(Some(home.path()));
+        let status = check_dep_in("fake-tool", &path);
+
+        assert!(status.installed, "fake-tool under fnm should be detected");
+        let resolved = status.path.expect("path should be populated");
+        assert!(
+            resolved.to_string_lossy().contains(".fnm/node-versions"),
+            "resolved path should be under the fnm tree, got: {:?}",
+            resolved
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 11c: extended_search_path_in picks up a binary installed under
+    //           ~/.volta/bin — volta exposes a single shim dir (no per-version
+    //           enumeration needed).
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_extended_search_path_finds_volta_tool() {
+        let home = TempDir::new().unwrap();
+        let volta_bin = home.path().join(".volta").join("bin");
+        make_fake_bin_at(&volta_bin, "fake-tool");
+
+        let path = extended_search_path_in(Some(home.path()));
+        let status = check_dep_in("fake-tool", &path);
+
+        assert!(status.installed, "fake-tool under volta should be detected");
+        let resolved = status.path.expect("path should be populated");
+        assert!(
+            resolved.to_string_lossy().contains(".volta/bin"),
+            "resolved path should be the volta shim dir, got: {:?}",
+            resolved
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 11d: extended_search_path_in picks up a binary installed under
+    //           ~/Library/pnpm — pnpm's default macOS global-bin location.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_extended_search_path_finds_pnpm_tool() {
+        let home = TempDir::new().unwrap();
+        let pnpm_bin = home.path().join("Library").join("pnpm");
+        make_fake_bin_at(&pnpm_bin, "fake-tool");
+
+        let path = extended_search_path_in(Some(home.path()));
+        let status = check_dep_in("fake-tool", &path);
+
+        assert!(status.installed, "fake-tool under pnpm should be detected");
+        let resolved = status.path.expect("path should be populated");
+        assert!(
+            resolved.to_string_lossy().contains("Library/pnpm"),
+            "resolved path should be the pnpm global bin, got: {:?}",
+            resolved
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 11e: Regression — when NONE of the 4 version managers are
+    //           present under the fixture home, the function must still
+    //           return a non-empty PATH with the static macOS extras. This
+    //           guards against the VM-enumeration code accidentally
+    //           short-circuiting the existing composition.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_extended_search_path_regression_no_version_managers() {
+        let home = TempDir::new().unwrap();
+        // Note: we deliberately create nothing — the fixture home is empty.
+
+        let path = extended_search_path_in(Some(home.path()));
+
+        assert!(
+            !path.is_empty(),
+            "extended_search_path_in should not be empty when no VMs present"
+        );
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "static extras should still be present, got: {}",
+            path
+        );
+        assert!(
+            path.contains("/usr/local/bin"),
+            "static extras should still be present, got: {}",
             path
         );
     }
