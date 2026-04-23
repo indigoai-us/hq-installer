@@ -249,6 +249,25 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
+    it("yq stays locked while node is missing (brew-lock race fix)", async () => {
+      // yq gating on node (not homebrew) serializes past the brew formula-lock
+      // race when node + yq try to install concurrently under the same brew prefix.
+      mockInvoke.mockImplementation(
+        buildInvokeMock({
+          node: { installed: false },
+          yq: { installed: false },
+        })
+      );
+      render(<DepsInstall onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        const yqRow = document.querySelector<HTMLElement>("[data-dep='yq']");
+        expect(yqRow).not.toBeNull();
+        expect(yqRow!.getAttribute("data-locked")).toBe("true");
+        expect(yqRow!.textContent ?? "").toMatch(/waiting for.*node/i);
+      });
+    });
+
     it("claude-code stays locked while node is missing (even if homebrew is installed)", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({

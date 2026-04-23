@@ -61,7 +61,13 @@ const DEPS: readonly DepDef[] = [
     label: "yq",
     installCmd: "install_yq",
     installUrl: "https://github.com/mikefarah/yq",
-    dependsOn: ["homebrew"],
+    // Serialized behind `node` (not `homebrew`) on purpose: brew holds a
+    // per-prefix lock (~/.../var/homebrew/locks) while a formula installs,
+    // and kicking off `brew install yq` mid-`brew install node` aborts
+    // with "Another active Homebrew process is already in progress". Gating
+    // yq on node's completion removes the race without adding any custom
+    // locking logic on the Rust side.
+    dependsOn: ["node"],
   },
   {
     id: "gh",
