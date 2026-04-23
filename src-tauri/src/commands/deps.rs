@@ -75,6 +75,83 @@ pub struct InstallProgress {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Diagnostic logging (env-gated)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns `true` when `HQ_INSTALLER_DEBUG_DEPS=1`. Any other value — including
+/// `"0"`, `"true"`, empty, or unset — returns `false`. This is the ONLY gate
+/// for `[hq-deps]` stderr output; production builds stay silent unless the
+/// user explicitly opts in via the env var.
+///
+/// Exposed publicly so integration tests can verify the gate contract without
+/// needing to capture stderr.
+pub fn is_deps_debug_enabled() -> bool {
+    std::env::var("HQ_INSTALLER_DEBUG_DEPS").ok().as_deref() == Some("1")
+}
+
+/// Captures what happened during a `shell_login_path()` probe attempt.
+///
+/// The enum exists so the pure `format_shell_probe_log` formatter can render
+/// each outcome consistently — keeping the `[hq-deps]` log contract in one
+/// place and unit-testable without stderr capture.
+pub enum ShellProbeOutcome {
+    /// Shell exited 0 and returned a non-empty PATH. `bytes` is the length
+    /// of the trimmed stdout.
+    Success { bytes: usize },
+    /// Shell exited with a non-zero status. stderr is not retained so the
+    /// log line stays compact; the exit code is usually enough to diagnose.
+    NonZeroExit { code: i32 },
+    /// Shell exited 0 but returned zero bytes (rare — e.g. `PATH=""` or
+    /// profile scripts that erase PATH). Distinct from `Success` so support
+    /// docs can call this case out specifically.
+    EmptyOutput,
+    /// `Command::spawn` failed before the shell ever ran (bad `$SHELL`,
+    /// permission denied, etc.). `msg` is the underlying io::Error message.
+    SpawnError { msg: String },
+}
+
+/// Produce the `[hq-deps]` log line describing a shell-login-path probe.
+///
+/// Pure formatter — does not emit anything itself. The caller decides whether
+/// to `eprintln!` based on `is_deps_debug_enabled()`. Keeping the render pure
+/// lets unit tests assert the log format without capturing stderr.
+pub fn format_shell_probe_log(shell: &str, outcome: &ShellProbeOutcome) -> String {
+    match outcome {
+        ShellProbeOutcome::Success { bytes } => format!(
+            "[hq-deps] shell_login_path shell={} exit=0 bytes={}",
+            shell, bytes
+        ),
+        ShellProbeOutcome::NonZeroExit { code } => format!(
+            "[hq-deps] shell_login_path shell={} exit={}",
+            shell, code
+        ),
+        ShellProbeOutcome::EmptyOutput => format!(
+            "[hq-deps] shell_login_path shell={} exit=0 bytes=0 empty=true",
+            shell
+        ),
+        ShellProbeOutcome::SpawnError { msg } => format!(
+            "[hq-deps] shell_login_path shell={} spawn=error msg={}",
+            shell, msg
+        ),
+    }
+}
+
+/// Produce the `[hq-deps]` log line describing the final composed PATH.
+///
+/// `counts` is `(shell, extras, home_local, version_managers)` — the number of
+/// directories contributed by each source. The PATH is truncated to 500 chars
+/// so copy-pasted support logs stay readable; truncation counts characters
+/// (not bytes) to avoid slicing in the middle of a multi-byte UTF-8 codepoint.
+pub fn format_path_log(path: &str, counts: (usize, usize, usize, usize)) -> String {
+    let truncated: String = path.chars().take(500).collect();
+    let (shell, extras, home, vm) = counts;
+    format!(
+        "[hq-deps] extended_search_path shell={} extras={} home={} vm={} PATH={}",
+        shell, extras, home, vm, truncated
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // check_dep
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -93,20 +170,46 @@ static SHELL_LOGIN_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 ///
 /// Cached with `OnceLock` — the subprocess spawn is ~100 ms the first time
 /// and free on subsequent calls within the app lifetime.
+///
+/// Emits a single `[hq-deps]` stderr line when `HQ_INSTALLER_DEBUG_DEPS=1`
+/// (via `is_deps_debug_enabled()`); fires at most once per process thanks to
+/// the OnceLock cache. Format is treated as a semi-public contract so
+/// support paste-backs stay greppable.
 fn shell_login_path() -> &'static str {
     SHELL_LOGIN_PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let output = Command::new(&shell)
+        let spawn_result = Command::new(&shell)
             .args(["-lc", "printf %s \"$PATH\""])
             .stdin(Stdio::null())
             .output();
-        match output {
-            Ok(out) if out.status.success() => String::from_utf8(out.stdout)
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-            _ => String::new(),
+
+        let (path, outcome) = match spawn_result {
+            Ok(out) if out.status.success() => {
+                let s = String::from_utf8(out.stdout)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let outcome = if s.is_empty() {
+                    ShellProbeOutcome::EmptyOutput
+                } else {
+                    ShellProbeOutcome::Success { bytes: s.len() }
+                };
+                (s, outcome)
+            }
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                (String::new(), ShellProbeOutcome::NonZeroExit { code })
+            }
+            Err(e) => (
+                String::new(),
+                ShellProbeOutcome::SpawnError { msg: e.to_string() },
+            ),
+        };
+
+        if is_deps_debug_enabled() {
+            eprintln!("{}", format_shell_probe_log(&shell, &outcome));
         }
+        path
     })
 }
 
@@ -136,6 +239,7 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     // the only reliable way to find tools installed via `npm i -g` on systems
     // where the global prefix is under ~/.nvm/versions/node/<v>/bin or similar.
     let shell_path = shell_login_path();
+    let shell_count: usize = if shell_path.is_empty() { 0 } else { 1 };
     if !shell_path.is_empty() {
         dirs.push(shell_path.to_string());
     }
@@ -146,6 +250,7 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
         "/usr/local/bin", // Intel Homebrew + generic
         "/usr/local/sbin",
     ];
+    let extras_count: usize = extras.len();
     for e in extras {
         dirs.push(e.to_string());
     }
@@ -153,10 +258,12 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     let home_buf = home.map(|p| p.to_path_buf()).or_else(dirs::home_dir);
 
     // User-local installs (~/.claude/bin, ~/.cargo/bin, ~/.local/bin, ~/bin).
+    let mut home_count: usize = 0;
     if let Some(home) = home_buf.as_deref() {
         for rel in [".claude/bin", ".cargo/bin", ".local/bin", "bin"] {
             let p = home.join(rel);
             dirs.push(p.to_string_lossy().into_owned());
+            home_count += 1;
         }
     }
     // Node version managers — enumerate installed Node versions so CLIs
@@ -165,12 +272,23 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     // (GUI launch without inherited SHELL). Each block tolerates missing
     // dirs and read_dir errors silently; a failed probe never blocks other
     // managers from being tried.
+    let mut vm_count: usize = 0;
     if let Some(home) = home_buf.as_deref() {
         for d in version_manager_dirs(home) {
             dirs.push(d);
+            vm_count += 1;
         }
     }
-    dirs.join(":")
+    let joined = dirs.join(":");
+    // Env-gated diagnostic — emits at most one line per call when
+    // HQ_INSTALLER_DEBUG_DEPS=1. Silent for any other value of the env var.
+    if is_deps_debug_enabled() {
+        eprintln!(
+            "{}",
+            format_path_log(&joined, (shell_count, extras_count, home_count, vm_count))
+        );
+    }
+    joined
 }
 
 /// Collect bin directories from Node version managers present under `home`.

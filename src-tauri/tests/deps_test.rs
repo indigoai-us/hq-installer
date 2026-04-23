@@ -8,8 +8,10 @@
 mod deps_tests {
     use hq_installer_lib::commands::deps::{
         cancel_install, check_dep_in, extended_search_path, extended_search_path_in,
-        format_install_error, register_cancel_handle,
+        format_install_error, format_path_log, format_shell_probe_log, is_deps_debug_enabled,
+        register_cancel_handle, ShellProbeOutcome,
     };
+    use serial_test::serial;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -483,5 +485,248 @@ mod deps_tests {
             "should not have 'code N:' separator when stderr is empty, got: {}",
             msg
         );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // US-002: env-gated diagnostic logging
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tests below cover the [hq-deps] log contract: a single stderr line per
+    // probe/PATH-composition when HQ_INSTALLER_DEBUG_DEPS=1, silent otherwise.
+    // The formatters are pure functions so most assertions need no stderr
+    // capture. Only the end-to-end test spawns a subprocess — necessary because
+    // shell_login_path() is cached via OnceLock per-process.
+    // ═════════════════════════════════════════════════════════════════════════
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test A: NonZeroExit formatter renders 'exit=<code>' with the shell path.
+    //         This is the path hit when $SHELL points at /usr/bin/false on
+    //         macOS (exit=1) — the installer's only supported platform.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_shell_probe_log_nonzero_exit_includes_exit() {
+        let msg = format_shell_probe_log(
+            "/usr/bin/false",
+            &ShellProbeOutcome::NonZeroExit { code: 1 },
+        );
+        assert!(msg.contains("[hq-deps]"), "must include tag, got: {}", msg);
+        assert!(
+            msg.contains("exit="),
+            "must include exit=<code>: {}",
+            msg
+        );
+        assert!(
+            msg.contains("/usr/bin/false"),
+            "must include shell path: {}",
+            msg
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test B: SpawnError formatter marks spawn failure distinctly.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_shell_probe_log_spawn_error_includes_spawn() {
+        let msg = format_shell_probe_log(
+            "/no/such/shell",
+            &ShellProbeOutcome::SpawnError {
+                msg: "No such file".into(),
+            },
+        );
+        assert!(msg.contains("[hq-deps]"));
+        assert!(
+            msg.contains("spawn=error"),
+            "spawn failures must be tagged spawn=error, got: {}",
+            msg
+        );
+        assert!(msg.contains("No such file"), "must include spawn error detail");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test C: Success formatter reports exit=0 and byte count.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_shell_probe_log_success_includes_bytes() {
+        let msg = format_shell_probe_log(
+            "/bin/zsh",
+            &ShellProbeOutcome::Success { bytes: 512 },
+        );
+        assert!(msg.contains("[hq-deps]"));
+        assert!(msg.contains("exit=0"));
+        assert!(msg.contains("bytes=512"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test D: EmptyOutput is flagged 'empty=true' so support docs can
+    //         distinguish it from the normal success case.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_shell_probe_log_empty_output_flagged() {
+        let msg = format_shell_probe_log("/bin/sh", &ShellProbeOutcome::EmptyOutput);
+        assert!(
+            msg.contains("empty=true"),
+            "empty case must be distinguishable, got: {}",
+            msg
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test E: PATH log emits tag, per-source counts, and the full PATH so
+    //         support paste-backs show both composition + content.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_path_log_includes_counts_and_path() {
+        let msg = format_path_log("/usr/bin:/bin", (1, 4, 0, 2));
+        assert!(msg.contains("[hq-deps]"));
+        assert!(msg.contains("shell=1"));
+        assert!(msg.contains("extras=4"));
+        assert!(msg.contains("home=0"));
+        assert!(msg.contains("vm=2"));
+        assert!(msg.contains("PATH=/usr/bin:/bin"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test F: PATH log truncates at 500 chars so a bloated PATH (colon-joined
+    //         nvm versions can easily exceed 2 KB) doesn't flood stderr.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_format_path_log_truncates_long_path() {
+        let long = "/a".repeat(1000); // 2000 chars
+        let msg = format_path_log(&long, (0, 0, 0, 0));
+        // Prefix "[hq-deps] extended_search_path shell=0 extras=0 home=0 vm=0 PATH="
+        // plus up to 500 chars of path — total well under 650.
+        assert!(
+            msg.len() < 650,
+            "message should be truncated, got length {}",
+            msg.len()
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test G: env gate is strict — only the literal string "1" enables logs.
+    //         Anything else (including "true", "0", unset) returns false so
+    //         production builds stay silent unless the user explicitly opts in.
+    //         Marked #[serial] because it mutates the process-global env var
+    //         that other tests (Test H) also read.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    #[serial]
+    fn test_is_deps_debug_enabled_honors_one_only() {
+        // Restore prior env on exit so we don't leak state between tests.
+        struct EnvGuard(Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("HQ_INSTALLER_DEBUG_DEPS", v),
+                    None => std::env::remove_var("HQ_INSTALLER_DEBUG_DEPS"),
+                }
+            }
+        }
+        let _g = EnvGuard(std::env::var("HQ_INSTALLER_DEBUG_DEPS").ok());
+
+        std::env::set_var("HQ_INSTALLER_DEBUG_DEPS", "1");
+        assert!(is_deps_debug_enabled(), "must be true when =1");
+
+        std::env::set_var("HQ_INSTALLER_DEBUG_DEPS", "0");
+        assert!(!is_deps_debug_enabled(), "must be false when =0");
+
+        std::env::set_var("HQ_INSTALLER_DEBUG_DEPS", "true");
+        assert!(
+            !is_deps_debug_enabled(),
+            "must be false when =true (strict == '1')"
+        );
+
+        std::env::remove_var("HQ_INSTALLER_DEBUG_DEPS");
+        assert!(!is_deps_debug_enabled(), "must be false when unset");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test H: End-to-end stderr capture — PRD acceptance criterion #5.
+    //
+    // `shell_login_path()` is cached via OnceLock per-process, so to exercise
+    // both the enabled-AND-fake-shell path and the disabled path we spawn a
+    // fresh test binary per scenario via `cargo test`. Each subprocess runs
+    // the dedicated `helper_emit_shell_probe_log` test which triggers the
+    // real probe; we capture its stderr and assert on the `[hq-deps]` line.
+    //
+    // Marked #[serial] to play nicely with Test G (both mutate env on this
+    // process) — the spawned cargo processes get their own env regardless.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    #[serial]
+    fn test_shell_probe_log_reaches_stderr_only_when_enabled() {
+        let exe = std::env::current_exe().expect("current_exe");
+
+        // Case 1: env var set + SHELL=/usr/bin/false → stderr must contain
+        // [hq-deps] and "exit=" (the NonZeroExit outcome renders "exit=<code>").
+        // Note: PRD wording referenced /bin/false, but macOS only ships the
+        // binary at /usr/bin/false. Since the installer is macOS-only, that's
+        // the correct path to trigger the NonZeroExit log branch.
+        let enabled = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "--nocapture",
+                "deps_tests::helper_emit_shell_probe_log",
+            ])
+            .env("HQ_INSTALLER_DEBUG_DEPS", "1")
+            .env("SHELL", "/usr/bin/false")
+            .output()
+            .expect("failed to spawn helper test (enabled)");
+        let enabled_stderr = String::from_utf8_lossy(&enabled.stderr);
+        assert!(
+            enabled.status.success(),
+            "helper test failed (enabled case): stdout={} stderr={}",
+            String::from_utf8_lossy(&enabled.stdout),
+            enabled_stderr
+        );
+        assert!(
+            enabled_stderr.contains("[hq-deps]"),
+            "expected [hq-deps] tag in stderr when enabled, got: {}",
+            enabled_stderr
+        );
+        assert!(
+            enabled_stderr.contains("exit="),
+            "expected 'exit=' marker in stderr when shell=/usr/bin/false, got: {}",
+            enabled_stderr
+        );
+
+        // Case 2: env var unset → zero [hq-deps] lines in stderr.
+        let disabled = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "--nocapture",
+                "deps_tests::helper_emit_shell_probe_log",
+            ])
+            .env_remove("HQ_INSTALLER_DEBUG_DEPS")
+            .env("SHELL", "/usr/bin/false")
+            .output()
+            .expect("failed to spawn helper test (disabled)");
+        let disabled_stderr = String::from_utf8_lossy(&disabled.stderr);
+        assert!(
+            disabled.status.success(),
+            "helper test failed (disabled case): stderr={}",
+            disabled_stderr
+        );
+        assert!(
+            !disabled_stderr.contains("[hq-deps]"),
+            "no [hq-deps] line should appear when env var is unset, got: {}",
+            disabled_stderr
+        );
+    }
+
+    /// Helper test harness for `test_shell_probe_log_reaches_stderr_only_when_enabled`.
+    ///
+    /// Calls `extended_search_path_in(Some(tmp_home))`, which internally invokes
+    /// the cached `shell_login_path()`. Running inside a fresh subprocess means
+    /// the OnceLock is untouched, so the probe actually fires and (when the
+    /// env var is set) emits its `[hq-deps]` line.
+    ///
+    /// Not a real acceptance test — just scaffolding. The outer test spawns
+    /// this by exact name and captures its stderr.
+    #[test]
+    fn helper_emit_shell_probe_log() {
+        // Use an empty tmp home so we don't depend on the spawning developer's
+        // version-manager setup polluting the log.
+        let home = TempDir::new().unwrap();
+        let _ = extended_search_path_in(Some(home.path()));
     }
 }
