@@ -362,6 +362,43 @@ mod deps_tests {
         );
     }
 
+    /// Test 11f: When multiple nvm Node versions exist under the fixture home,
+    ///           the latest version's bin dir must appear FIRST in PATH so that
+    ///           `which::which_in` resolves to the newest toolchain. Guards
+    ///           against the filesystem-order nondeterminism flagged in codex
+    ///           review of commit 9f57dc2.
+    #[test]
+    fn test_extended_search_path_nvm_picks_newest_version() {
+        let home = TempDir::new().unwrap();
+        let nvm_root = home.path().join(".nvm").join("versions").join("node");
+
+        // Seed two versions. Both have a `bin/node` executable; the test
+        // asserts which one which_in resolves to.
+        make_fake_bin_at(&nvm_root.join("v18.0.0").join("bin"), "nvm-test-tool");
+        make_fake_bin_at(&nvm_root.join("v22.17.0").join("bin"), "nvm-test-tool");
+
+        let path = extended_search_path_in(Some(home.path()));
+
+        // v22 must appear before v18 in the colon-joined PATH.
+        let v22_pos = path.find("v22.17.0").expect("v22 dir should be in PATH");
+        let v18_pos = path.find("v18.0.0").expect("v18 dir should be in PATH");
+        assert!(
+            v22_pos < v18_pos,
+            "v22.17.0 should precede v18.0.0 in PATH for correct version selection, got: {}",
+            path
+        );
+
+        // And which_in should resolve to the v22 binary.
+        let status = check_dep_in("nvm-test-tool", &path);
+        assert!(status.installed);
+        let resolved = status.path.expect("path should be populated");
+        assert!(
+            resolved.to_string_lossy().contains("v22.17.0"),
+            "which_in should pick the newest version, got: {:?}",
+            resolved
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Test 12: format_install_error surfaces stderr when available.
     //          Regression guard for the "npm -g fails silently" bug — before

@@ -185,30 +185,49 @@ fn version_manager_dirs(home: &std::path::Path) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
 
     // nvm: enumerate ~/.nvm/versions/node/*/bin
+    // read_dir order is filesystem-defined (unspecified). We sort descending by
+    // parsed version tuple so which::which_in resolves to the newest toolchain
+    // first — otherwise install_claude_code / install_qmd could target an older
+    // global prefix on multi-version systems.
     let nvm_root = home.join(".nvm").join("versions").join("node");
     if let Ok(entries) = std::fs::read_dir(&nvm_root) {
+        let mut collected: Vec<((u32, u32, u32), String)> = Vec::new();
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() {
                 let bin = p.join("bin");
                 if bin.exists() {
-                    out.push(bin.to_string_lossy().into_owned());
+                    let name = entry.file_name();
+                    let version = parse_node_version(&name.to_string_lossy());
+                    collected.push((version, bin.to_string_lossy().into_owned()));
                 }
             }
+        }
+        collected.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in collected {
+            out.push(path);
         }
     }
 
     // fnm: enumerate ~/.fnm/node-versions/*/installation/bin
+    // Same descending-version sort as the nvm block above.
     let fnm_root = home.join(".fnm").join("node-versions");
     if let Ok(entries) = std::fs::read_dir(&fnm_root) {
+        let mut collected: Vec<((u32, u32, u32), String)> = Vec::new();
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() {
                 let bin = p.join("installation").join("bin");
                 if bin.exists() {
-                    out.push(bin.to_string_lossy().into_owned());
+                    let name = entry.file_name();
+                    let version = parse_node_version(&name.to_string_lossy());
+                    collected.push((version, bin.to_string_lossy().into_owned()));
                 }
             }
+        }
+        collected.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in collected {
+            out.push(path);
         }
     }
 
@@ -225,6 +244,19 @@ fn version_manager_dirs(home: &std::path::Path) -> Vec<String> {
     }
 
     out
+}
+
+/// Parse a Node version directory name like `v22.17.0` or `20.10.1` into a
+/// `(major, minor, patch)` tuple for ordering. Strips a leading `v`, splits
+/// on `.`, and takes the first 3 components. Any unparseable component (or
+/// missing component) becomes `0` so malformed names sort last. Never panics.
+fn parse_node_version(dir_name: &str) -> (u32, u32, u32) {
+    let trimmed = dir_name.strip_prefix('v').unwrap_or(dir_name);
+    let mut parts = trimmed.split('.');
+    let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, patch)
 }
 
 /// Internal implementation shared by `check_dep` (uses real PATH) and
