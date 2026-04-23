@@ -7,9 +7,9 @@
 #[cfg(test)]
 mod deps_tests {
     use hq_installer_lib::commands::deps::{
-        cancel_install, check_dep_in, extended_search_path, extended_search_path_in,
-        format_install_error, format_path_log, format_shell_probe_log, is_deps_debug_enabled,
-        register_cancel_handle, ShellProbeOutcome,
+        cancel_install, check_dep_in, compute_path_counts, extended_search_path,
+        extended_search_path_in, format_install_error, format_path_log, format_shell_probe_log,
+        is_deps_debug_enabled, register_cancel_handle, ShellProbeOutcome,
     };
     use serial_test::serial;
     use std::fs;
@@ -599,6 +599,35 @@ mod deps_tests {
             "message should be truncated, got length {}",
             msg.len()
         );
+    }
+
+    /// Test: compute_path_counts splits the shell_path string on ':' so the
+    ///       log accurately reflects how many directories the login-shell
+    ///       probe contributed — not just whether it contributed anything.
+    #[test]
+    fn test_compute_path_counts_splits_shell_path_on_colons() {
+        let (shell, extras, home, vm) =
+            compute_path_counts("/usr/bin:/bin:/opt/homebrew/bin", 4, 0, 0);
+        assert_eq!(shell, 3, "three colon-separated dirs should yield shell=3");
+        assert_eq!(extras, 4);
+        assert_eq!(home, 0);
+        assert_eq!(vm, 0);
+    }
+
+    /// Test: empty shell_path means the shell-probe failed or returned
+    ///       nothing; shell count must be 0 (not 1) so support docs don't
+    ///       misread an empty probe as "1 dir contributed".
+    #[test]
+    fn test_compute_path_counts_empty_shell_is_zero() {
+        let (shell, _, _, _) = compute_path_counts("", 4, 0, 0);
+        assert_eq!(shell, 0, "empty shell path means zero dirs, got: {}", shell);
+    }
+
+    /// Test: a single-dir shell_path (no colons) yields shell=1.
+    #[test]
+    fn test_compute_path_counts_single_dir_shell_is_one() {
+        let (shell, _, _, _) = compute_path_counts("/usr/bin", 4, 0, 0);
+        assert_eq!(shell, 1);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

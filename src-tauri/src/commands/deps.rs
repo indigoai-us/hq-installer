@@ -136,6 +136,29 @@ pub fn format_shell_probe_log(shell: &str, outcome: &ShellProbeOutcome) -> Strin
     }
 }
 
+/// Compute per-source directory counts for the PATH log line.
+///
+/// `shell_path` is the raw colon-joined PATH string returned by
+/// `shell_login_path()` — counted by splitting on `:`. The other three
+/// are pushed counts tracked by the caller (extras is a static array
+/// length; home and vm are incremented as entries are appended).
+///
+/// Exposed `pub` for hermetic unit testing of the counting logic — no
+/// stderr capture needed.
+pub fn compute_path_counts(
+    shell_path: &str,
+    extras_count: usize,
+    home_count: usize,
+    vm_count: usize,
+) -> (usize, usize, usize, usize) {
+    let shell_count = if shell_path.is_empty() {
+        0
+    } else {
+        shell_path.split(':').count()
+    };
+    (shell_count, extras_count, home_count, vm_count)
+}
+
 /// Produce the `[hq-deps]` log line describing the final composed PATH.
 ///
 /// `counts` is `(shell, extras, home_local, version_managers)` — the number of
@@ -239,7 +262,6 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     // the only reliable way to find tools installed via `npm i -g` on systems
     // where the global prefix is under ~/.nvm/versions/node/<v>/bin or similar.
     let shell_path = shell_login_path();
-    let shell_count: usize = if shell_path.is_empty() { 0 } else { 1 };
     if !shell_path.is_empty() {
         dirs.push(shell_path.to_string());
     }
@@ -250,7 +272,6 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
         "/usr/local/bin", // Intel Homebrew + generic
         "/usr/local/sbin",
     ];
-    let extras_count: usize = extras.len();
     for e in extras {
         dirs.push(e.to_string());
     }
@@ -282,10 +303,15 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     let joined = dirs.join(":");
     // Env-gated diagnostic — emits at most one line per call when
     // HQ_INSTALLER_DEBUG_DEPS=1. Silent for any other value of the env var.
+    // shell_path is colon-joined; count individual dirs so support can
+    // see how many dirs the login-shell actually contributed.
     if is_deps_debug_enabled() {
         eprintln!(
             "{}",
-            format_path_log(&joined, (shell_count, extras_count, home_count, vm_count))
+            format_path_log(
+                &joined,
+                compute_path_counts(&shell_path, extras.len(), home_count, vm_count)
+            )
         );
     }
     joined
