@@ -345,6 +345,10 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         display: block;
         height: 20px;
         width: auto;
+        /* Source SVG is near-black (#141414). Invert to white so it reads
+           on the navy background. brightness(0) flattens to black first so
+           invert(1) produces pure white regardless of original paint. */
+        filter: brightness(0) invert(1);
       }
 
       .topbar-link {
@@ -417,9 +421,26 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
            Pack keyframes use background-position, which matches our
            gradient text mask cleanly. */
         background-size: 200% 100%;
-        animation: prism-sweep var(--motion-duration-sweep)
+        /* Pack's `prism-sweep` ends at opacity:0 (designed for transient
+           reveals layered over a static fallback). Local override settles
+           the wordmark visible after the sweep completes. */
+        animation: prism-sweep-settle var(--motion-duration-sweep)
           var(--motion-ease-cinematic) both;
         animation-delay: 120ms;
+      }
+
+      @keyframes prism-sweep-settle {
+        0% {
+          background-position: -120% 0;
+          opacity: 0;
+        }
+        20% {
+          opacity: 1;
+        }
+        100% {
+          background-position: 100% 0;
+          opacity: 1;
+        }
       }
 
       /* Solid-color fallback already handled by
