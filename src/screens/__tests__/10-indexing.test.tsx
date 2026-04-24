@@ -167,7 +167,7 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
-  it("spawns qmd embed after qmd collection-add succeeds", async () => {
+  it("spawns qmd embed detached (via sh -c) after qmd collection-add succeeds", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -186,14 +186,27 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     // Wait for step 0 to be spawned.
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
 
-    // Complete step 0 (qmd index .)
+    // Complete step 0 (qmd collection add .)
     completeProcess(handles[0]);
 
-    // Step 1 (qmd embed) should now be spawned.
+    // Step 1 is now fire-and-forget: `sh -c 'mkdir -p ... && qmd embed > log 2>&1'`.
+    // Output is redirected to ~/.hq/logs/qmd-embed.log so a future hq-sync
+    // background worker can tail it.
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
-        args: { cmd: "qmd", args: ["embed"], cwd: "/tmp/hq" },
-      });
+      const embedCall = mockInvoke.mock.calls.find(
+        ([cmd, payload]) => {
+          if (cmd !== "spawn_process") return false;
+          const args = (payload as { args?: { cmd?: string; args?: string[] } })
+            ?.args;
+          return (
+            args?.cmd === "sh" &&
+            args?.args?.[0] === "-c" &&
+            /qmd embed/.test(args?.args?.[1] ?? "") &&
+            /qmd-embed\.log/.test(args?.args?.[1] ?? "")
+          );
+        }
+      );
+      expect(embedCall).toBeDefined();
     });
   });
 
@@ -219,7 +232,7 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
   // ── 4. Shows "Continue" button when both steps complete ───────────────────
 
-  it("shows 'Continue' button when both steps complete successfully", async () => {
+  it("shows 'Continue' as soon as step 0 completes — embed runs in background", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -235,13 +248,10 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
     render(<QmdIndexing installPath="/tmp/hq" onNext={vi.fn()} />);
 
-    // Complete step 0.
+    // Complete step 0 only. Embed (step 1) is fire-and-forget — the user
+    // must not be blocked on its exit event.
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
-
-    // Complete step 1.
-    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(2));
-    completeProcess(handles[1]);
 
     await waitFor(() => {
       const btn =
@@ -249,6 +259,9 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
         screen.queryByRole("button", { name: /next/i });
       expect(btn).not.toBeNull();
     });
+
+    // And the step 1 row shows the new "Running in background" status.
+    expect(document.querySelector('[data-status="background"]')).not.toBeNull();
   });
 
   it("Continue button calls onNext", async () => {
@@ -272,9 +285,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
-
-    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(2));
-    completeProcess(handles[1]);
 
     await waitFor(() => {
       expect(
@@ -321,7 +331,11 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     });
   });
 
-  it("shows 'Retry' button when step 1 exits with failure", async () => {
+  it("step 1 (embed) failures are silent — no Retry surfaced to the user", async () => {
+    // Embed runs detached and its exit is never observed by the component,
+    // but even if a listener were attached, a failure must not surface a
+    // Retry button or block Continue. Semantic search falls back to BM25,
+    // so embeddings are strictly optional.
     const handles: string[] = [];
     mockInvoke.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -337,18 +351,22 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
     render(<QmdIndexing installPath="/tmp/hq" />);
 
-    // Complete step 0.
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
 
-    // Wait for step 1 to be spawned, then fail it.
-    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(2));
-    failProcess(handles[1]);
-
+    // Continue must be available immediately after step 0 succeeds,
+    // regardless of whether/how step 1 exits.
     await waitFor(() => {
-      const btn = screen.queryByRole("button", { name: /retry/i });
-      expect(btn).not.toBeNull();
+      expect(
+        screen.queryByRole("button", { name: /continue/i })
+      ).not.toBeNull();
     });
+
+    // Even if step 1 were to fail (we simulate an exit event to the
+    // embed handle, in case a listener ever gets attached), no Retry
+    // button should appear.
+    if (handles.length >= 2) failProcess(handles[1]);
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
   it("Retry button re-spawns from the failed step", async () => {

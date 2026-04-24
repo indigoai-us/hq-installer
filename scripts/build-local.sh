@@ -37,7 +37,12 @@ ZIP_NAME="hq-installer-local-v${VERSION}-${BUILD_TARGET}.zip"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"
 
 echo "→ Building hq-installer v${VERSION} for ${BUILD_TARGET}"
-pnpm tauri build --target "$BUILD_TARGET"
+# Disable updater artifact signing locally — the minisign private key lives in
+# CI secrets (TAURI_SIGNING_PRIVATE_KEY), and updater artifacts aren't needed
+# to launch the .app on a test VM. The --config override is deep-merged into
+# tauri.conf.json for this invocation only.
+pnpm tauri build --target "$BUILD_TARGET" \
+  --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 APP_PATH="$(find "src-tauri/target/${BUILD_TARGET}/release/bundle/macos" -maxdepth 1 -name "*.app" | head -1)"
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then

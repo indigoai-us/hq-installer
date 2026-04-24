@@ -1,12 +1,20 @@
 // 10-indexing.tsx — US-018
 // qmd indexing screen — runs `qmd collection add` (or `qmd update` if the
-// collection already exists) followed by `qmd embed`, with live progress.
+// collection already exists) and kicks off `qmd embed` as a detached
+// background task.
 //
-// Steps (auto-start on mount, sequential):
-//   1. qmd collection add . --name <slug>   (fresh install)
+// Steps (auto-start on mount):
+//   1. qmd collection add . --name <slug>   (fresh install, blocking)
 //        ↳ on "already exists" stderr, fall back to:
 //      qmd update --name <slug>             (re-index in place)
-//   2. qmd embed
+//   2. qmd embed   (fire-and-forget; output persisted to
+//                   ~/.hq/logs/qmd-embed.log for later monitoring)
+//
+// Embeddings are optional (semantic search falls back to BM25) and CPU
+// inference can take 10+ minutes on GPU-less machines, so we spawn `qmd
+// embed` detached and let the user advance immediately. Failures are
+// silent — recorded in the log file but not surfaced in the wizard. A
+// future hq-sync background worker can tail the log file to report status.
 //
 // The slug is derived from the basename of installPath — e.g.
 // "/Users/stefanjohnson/hq" → "hq". qmd 2.x uses named collections
@@ -21,7 +29,7 @@ import { listen } from "@tauri-apps/api/event";
 // Types
 // ---------------------------------------------------------------------------
 
-type StepStatus = "idle" | "running" | "done" | "error";
+type StepStatus = "idle" | "running" | "done" | "error" | "background";
 
 interface StepState {
   status: StepStatus;
@@ -81,7 +89,9 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   // Listeners registered during a run — tracked so we can clean them up.
   const unlistenRefs = useRef<Array<(() => void) | undefined>>([]);
 
-  // Handle of the currently-spawned child, so the Skip button can cancel it.
+  // Handle of the currently-spawned child for step 0 (index), so it can be
+  // cancelled on unmount. Step 1 (embed) is fire-and-forget — we deliberately
+  // do not track its handle so the child survives past this screen.
   const activeHandleRef = useRef<string | null>(null);
 
   // ---------------------------------------------------------------------------
@@ -106,26 +116,6 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
     setSteps((prev) =>
       prev.map((s, i) => (i === idx ? { ...s, expanded: !s.expanded } : s))
     );
-  }
-
-  // Skip the currently-running step. Used for the embed step on slow / GPU-less
-  // machines (e.g. VMs) where CPU inference can take 10+ minutes. Safe by
-  // design — semantic search falls back to BM25 via `qmd search` until the
-  // user runs `qmd embed` later from the CLI.
-  async function skipRunning() {
-    const h = activeHandleRef.current;
-    if (h) {
-      try {
-        await invoke("cancel_process", { handle: h });
-      } catch {
-        // Best-effort: if cancel fails, still advance the UI.
-      }
-      activeHandleRef.current = null;
-    }
-    for (const u of unlistenRefs.current) u?.();
-    unlistenRefs.current = [];
-    setRunning(false);
-    onNext?.();
   }
 
   // ---------------------------------------------------------------------------
@@ -172,10 +162,11 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
     // invocation regardless of whether the caller passes stderrBuf.
     const stderrLines: string[] = [];
 
-    // Listen for stderr — qmd writes errors like "VOYAGE_AI_API_KEY not set"
-    // to stderr, and we want those visible in the log panel. Also mirror into
-    // the caller-provided buffer when present so known-benign errors (e.g.
-    // "already exists") can be detected after the process exits.
+    // Listen for stderr — qmd (via node-llama-cpp) writes progress and
+    // diagnostic lines here, e.g. "no GPU acceleration, running on CPU"
+    // or model-resolution failures. Mirror into the caller-provided buffer
+    // when present so known-benign errors (e.g. "already exists") can be
+    // detected after the process exits.
     const stderrUnlisten = await listen(
       `process://${handle}/stderr`,
       (event: { payload: unknown }) => {
@@ -291,13 +282,34 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         }
       }
 
-      // ── Step 1: qmd embed ───────────────────────────────────────────────────
+      // ── Step 1: qmd embed (fire-and-forget) ─────────────────────────────────
+      // Embeddings are optional (BM25 via `qmd search` still works) and CPU
+      // inference can take 10+ minutes on machines without a GPU. Spawn
+      // detached via `sh -c`, redirect output to ~/.hq/logs/qmd-embed.log
+      // for later inspection, and advance immediately. We deliberately do
+      // not register listeners or track the handle — the process outlives
+      // this component. A future hq-sync background worker will take over
+      // monitoring by tailing the log file.
       if (startIdx <= 1) {
-        patchStep(1, { status: "running" });
-        const ok = await runQmd(1, ["embed"]);
-        if (!ok) {
-          setRunning(false);
-          return;
+        try {
+          await invoke<string>("spawn_process", {
+            args: {
+              cmd: "sh",
+              args: [
+                "-c",
+                'mkdir -p "$HOME/.hq/logs" && qmd embed > "$HOME/.hq/logs/qmd-embed.log" 2>&1',
+              ],
+              cwd: installPath,
+            },
+          });
+          patchStep(1, { status: "background" });
+        } catch (err) {
+          // Silent: failing to even spawn is rare and non-actionable here.
+          // Log to the step's internal buffer so a curious user can still
+          // toggle the log panel to see what happened.
+          const msg = err instanceof Error ? err.message : String(err);
+          appendLog(1, `[stderr] spawn failed: ${msg}`);
+          patchStep(1, { status: "background" });
         }
       }
 
@@ -326,7 +338,9 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   // Derived
   // ---------------------------------------------------------------------------
 
-  const allDone = steps.every((s) => s.status === "done");
+  // Continue is gated on step 0 (indexing) only. Step 1 (embeddings) runs
+  // detached in the background and never blocks the wizard.
+  const canContinue = steps[0].status === "done";
 
   // ---------------------------------------------------------------------------
   // Render
@@ -353,32 +367,22 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         ))}
       </div>
 
-      {/* Embed-step warning — shown while step 1 is running. CPU-only
-          inference (e.g. VMs without GPU passthrough) can take 10+ minutes;
-          without this hint the screen looks hung. */}
-      {steps[1].status === "running" && (
+      {/* Embeddings background note — shown once step 1 has been kicked off.
+          Tells the user the process is still running and where to find logs
+          if they want to check on it. */}
+      {steps[1].status === "background" && (
         <p className="text-xs text-zinc-500 leading-relaxed -mt-1">
-          First-run embeddings can take several minutes — longer on VMs or
-          machines without a GPU. It's safe to skip: semantic search falls back
-          to keyword search, and you can run <code className="px-1 py-0.5 rounded bg-white/10 text-zinc-300">qmd embed</code> later from the terminal.
+          Embeddings are generating in the background — this may take several
+          minutes, longer on VMs or machines without a GPU. Safe to continue:
+          semantic search falls back to keyword search until they finish. Logs
+          at <code className="px-1 py-0.5 rounded bg-white/10 text-zinc-300">~/.hq/logs/qmd-embed.log</code>.
         </p>
       )}
 
       {/* Action buttons */}
       <div className="flex gap-3">
-        {/* Skip during an active run — only meaningful for the embed step
-            (step 1); skipping the index step (step 0) would leave HQ
-            unsearchable. */}
-        {running && steps[1].status === "running" && (
-          <button
-            type="button"
-            onClick={skipRunning}
-            className="px-6 py-2.5 rounded-full text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors"
-          >
-            Skip embeddings
-          </button>
-        )}
-
+        {/* Step 0 (index) failure — retry / view log. Step 1 (embed) never
+            surfaces errors in the UI; it fails silently in the background. */}
         {failedStep !== null && !running && (
           <>
             <button
@@ -395,21 +399,10 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
             >
               View log
             </button>
-            {/* Skip is safe here: the first step (index) succeeded in most
-                failures — only embeddings (optional, used for vsearch) are
-                missing. Semantic search still falls back to BM25 via
-                `qmd search`, so HQ remains usable without embeddings. */}
-            <button
-              type="button"
-              onClick={onNext}
-              className="px-6 py-2.5 rounded-full text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors"
-            >
-              Skip
-            </button>
           </>
         )}
 
-        {allDone && (
+        {canContinue && (
           <button
             type="button"
             onClick={onNext}
@@ -449,6 +442,14 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
           {step.status === "done" && (
             <span data-status="done" className="text-xs text-green-400">
               Done
+            </span>
+          )}
+          {step.status === "background" && (
+            <span
+              data-status="background"
+              className="text-xs text-blue-400 hq-text-shimmer"
+            >
+              Running in background
             </span>
           )}
           {step.status === "error" && (
