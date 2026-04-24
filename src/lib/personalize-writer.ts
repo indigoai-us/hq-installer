@@ -29,10 +29,16 @@ export interface PersonalizationAnswers {
   customizations?: Record<string, string>;
   /** Optional list of companies the user wants scaffolded under companies/. */
   companies?: CompanySeed[];
+  /** Slugs of companies that already exist at `{baseDir}/companies/{slug}/`.
+   *  When present, the scaffold loop skips mkdir of subdirs AND writeTextFile
+   *  of company.yaml for any entry whose slug is in this set — so grafts
+   *  don't clobber pre-existing company data. Other companies in the same
+   *  batch are unaffected. Defaults to an empty set. */
+  existingSlugs?: Set<string>;
 }
 
 /** "Indigo Test" → "indigo-test" — same rule as the team-setup screen. */
-function slugifyCompany(s: string): string {
+export function slugifyCompany(s: string): string {
   return s
     .toLowerCase()
     .trim()
@@ -137,7 +143,16 @@ export async function personalize(
   baseDir: string,
   options?: PersonalizeOptions,
 ): Promise<void> {
-  const { name, about, goals, starterProject, customizations, companies } = answers;
+  const {
+    name,
+    about,
+    goals,
+    starterProject,
+    customizations,
+    companies,
+    existingSlugs,
+  } = answers;
+  const existing = existingSlugs ?? new Set<string>();
 
   // -----------------------------------------------------------------------
   // 1. Load and render profile.md
@@ -207,7 +222,8 @@ export async function personalize(
   // -----------------------------------------------------------------------
   // Each company gets the standard HQ skeleton: knowledge/, settings/,
   // workers/, projects/ + a company.yaml capturing display name + website.
-  // We dedupe by slug so duplicate names don't collide on disk.
+  // We dedupe by slug so duplicate names don't collide on disk, and skip any
+  // slug in `existingSlugs` so grafts preserve pre-existing company data.
   if (companies && companies.length > 0) {
     const seen = new Set<string>();
     for (const co of companies) {
@@ -216,6 +232,11 @@ export async function personalize(
       const slug = slugifyCompany(displayName);
       if (!slug || seen.has(slug)) continue;
       seen.add(slug);
+
+      // Skip companies already present on disk — don't clobber their
+      // company.yaml or their subtree. The loop still runs so mixed
+      // batches write the non-existing entries normally.
+      if (existing.has(slug)) continue;
 
       const coBase = `${baseDir}/companies/${slug}`;
       for (const sub of ["knowledge", "settings", "workers", "projects"]) {

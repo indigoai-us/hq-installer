@@ -46,6 +46,14 @@ vi.mock("@tauri-apps/api/path", () => ({
 
 vi.mock("../../lib/personalize-writer.js", () => ({
   personalize: vi.fn().mockResolvedValue(undefined),
+  // Real implementation of slugifyCompany so per-row dedupe warnings in the
+  // screen match the writer's scaffold loop behaviour exactly.
+  slugifyCompany: (s: string) =>
+    s
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, ""),
 }));
 
 vi.mock("../../lib/cognito.js", () => ({
@@ -78,11 +86,14 @@ vi.mock("../../lib/wizard-state.js", () => ({
     gitEmail: null,
     personalized: false,
     connectedCompanyCount: 0,
+    hqMode: null,
+    existingCompanies: [],
   })),
   setPersonalized: vi.fn(),
   setTeam: vi.fn(),
   setIsPersonal: vi.fn(),
   setConnectedCompanyCount: vi.fn(),
+  subscribeWizardState: vi.fn(() => () => undefined),
 }));
 
 import { personalize } from "../../lib/personalize-writer.js";
@@ -590,6 +601,190 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
         <Personalize installPath="/tmp/hq" onNext={vi.fn()} />,
       );
       expect(container.innerHTML).not.toMatch(/\bindigo\b/);
+    });
+  });
+
+  // ── 7b. Existing-HQ companies + manual-add dedupe (US-002) ────────────────
+  //
+  // When the directory screen (06) detects an existing HQ folder, it populates
+  // `wizard-state.existingCompanies`. Personalize must:
+  //   • Render a read-only "Already in this HQ" section above the manual-add
+  //     form when the list is non-empty, and hide it when empty.
+  //   • Dedupe manual-add rows in real time: if the typed name slugifies to
+  //     an already-present slug, show an inline warning and disable the
+  //     shared "+ Add company" affordance.
+
+  describe("existing-HQ companies + manual-add dedupe (US-002)", () => {
+    it("does NOT render the 'Already in this HQ' section when the list is empty", () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: null,
+        existingCompanies: [],
+      });
+
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+      expect(screen.queryByText(/already in this hq/i)).toBeNull();
+    });
+
+    it("renders each existing company (name + slug) in a read-only row when non-empty", () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: "graft",
+        existingCompanies: [
+          { slug: "indigo", name: "Indigo" },
+          { slug: "globex", name: "Globex" },
+        ],
+      });
+
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+      // Section header
+      expect(screen.getByText(/already in this hq/i)).toBeDefined();
+      // Each company row surfaces the display name AND its slug
+      expect(screen.getByText("Indigo")).toBeDefined();
+      expect(screen.getByText("indigo")).toBeDefined();
+      expect(screen.getByText("Globex")).toBeDefined();
+      expect(screen.getByText("globex")).toBeDefined();
+    });
+
+    it("shows an inline warning when a manual-add row slugifies to an existing slug", async () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: "graft",
+        existingCompanies: [{ slug: "indigo", name: "Indigo" }],
+      });
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      // Add a row and type a name that slugifies to "indigo"
+      await user.click(screen.getByRole("button", { name: /add company/i }));
+      const nameInput = screen.getByLabelText(/company 1 name/i);
+      await user.type(nameInput, "Indigo");
+
+      // Warning surfaces in real time
+      await waitFor(() => {
+        expect(
+          screen.queryByText(/already in this hq — will be synced/i),
+        ).not.toBeNull();
+      });
+    });
+
+    it("disables the '+ Add company' button while a row is duplicate", async () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: "graft",
+        existingCompanies: [{ slug: "indigo", name: "Indigo" }],
+      });
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      const addBtn = screen.getByRole("button", {
+        name: /add company/i,
+      }) as HTMLButtonElement;
+
+      // Initially enabled — no rows yet
+      expect(addBtn.disabled).toBe(false);
+
+      await user.click(addBtn);
+      const nameInput = screen.getByLabelText(/company 1 name/i);
+      await user.type(nameInput, "Indigo");
+
+      await waitFor(() => {
+        expect(addBtn.disabled).toBe(true);
+      });
+    });
+
+    it("does NOT show a warning when the typed name is unique to the HQ", async () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: "graft",
+        existingCompanies: [{ slug: "indigo", name: "Indigo" }],
+      });
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await user.click(screen.getByRole("button", { name: /add company/i }));
+      const nameInput = screen.getByLabelText(/company 1 name/i);
+      await user.type(nameInput, "Acme Corp");
+
+      // Give React a tick, then assert no warning
+      await waitFor(() => expect(nameInput).toHaveValue("Acme Corp"));
+      expect(
+        screen.queryByText(/already in this hq — will be synced/i),
+      ).toBeNull();
+    });
+
+    it("passes existingSlugs set to personalize() on submit", async () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: "graft",
+        existingCompanies: [
+          { slug: "indigo", name: "Indigo" },
+          { slug: "globex", name: "Globex" },
+        ],
+      });
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
+      });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
+      const [answers] = mockPersonalize.mock.calls[0];
+      expect(answers.existingSlugs).toBeInstanceOf(Set);
+      expect(Array.from(answers.existingSlugs!).sort()).toEqual([
+        "globex",
+        "indigo",
+      ]);
     });
   });
 
