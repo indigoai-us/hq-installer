@@ -786,6 +786,79 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
         "indigo",
       ]);
     });
+
+    // ── Codex P1 regression: honor hqMode='overwrite' ───────────────────────
+    //
+    // When the user picks "Overwrite" on the directory screen, the writer
+    // must be free to create / overwrite every company subtree. Passing a
+    // non-empty existingSlugs set would silently skip pre-existing
+    // company.yaml files (graft behaviour) and leave stale config behind.
+
+    it("passes an EMPTY existingSlugs set when hqMode='overwrite' (does not dedupe)", async () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: "overwrite",
+        existingCompanies: [{ slug: "acme", name: "Acme" }],
+      });
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
+      });
+
+      // Add a manual row for "Acme" so we submit SOMETHING that would
+      // otherwise be deduped by the legacy graft behaviour.
+      await user.click(screen.getByRole("button", { name: /add company/i }));
+      const nameInput = screen.getByLabelText(/company 1 name/i);
+      await user.type(nameInput, "Acme");
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
+      const [answers] = mockPersonalize.mock.calls[0];
+      expect(answers.existingSlugs).toBeInstanceOf(Set);
+      expect(answers.existingSlugs!.size).toBe(0);
+    });
+
+    it("passes a POPULATED existingSlugs set when hqMode='graft' (dedupes)", async () => {
+      mockGetWizardState.mockReturnValue({
+        telemetryEnabled: true,
+        team: null,
+        isPersonal: true,
+        installPath: "/tmp/hq",
+        gitName: null,
+        gitEmail: null,
+        personalized: false,
+        connectedCompanyCount: 0,
+        hqMode: "graft",
+        existingCompanies: [{ slug: "acme", name: "Acme" }],
+      });
+
+      const user = userEvent.setup();
+      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        const input = findNameInput();
+        expect(input?.value).toBe("Jane Doe");
+      });
+
+      await user.click(findContinueButton()!);
+
+      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
+      const [answers] = mockPersonalize.mock.calls[0];
+      expect(answers.existingSlugs).toBeInstanceOf(Set);
+      expect(answers.existingSlugs!.has("acme")).toBe(true);
+    });
   });
 
   // ── 8. Tauri environment compatibility ────────────────────────────────────

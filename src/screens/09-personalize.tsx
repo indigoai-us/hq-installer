@@ -219,15 +219,24 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
 
       const merged = [...cloudSeeds, ...manualSeeds];
 
+      // Only dedupe pre-existing slugs when GRAFTING onto an existing HQ.
+      // When the user chose "Overwrite" on the directory screen (or started
+      // fresh with hqMode === null), the writer must be free to create /
+      // overwrite every company subtree — passing a non-empty set here
+      // would silently skip pre-existing company.yaml files and leave
+      // stale config behind (the overwrite flow would behave like graft).
+      const hqMode = getWizardState().hqMode;
+      const existingSlugs =
+        hqMode === "graft"
+          ? new Set(existingCompanies.map((c) => c.slug))
+          : new Set<string>();
+
       setSubmitStage("Writing profile…");
       await personalize(
         {
           name: safeName,
           companies: merged.length > 0 ? merged : undefined,
-          // Skip mkdir + company.yaml writes for any slug the directory
-          // screen already detected on disk — preserves pre-existing
-          // company data when grafting onto an existing HQ folder.
-          existingSlugs: new Set(existingCompanies.map((c) => c.slug)),
+          existingSlugs,
         },
         installPath,
       );
