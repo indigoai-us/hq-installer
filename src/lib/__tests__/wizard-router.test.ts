@@ -19,6 +19,8 @@ function makeState(overrides: Partial<WizardState> = {}): WizardState {
     gitEmail: null,
     personalized: false,
     connectedCompanyCount: 0,
+    hqMode: null,
+    existingCompanies: [],
     ...overrides,
   };
 }

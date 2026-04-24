@@ -154,6 +154,8 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
       gitEmail: null,
       personalized: false,
       connectedCompanyCount: 0,
+      hqMode: null,
+      existingCompanies: [],
     });
   });
 

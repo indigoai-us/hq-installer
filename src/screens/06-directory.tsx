@@ -3,7 +3,11 @@
 
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { setInstallPath } from "@/lib/wizard-state";
+import {
+  setExistingCompanies,
+  setHqMode as persistHqMode,
+  setInstallPath,
+} from "@/lib/wizard-state";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,17 +52,25 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
     setInstallPath(picked);
     setIsHq(false);
     setHqMode(null);
+    // Clear any stale mode/companies from a previous pick. These are
+    // re-populated below only when the new path is an existing HQ.
+    persistHqMode(null);
+    setExistingCompanies([]);
     setNewDirectory(false);
     setDetecting(true);
 
     try {
-      const result = await invoke<{ exists: boolean; isHq: boolean }>(
-        "detect_hq",
-        { path: picked }
-      );
+      const result = await invoke<{
+        exists: boolean;
+        isHq: boolean;
+        existingCompanies?: Array<{ slug: string; name: string }>;
+      }>("detect_hq", { path: picked });
 
       if (result.isHq) {
         setIsHq(true);
+        // Persist the enumerated companies so downstream screens
+        // (Personalize writer, sync flows) can dedupe against them.
+        setExistingCompanies(result.existingCompanies ?? []);
       } else {
         setNewDirectory(true);
       }
@@ -69,10 +81,12 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
 
   function handleGraft() {
     setHqMode("graft");
+    persistHqMode("graft");
   }
 
   function handleOverwrite() {
     setHqMode("overwrite");
+    persistHqMode("overwrite");
   }
 
   // Continue is enabled when:
