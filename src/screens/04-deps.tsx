@@ -32,6 +32,8 @@ interface DepDef {
   optional?: boolean;
   /** IDs that must be `installed` before this row unlocks. Empty = root. */
   dependsOn?: readonly string[];
+  /** Optional secondary line rendered below the label — use for disambiguation hints. */
+  subtitle?: string;
 }
 
 const DEPS: readonly DepDef[] = [
@@ -85,6 +87,7 @@ const DEPS: readonly DepDef[] = [
     binary: "claude",
     optional: true,
     dependsOn: ["node"],
+    subtitle: "Anthropic CLI — not the Claude desktop app",
   },
   {
     id: "qmd",
@@ -333,14 +336,24 @@ function DepRow({
       data-locked={locked ? "true" : "false"}
     >
       <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-zinc-200">
-          {dep.label}
-          {dep.optional && (
-            <span className="ml-2 text-[10px] uppercase tracking-wider text-zinc-500 font-normal">
-              Optional
+        <div className="flex flex-col">
+          <span className="text-sm font-medium text-zinc-200">
+            {dep.label}
+            {dep.optional && (
+              <span className="ml-2 text-[10px] uppercase tracking-wider text-zinc-500 font-normal">
+                Optional
+              </span>
+            )}
+          </span>
+          {dep.subtitle && (
+            <span
+              data-subtitle
+              className="text-xs text-zinc-500 font-normal mt-0.5"
+            >
+              {dep.subtitle}
             </span>
           )}
-        </span>
+        </div>
 
         <div className="flex items-center gap-2">
           {tool.status === "loading" && (

@@ -1,21 +1,29 @@
-// 10-indexing.tsx — US-018
-// qmd indexing screen — runs `qmd collection add` (or `qmd update` if the
-// collection already exists) followed by `qmd embed`, with live progress.
+// 10-indexing.tsx — Verify screen
+// Registers this HQ folder with qmd's collection registry and writes a marker
+// telling hq-sync to generate embeddings in the background.
 //
-// Steps (auto-start on mount, sequential):
-//   1. qmd collection add . --name <slug>   (fresh install)
-//        ↳ on "already exists" stderr, fall back to:
-//      qmd update --name <slug>             (re-index in place)
-//   2. qmd embed
+// Steps (auto-start on mount):
+//   qmd collection add . --name <slug>     (fresh install, blocking, fast)
+//     ↳ on "already exists" stderr, fall back to:
+//   qmd update --name <slug>               (re-index in place)
+//
+// On success, we write {installPath}/.hq-embeddings-pending.json (or
+// ~/.hq/embeddings-pending.json as a fallback) so the hq-sync menubar app
+// picks up the pending job on next launch. Embeddings themselves are
+// generated from sync, not here — keeps the installer fast and makes
+// semantic indexing visible in the tray.
 //
 // The slug is derived from the basename of installPath — e.g.
-// "/Users/stefanjohnson/hq" → "hq". qmd 2.x uses named collections
-// (xdg-based registry at ~/.config/qmd/index.yml) so each HQ install gets
-// its own collection identity instead of the old unnamed 0.3.x flat index.
+// "/Users/stefanjohnson/hq" → "hq".
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  writeTextFile,
+  mkdir,
+  BaseDirectory,
+} from "@tauri-apps/plugin-fs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,10 +55,7 @@ export interface QmdIndexingProps {
 // Step descriptors (static labels)
 // ---------------------------------------------------------------------------
 
-const STEP_LABELS = [
-  "Index HQ knowledge base",
-  "Generate semantic embeddings",
-];
+const STEP_LABELS = ["Register HQ with semantic search"];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,12 +71,51 @@ function collectionSlug(installPath: string): string {
   return installPath.split("/").filter(Boolean).pop() || "hq";
 }
 
+/**
+ * Write the embeddings-pending marker so hq-sync knows to run `qmd embed`
+ * on next launch. Primary target is `{installPath}/.hq-embeddings-pending.json`;
+ * if `installPath` is not a usable absolute path (empty, relative, or the
+ * write fails for any reason), fall back to `~/.hq/embeddings-pending.json`.
+ * Sync checks both locations.
+ */
+async function writePendingMarker(installPath: string): Promise<void> {
+  const payload = JSON.stringify(
+    { requestedAt: new Date().toISOString(), reason: "post-install" },
+    null,
+    2
+  );
+
+  const hasAbsoluteInstallPath =
+    typeof installPath === "string" && installPath.startsWith("/");
+
+  if (hasAbsoluteInstallPath) {
+    const primary = `${installPath.replace(/\/+$/, "")}/.hq-embeddings-pending.json`;
+    try {
+      await writeTextFile(primary, payload);
+      return;
+    } catch {
+      // Fall through to the home-directory fallback.
+    }
+  }
+
+  // Fallback: ~/.hq/embeddings-pending.json (ensure the directory exists).
+  try {
+    await mkdir(".hq", { baseDir: BaseDirectory.Home, recursive: true });
+  } catch {
+    // mkdir is idempotent; ignore "already exists" and let the write fail loudly
+    // if something more serious is wrong.
+  }
+  await writeTextFile(".hq/embeddings-pending.json", payload, {
+    baseDir: BaseDirectory.Home,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
-  const [steps, setSteps] = useState<StepState[]>([makeStep(), makeStep()]);
+  const [steps, setSteps] = useState<StepState[]>([makeStep()]);
   const [running, setRunning] = useState(false);
   const [failedStep, setFailedStep] = useState<number | null>(null);
 
@@ -81,7 +125,8 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   // Listeners registered during a run — tracked so we can clean them up.
   const unlistenRefs = useRef<Array<(() => void) | undefined>>([]);
 
-  // Handle of the currently-spawned child, so the Skip button can cancel it.
+  // Handle of the currently-spawned child for step 0 (index), so it can be
+  // cancelled on unmount.
   const activeHandleRef = useRef<string | null>(null);
 
   // ---------------------------------------------------------------------------
@@ -106,26 +151,6 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
     setSteps((prev) =>
       prev.map((s, i) => (i === idx ? { ...s, expanded: !s.expanded } : s))
     );
-  }
-
-  // Skip the currently-running step. Used for the embed step on slow / GPU-less
-  // machines (e.g. VMs) where CPU inference can take 10+ minutes. Safe by
-  // design — semantic search falls back to BM25 via `qmd search` until the
-  // user runs `qmd embed` later from the CLI.
-  async function skipRunning() {
-    const h = activeHandleRef.current;
-    if (h) {
-      try {
-        await invoke("cancel_process", { handle: h });
-      } catch {
-        // Best-effort: if cancel fails, still advance the UI.
-      }
-      activeHandleRef.current = null;
-    }
-    for (const u of unlistenRefs.current) u?.();
-    unlistenRefs.current = [];
-    setRunning(false);
-    onNext?.();
   }
 
   // ---------------------------------------------------------------------------
@@ -172,10 +197,11 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
     // invocation regardless of whether the caller passes stderrBuf.
     const stderrLines: string[] = [];
 
-    // Listen for stderr — qmd writes errors like "VOYAGE_AI_API_KEY not set"
-    // to stderr, and we want those visible in the log panel. Also mirror into
-    // the caller-provided buffer when present so known-benign errors (e.g.
-    // "already exists") can be detected after the process exits.
+    // Listen for stderr — qmd (via node-llama-cpp) writes progress and
+    // diagnostic lines here, e.g. "no GPU acceleration, running on CPU"
+    // or model-resolution failures. Mirror into the caller-provided buffer
+    // when present so known-benign errors (e.g. "already exists") can be
+    // detected after the process exits.
     const stderrUnlisten = await listen(
       `process://${handle}/stderr`,
       (event: { payload: unknown }) => {
@@ -291,14 +317,15 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         }
       }
 
-      // ── Step 1: qmd embed ───────────────────────────────────────────────────
-      if (startIdx <= 1) {
-        patchStep(1, { status: "running" });
-        const ok = await runQmd(1, ["embed"]);
-        if (!ok) {
-          setRunning(false);
-          return;
-        }
+      // Write the pending-embeddings marker so hq-sync picks up the job on
+      // next launch. Non-fatal: if both primary and fallback writes fail,
+      // log into the step's panel but still let the user continue — they can
+      // always re-trigger embeddings manually from sync Settings.
+      try {
+        await writePendingMarker(installPath);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendLog(0, `[warn] Could not write embeddings marker: ${msg}`);
       }
 
       setRunning(false);
@@ -326,7 +353,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   // Derived
   // ---------------------------------------------------------------------------
 
-  const allDone = steps.every((s) => s.status === "done");
+  const canContinue = steps[0].status === "done";
 
   // ---------------------------------------------------------------------------
   // Render
@@ -337,7 +364,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-medium text-white">Indexing HQ</h1>
         <p className="text-sm font-light text-zinc-400">
-          Building the knowledge index so Claude Code can search your HQ instantly.
+          HQ registered. Embeddings will generate in the background from your menubar.
         </p>
       </div>
 
@@ -353,32 +380,8 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         ))}
       </div>
 
-      {/* Embed-step warning — shown while step 1 is running. CPU-only
-          inference (e.g. VMs without GPU passthrough) can take 10+ minutes;
-          without this hint the screen looks hung. */}
-      {steps[1].status === "running" && (
-        <p className="text-xs text-zinc-500 leading-relaxed -mt-1">
-          First-run embeddings can take several minutes — longer on VMs or
-          machines without a GPU. It's safe to skip: semantic search falls back
-          to keyword search, and you can run <code className="px-1 py-0.5 rounded bg-white/10 text-zinc-300">qmd embed</code> later from the terminal.
-        </p>
-      )}
-
       {/* Action buttons */}
       <div className="flex gap-3">
-        {/* Skip during an active run — only meaningful for the embed step
-            (step 1); skipping the index step (step 0) would leave HQ
-            unsearchable. */}
-        {running && steps[1].status === "running" && (
-          <button
-            type="button"
-            onClick={skipRunning}
-            className="px-6 py-2.5 rounded-full text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors"
-          >
-            Skip embeddings
-          </button>
-        )}
-
         {failedStep !== null && !running && (
           <>
             <button
@@ -395,21 +398,10 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
             >
               View log
             </button>
-            {/* Skip is safe here: the first step (index) succeeded in most
-                failures — only embeddings (optional, used for vsearch) are
-                missing. Semantic search still falls back to BM25 via
-                `qmd search`, so HQ remains usable without embeddings. */}
-            <button
-              type="button"
-              onClick={onNext}
-              className="px-6 py-2.5 rounded-full text-sm font-medium border border-white/20 text-white hover:bg-white/5 transition-colors"
-            >
-              Skip
-            </button>
           </>
         )}
 
-        {allDone && (
+        {canContinue && (
           <button
             type="button"
             onClick={onNext}

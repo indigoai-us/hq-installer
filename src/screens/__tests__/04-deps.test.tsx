@@ -152,6 +152,15 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       expect(calledWithSlug).toBe(false);
     });
 
+    it("renders 'Anthropic CLI — not the Claude desktop app' subtitle on the claude-code row", async () => {
+      render(<DepsInstall onNext={vi.fn()} />);
+      const subtitle = await screen.findByText("Anthropic CLI — not the Claude desktop app");
+      expect(subtitle).toBeTruthy();
+      // The subtitle must live inside the claude-code row — not floating elsewhere.
+      const row = subtitle.closest('[data-dep="claude-code"]');
+      expect(row).not.toBeNull();
+    });
+
     it("calls check_dep for 'qmd' on mount", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
