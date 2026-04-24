@@ -57,6 +57,21 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
   </head>
   <body>
     <main class="root">
+      <nav class="topbar" aria-label="Indigo">
+        <a class="topbar-home" href="https://www.getindigo.ai" aria-label="Indigo home">
+          <img
+            src="/indigo-logo.svg"
+            alt="Indigo"
+            width="84"
+            height="20"
+            decoding="async"
+          />
+        </a>
+        <a class="topbar-link" href="https://www.getindigo.ai/sync">
+          HQ Sync →
+        </a>
+      </nav>
+
       <header class="hero">
         <div class="prism-beam" aria-hidden="true"></div>
         <div class="logo">
@@ -153,11 +168,15 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       </section>
 
       <footer class="footer">
-        <p>
+        <p class="footer-links">
+          <a href="https://www.getindigo.ai">Indigo home</a>
+          <span class="footer-sep" aria-hidden="true">·</span>
+          <a href="https://www.getindigo.ai/sync">Download HQ Sync for macOS</a>
+          <span class="footer-sep" aria-hidden="true">·</span>
           {release ? (
-            <a href={release.htmlUrl}>View all releases on GitHub →</a>
+            <a href={release.htmlUrl}>Releases on GitHub →</a>
           ) : (
-            <a href="https://github.com/indigoai-us/hq-installer">View the source on GitHub →</a>
+            <a href="https://github.com/indigoai-us/hq-installer">Source on GitHub →</a>
           )}
         </p>
         <p class="copyright">© 2026 Indigo. HQ is open source.</p>
@@ -293,8 +312,61 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       .root {
         max-width: 640px;
         margin: 0 auto;
-        padding: 72px 24px 80px;
+        padding: 28px 24px 80px;
         position: relative;
+      }
+
+      /* ── Topbar ─────────────────────────────────────── */
+      /* Indigo logo (home link) on the left, secondary /sync link on
+         the right. Thin and unobtrusive — the HQ hero is still the
+         focal point below. */
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 44px;
+        position: relative;
+        z-index: 2;
+      }
+
+      .topbar-home {
+        display: inline-flex;
+        align-items: center;
+        opacity: 0.85;
+        transition: opacity 200ms var(--motion-ease-cinematic);
+      }
+
+      .topbar-home:hover {
+        opacity: 1;
+      }
+
+      .topbar-home img {
+        display: block;
+        height: 20px;
+        width: auto;
+      }
+
+      .topbar-link {
+        font-family: var(--font-display);
+        font-variant-numeric: tabular-nums;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        color: var(--warm-yellow-80);
+        text-decoration: none;
+        padding: 6px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        transition:
+          color 200ms var(--motion-ease-cinematic),
+          border-color 200ms var(--motion-ease-cinematic),
+          background 200ms var(--motion-ease-cinematic);
+      }
+
+      .topbar-link:hover {
+        color: #fafafa;
+        border-color: rgba(255, 255, 255, 0.25);
+        background: rgba(255, 255, 255, 0.04);
       }
 
       /* ── Hero ───────────────────────────────────────── */
@@ -615,6 +687,20 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         color: var(--warm-yellow-60);
         border-top: 1px solid var(--warm-brown-60);
         padding-top: 28px;
+      }
+
+      .footer-links {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin: 0;
+      }
+
+      .footer-sep {
+        color: var(--warm-yellow-60);
+        opacity: 0.5;
       }
 
       .footer a {
