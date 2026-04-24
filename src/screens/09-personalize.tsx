@@ -22,11 +22,14 @@ import {
   type UserCompanyEntry,
 } from "@/lib/vault-handoff";
 import {
+  getWizardState,
   setPersonalized,
   setTeam,
   setIsPersonal,
   setConnectedCompanyCount,
+  subscribeWizardState,
 } from "@/lib/wizard-state";
+import { slugifyCompany } from "@/lib/personalize-writer";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -64,12 +67,42 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
   const [cloudLoading, setCloudLoading] = useState(true);
   const [cloudError, setCloudError] = useState<string | null>(null);
 
+  // Companies already present at `{installPath}/companies/{slug}/company.yaml`
+  // — pulled from wizard-state (detected by the directory screen when the
+  // user picks a pre-existing HQ folder). Drives the "Already in this HQ"
+  // read-only section and real-time dedupe on the manual-add form.
+  const [existingCompanies, setExistingCompaniesState] = useState<
+    Array<{ slug: string; name: string }>
+  >(() => getWizardState().existingCompanies);
+
   // Manual (brand-new) companies the user wants scaffolded.
   const [companies, setCompanies] = useState<CompanySeed[]>([]);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitStage, setSubmitStage] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Stay in sync with wizard-state — the directory screen may populate
+  // `existingCompanies` after this component has mounted (e.g. user
+  // navigates back, picks a different folder, returns).
+  useEffect(() => {
+    return subscribeWizardState(() => {
+      setExistingCompaniesState(getWizardState().existingCompanies);
+    });
+  }, []);
+
+  const existingSlugSet = new Set(existingCompanies.map((c) => c.slug));
+
+  // Real-time dedupe signal for the manual-add rows. A row is a duplicate
+  // when its trimmed name slugifies to something already present in the
+  // HQ folder (as detected by screen 06). Feeds both the per-row warning
+  // and the disabled state on the "+ Add company" button.
+  const hasDuplicateRow = companies.some((row) => {
+    const trimmed = row.name.trim();
+    if (!trimmed) return false;
+    const slug = slugifyCompany(trimmed);
+    return slug.length > 0 && existingSlugSet.has(slug);
+  });
 
   // -------------------------------------------------------------------------
   // Mount: prefill name from Google idToken + list cloud companies
@@ -186,11 +219,24 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
 
       const merged = [...cloudSeeds, ...manualSeeds];
 
+      // Only dedupe pre-existing slugs when GRAFTING onto an existing HQ.
+      // When the user chose "Overwrite" on the directory screen (or started
+      // fresh with hqMode === null), the writer must be free to create /
+      // overwrite every company subtree — passing a non-empty set here
+      // would silently skip pre-existing company.yaml files and leave
+      // stale config behind (the overwrite flow would behave like graft).
+      const hqMode = getWizardState().hqMode;
+      const existingSlugs =
+        hqMode === "graft"
+          ? new Set(existingCompanies.map((c) => c.slug))
+          : new Set<string>();
+
       setSubmitStage("Writing profile…");
       await personalize(
         {
           name: safeName,
           companies: merged.length > 0 ? merged : undefined,
+          existingSlugs,
         },
         installPath,
       );
@@ -290,6 +336,38 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
         )}
       </div>
 
+      {/* Already in this HQ — read-only list of companies the directory
+          screen detected at `{installPath}/companies/`. Hidden when the
+          array is empty. Shares visual DNA with the "Connected companies"
+          block above. */}
+      {existingCompanies.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <label className="text-sm font-medium text-white">
+            Already in this HQ
+          </label>
+          <p className="text-xs text-zinc-500">
+            Companies detected in the folder you picked. These are preserved
+            as-is — we won't overwrite their settings.
+          </p>
+          <div className="flex flex-col gap-2">
+            {existingCompanies.map((co) => (
+              <div
+                key={co.slug}
+                className="flex items-center justify-between gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-2"
+              >
+                <div className="flex flex-col">
+                  <span className="text-sm text-white">{co.name}</span>
+                  <span className="text-xs text-zinc-500">{co.slug}</span>
+                </div>
+                <span className="text-xs text-zinc-400 px-2 py-0.5 rounded-full bg-white/5 border border-white/10">
+                  Existing
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Manual companies */}
       <div className="flex flex-col gap-2">
         <label className="text-sm font-medium text-white">
@@ -302,45 +380,62 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
 
         {companies.length > 0 && (
           <div className="flex flex-col gap-2">
-            {companies.map((row, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                <input
-                  type="text"
-                  aria-label={`Company ${i + 1} name`}
-                  placeholder="Company name"
-                  value={row.name}
-                  onChange={(e) =>
-                    updateCompanyRow(i, { name: e.target.value })
-                  }
-                  className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-                />
-                <input
-                  type="url"
-                  aria-label={`Company ${i + 1} website`}
-                  placeholder="https://example.com"
-                  value={row.website ?? ""}
-                  onChange={(e) =>
-                    updateCompanyRow(i, { website: e.target.value })
-                  }
-                  className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-                />
-                <button
-                  type="button"
-                  aria-label={`Remove company ${i + 1}`}
-                  onClick={() => removeCompanyRow(i)}
-                  className="w-8 h-8 rounded-full text-zinc-500 hover:text-white hover:bg-white/10 transition-colors flex items-center justify-center text-lg"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+            {companies.map((row, i) => {
+              const trimmedName = row.name.trim();
+              const rowSlug = trimmedName ? slugifyCompany(trimmedName) : "";
+              const isDuplicate =
+                rowSlug.length > 0 && existingSlugSet.has(rowSlug);
+              return (
+                <div key={i} className="flex flex-col gap-1">
+                  <div className="flex gap-2 items-center">
+                    <input
+                      type="text"
+                      aria-label={`Company ${i + 1} name`}
+                      placeholder="Company name"
+                      value={row.name}
+                      onChange={(e) =>
+                        updateCompanyRow(i, { name: e.target.value })
+                      }
+                      className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+                    />
+                    <input
+                      type="url"
+                      aria-label={`Company ${i + 1} website`}
+                      placeholder="https://example.com"
+                      value={row.website ?? ""}
+                      onChange={(e) =>
+                        updateCompanyRow(i, { website: e.target.value })
+                      }
+                      className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Remove company ${i + 1}`}
+                      onClick={() => removeCompanyRow(i)}
+                      className="w-8 h-8 rounded-full text-zinc-500 hover:text-white hover:bg-white/10 transition-colors flex items-center justify-center text-lg"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {isDuplicate && (
+                    <p
+                      role="status"
+                      className="text-xs text-amber-400 px-2"
+                    >
+                      Already in this HQ — will be synced
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
         <button
           type="button"
           onClick={addCompanyRow}
-          className="self-start text-xs text-zinc-400 hover:text-white transition-colors px-3 py-1.5 rounded-full border border-white/10 hover:border-white/25"
+          disabled={hasDuplicateRow}
+          className="self-start text-xs text-zinc-400 hover:text-white transition-colors px-3 py-1.5 rounded-full border border-white/10 hover:border-white/25 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-zinc-400 disabled:hover:border-white/10"
         >
           + Add company
         </button>

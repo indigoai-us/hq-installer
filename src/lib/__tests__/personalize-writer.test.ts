@@ -428,6 +428,162 @@ describe("personalize", () => {
   });
 
   // -------------------------------------------------------------------------
+  describe("existingSlugs dedupe (US-002)", () => {
+    // The graft flow passes the set of company slugs already present at
+    // `{baseDir}/companies/{slug}/`. The scaffold loop must skip mkdir + the
+    // company.yaml write for any matching slug — without affecting other
+    // companies in the same batch.
+
+    it("writes every company when existingSlugs is empty (legacy behaviour)", async () => {
+      await personalize(
+        {
+          ...BASE_ANSWERS,
+          companies: [
+            { name: "Acme Corp" },
+            { name: "Globex" },
+          ],
+          existingSlugs: new Set<string>(),
+        },
+        BASE_DIR,
+        {
+          profileTemplate: PROFILE_TEMPLATE,
+          voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+        },
+      );
+
+      const paths = allWrittenPaths();
+      // company.yaml written for BOTH
+      expect(
+        paths.some((p) => p === `${BASE_DIR}/companies/acme-corp/company.yaml`),
+      ).toBe(true);
+      expect(
+        paths.some((p) => p === `${BASE_DIR}/companies/globex/company.yaml`),
+      ).toBe(true);
+    });
+
+    it("skips ALL scaffold writes for a company whose slug is in existingSlugs", async () => {
+      await personalize(
+        {
+          ...BASE_ANSWERS,
+          companies: [{ name: "Indigo" }],
+          existingSlugs: new Set(["indigo"]),
+        },
+        BASE_DIR,
+        {
+          profileTemplate: PROFILE_TEMPLATE,
+          voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+        },
+      );
+
+      const paths = allWrittenPaths();
+      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
+
+      // No subdir mkdir under companies/indigo/
+      expect(
+        mkdirPaths.some((p) => p.startsWith(`${BASE_DIR}/companies/indigo`)),
+      ).toBe(false);
+
+      // No files written under companies/indigo/ — crucially, no company.yaml
+      expect(
+        paths.some((p) => p.startsWith(`${BASE_DIR}/companies/indigo/`)),
+      ).toBe(false);
+    });
+
+    it("writes only non-existing companies in a mixed batch", async () => {
+      await personalize(
+        {
+          ...BASE_ANSWERS,
+          companies: [
+            { name: "Indigo" }, // existing — should be skipped
+            { name: "Acme Corp" }, // new — should be scaffolded
+            { name: "Globex" }, // existing — should be skipped
+            { name: "Initech" }, // new — should be scaffolded
+          ],
+          existingSlugs: new Set(["indigo", "globex"]),
+        },
+        BASE_DIR,
+        {
+          profileTemplate: PROFILE_TEMPLATE,
+          voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+        },
+      );
+
+      const paths = allWrittenPaths();
+
+      // Existing companies — NO writes
+      expect(
+        paths.some((p) => p.startsWith(`${BASE_DIR}/companies/indigo/`)),
+      ).toBe(false);
+      expect(
+        paths.some((p) => p.startsWith(`${BASE_DIR}/companies/globex/`)),
+      ).toBe(false);
+
+      // New companies — company.yaml written
+      expect(
+        paths.some((p) => p === `${BASE_DIR}/companies/acme-corp/company.yaml`),
+      ).toBe(true);
+      expect(
+        paths.some((p) => p === `${BASE_DIR}/companies/initech/company.yaml`),
+      ).toBe(true);
+    });
+
+    it("default (omitted existingSlugs) preserves pre-US-002 behaviour", async () => {
+      // Callers that don't know about existingSlugs must still work — the
+      // writer defaults to an empty set and scaffolds everything.
+      await personalize(
+        {
+          ...BASE_ANSWERS,
+          companies: [{ name: "Acme Corp" }],
+          // existingSlugs intentionally omitted
+        },
+        BASE_DIR,
+        {
+          profileTemplate: PROFILE_TEMPLATE,
+          voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+        },
+      );
+
+      expect(
+        allWrittenPaths().some(
+          (p) => p === `${BASE_DIR}/companies/acme-corp/company.yaml`,
+        ),
+      ).toBe(true);
+    });
+
+    it("companies.length > 0 guard stays valid when every slug is existing", async () => {
+      // Loop still runs but all iterations short-circuit — no fs writes
+      // beyond the unrelated scaffolding (knowledge/, personal/, etc.).
+      await personalize(
+        {
+          ...BASE_ANSWERS,
+          companies: [{ name: "Indigo" }, { name: "Globex" }],
+          existingSlugs: new Set(["indigo", "globex"]),
+        },
+        BASE_DIR,
+        {
+          profileTemplate: PROFILE_TEMPLATE,
+          voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+        },
+      );
+
+      // No paths under companies/indigo/ or companies/globex/
+      const paths = allWrittenPaths();
+      expect(
+        paths.filter(
+          (p) =>
+            p.startsWith(`${BASE_DIR}/companies/indigo/`) ||
+            p.startsWith(`${BASE_DIR}/companies/globex/`),
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe("edge cases", () => {
     it("name with spaces is used as-is in output paths", async () => {
       const answers: PersonalizationAnswers = {

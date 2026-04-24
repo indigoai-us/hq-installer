@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DirectoryPicker } from "../06-directory.js";
+import { clearWizardState, getWizardState } from "@/lib/wizard-state";
 
 // ---------------------------------------------------------------------------
 // DirectoryPicker screen tests (US-015)
@@ -52,6 +53,7 @@ function setupInvokeMock({
 describe("DirectoryPicker screen (06-directory.tsx)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearWizardState();
     setupInvokeMock();
   });
 
@@ -445,6 +447,144 @@ describe("DirectoryPicker screen (06-directory.tsx)", () => {
       expect(() => {
         render(<DirectoryPicker onNext={vi.fn()} />);
       }).not.toThrow();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // US-001: hqMode + existingCompanies persistence to wizard-state
+  // -------------------------------------------------------------------------
+  describe("wizard-state persistence (US-001)", () => {
+    it("copies existingCompanies from detect_hq into wizard-state when HQ detected", async () => {
+      const user = userEvent.setup();
+      setupInvokeMock({
+        pickedPath: "/Users/test/existing-hq",
+        detectResult: {
+          exists: true,
+          isHq: true,
+          existingCompanies: [
+            { slug: "acme", name: "Acme" },
+            { slug: "beta", name: "Beta Corp" },
+          ],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+
+      const btn =
+        screen.queryByRole("button", { name: /choose folder/i }) ||
+        screen.queryByRole("button", { name: /browse/i });
+      await user.click(btn!);
+
+      await waitFor(() => {
+        expect(getWizardState().existingCompanies).toEqual([
+          { slug: "acme", name: "Acme" },
+          { slug: "beta", name: "Beta Corp" },
+        ]);
+      });
+    });
+
+    it("sets hqMode to 'graft' when user clicks Graft", async () => {
+      const user = userEvent.setup();
+      setupInvokeMock({
+        pickedPath: "/Users/test/existing-hq",
+        detectResult: {
+          exists: true,
+          isHq: true,
+          existingCompanies: [{ slug: "acme", name: "Acme" }],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+
+      const pickBtn =
+        screen.queryByRole("button", { name: /choose folder/i }) ||
+        screen.queryByRole("button", { name: /browse/i });
+      await user.click(pickBtn!);
+
+      const graftBtn = await waitFor(() => {
+        const b = screen.queryByRole("button", { name: /graft/i });
+        expect(b).not.toBeNull();
+        return b!;
+      });
+      await user.click(graftBtn);
+
+      expect(getWizardState().hqMode).toBe("graft");
+    });
+
+    it("sets hqMode to 'overwrite' when user clicks Overwrite", async () => {
+      const user = userEvent.setup();
+      setupInvokeMock({
+        pickedPath: "/Users/test/existing-hq",
+        detectResult: {
+          exists: true,
+          isHq: true,
+          existingCompanies: [{ slug: "acme", name: "Acme" }],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+
+      const pickBtn =
+        screen.queryByRole("button", { name: /choose folder/i }) ||
+        screen.queryByRole("button", { name: /browse/i });
+      await user.click(pickBtn!);
+
+      const overwriteBtn = await waitFor(() => {
+        const b = screen.queryByRole("button", { name: /overwrite/i });
+        expect(b).not.toBeNull();
+        return b!;
+      });
+      await user.click(overwriteBtn);
+
+      expect(getWizardState().hqMode).toBe("overwrite");
+    });
+
+    it("resets hqMode and existingCompanies to null/[] when picking a fresh folder", async () => {
+      const user = userEvent.setup();
+
+      // First pick: existing HQ with companies + user picks graft
+      setupInvokeMock({
+        pickedPath: "/Users/test/existing-hq",
+        detectResult: {
+          exists: true,
+          isHq: true,
+          existingCompanies: [{ slug: "acme", name: "Acme" }],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+
+      const pickBtn =
+        screen.queryByRole("button", { name: /choose folder/i }) ||
+        screen.queryByRole("button", { name: /browse/i });
+      await user.click(pickBtn!);
+
+      const graftBtn = await waitFor(() => {
+        const b = screen.queryByRole("button", { name: /graft/i });
+        expect(b).not.toBeNull();
+        return b!;
+      });
+      await user.click(graftBtn);
+
+      expect(getWizardState().hqMode).toBe("graft");
+      expect(getWizardState().existingCompanies).toHaveLength(1);
+
+      // Second pick: fresh folder (not an HQ)
+      setupInvokeMock({
+        pickedPath: "/Users/test/fresh",
+        detectResult: {
+          exists: true,
+          isHq: false,
+          existingCompanies: [],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      });
+      await user.click(pickBtn!);
+
+      await waitFor(() => {
+        expect(getWizardState().hqMode).toBeNull();
+        expect(getWizardState().existingCompanies).toEqual([]);
+      });
     });
   });
 });

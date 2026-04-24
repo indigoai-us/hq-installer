@@ -30,6 +30,17 @@ export interface WizardState {
    *  conditional skip of the HQ Sync menu bar install: if 0, the app has
    *  nothing to sync, so there's no value in installing it right now. */
   connectedCompanyCount: number;
+  /** How the installer should behave when grafting onto a pre-existing HQ
+   *  folder. `'graft'` dedupes against existing companies + preserves them;
+   *  `'overwrite'` proceeds as a full install (legacy behaviour). `null`
+   *  when the picked folder is not an existing HQ, or before the user
+   *  has chosen a mode. Set by the directory screen (06). */
+  hqMode: "graft" | "overwrite" | null;
+  /** Companies already present at `{installPath}/companies/{slug}/company.yaml`
+   *  when the directory screen detected an existing HQ. Used by downstream
+   *  steps (Personalize writer, sync flows) to dedupe — don't clobber an
+   *  existing company.yaml. Empty when no existing HQ. */
+  existingCompanies: Array<{ slug: string; name: string }>;
 }
 
 const state: WizardState = {
@@ -41,6 +52,8 @@ const state: WizardState = {
   gitEmail: null,
   personalized: false,
   connectedCompanyCount: 0,
+  hqMode: null,
+  existingCompanies: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -65,7 +78,11 @@ export function subscribeWizardState(fn: Listener): () => void {
 
 /** Return a frozen snapshot of the current wizard state. */
 export function getWizardState(): Readonly<WizardState> {
-  return Object.freeze({ ...state, team: state.team ? { ...state.team } : null });
+  return Object.freeze({
+    ...state,
+    team: state.team ? { ...state.team } : null,
+    existingCompanies: state.existingCompanies.map((c) => ({ ...c })),
+  });
 }
 
 export function setTelemetryEnabled(enabled: boolean): void {
@@ -116,6 +133,21 @@ export function setConnectedCompanyCount(count: number): void {
   notify();
 }
 
+/** Store how the installer should treat a pre-existing HQ folder. Pass
+ *  `null` to clear (e.g. user switched to a fresh folder). */
+export function setHqMode(mode: "graft" | "overwrite" | null): void {
+  state.hqMode = mode;
+  notify();
+}
+
+/** Record companies detected at the picked folder. Empty array clears. */
+export function setExistingCompanies(
+  companies: Array<{ slug: string; name: string }>,
+): void {
+  state.existingCompanies = companies.map((c) => ({ slug: c.slug, name: c.name }));
+  notify();
+}
+
 /** Reset all wizard state to initial defaults. */
 export function clearWizardState(): void {
   state.telemetryEnabled = true;
@@ -126,5 +158,7 @@ export function clearWizardState(): void {
   state.gitEmail = null;
   state.personalized = false;
   state.connectedCompanyCount = 0;
+  state.hqMode = null;
+  state.existingCompanies = [];
   notify();
 }
