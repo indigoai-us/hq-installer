@@ -22,7 +22,10 @@ pub fn launch_claude_code(path: String) -> Result<(), String> {
     let escaped_path = path.replace('\'', "'\\''");
 
     // Shell command run inside the new Terminal window.
-    let shell_cmd = format!("cd '{}' && claude", escaped_path);
+    // `--prefill '/setup'` is a hidden flag on the `claude` CLI that pre-fills
+    // the input box without submitting, so the user lands one keystroke away
+    // from running setup.
+    let shell_cmd = format!("cd '{}' && claude --prefill '/setup'", escaped_path);
 
     // AppleScript needs double quotes around the shell command. Escape any
     // double quotes and backslashes the shell_cmd might contain to be safe.
