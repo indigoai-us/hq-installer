@@ -1,105 +1,112 @@
 /*
  * hq-cinematic — design tokens
- * Version: 0.1.0
+ * Version: 0.2.0
  *
- * Palette anchors (from PRD):
- *   Navy:   #0A1228, #080F24, #050817 (three anchors interpolated across 000..900)
- *   Spectrum: cyan → violet → magenta → orange → gold (5-stop dispersion)
- *   Warm neutrals: brown #7C5B3A, yellow #E8C77A, pink #A97791 (at 20/40/60/80 tints)
+ * 2026-04-24 restyle: retargeted from the original "navy + warm-gold"
+ * palette to the indigo-marketing brand (dark monochrome authority,
+ * indigo + cyan accents, white primary CTAs). Variable *names* are
+ * preserved so existing callsites don't need to change — values are
+ * swapped underneath. Future work should rename semantically.
  *
- * Consumption: @import this file in the consumer app's global CSS, then read
- *   via var(--token-name). Do not re-declare these names elsewhere.
+ * Current anchors:
+ *   Surface:    zinc-950 #09090b (page bg) → zinc-900 #111113 (cards)
+ *   Text:       zinc-50 #fafafa (primary) → zinc-400 #a1a1aa (secondary)
+ *                 → zinc-600 #52525b (muted)
+ *   Accent:     indigo-400 #818cf8 (brackets, badges, status dots)
+ *   Cool spec:  cyan → indigo → white (cold dispersion, no warm hues)
  */
 
 :root {
-  /* ── Navy scale ─────────────────────────────────────────────────────────
-   * Three PRD anchors placed at --bg-navy-100 (#0A1228, lightest of the three),
-   * --bg-navy-500 (#080F24), and --bg-navy-900 (#050817, darkest).
-   * 000 is an above-anchor lift; 200/300/400/600/700/800 interpolate between.
+  /* ── Surface scale (was "navy") ────────────────────────────────────────
+   * Monochrome near-black ladder. `--bg-navy-500` is the page default.
+   * Brighter steps (000/100/200) are used for card surfaces and hairlines.
    */
-  --bg-navy-000: #0E1733;   /* lift above lightest anchor — hairline surface */
-  --bg-navy-100: #0A1228;   /* PRD anchor — lightest navy */
-  --bg-navy-200: #091127;
-  --bg-navy-300: #091026;
-  --bg-navy-400: #080F25;
-  --bg-navy-500: #080F24;   /* PRD anchor — mid navy (default page background) */
-  --bg-navy-600: #070D20;
-  --bg-navy-700: #060B1C;
-  --bg-navy-800: #060A19;
-  --bg-navy-900: #050817;   /* PRD anchor — deepest navy (void) */
+  --bg-navy-000: #18181b;   /* zinc-900 — brightest surface (lifted cards) */
+  --bg-navy-100: #141416;
+  --bg-navy-200: #111113;   /* card surface — matches indigo-marketing --color-bg-card */
+  --bg-navy-300: #0f0f11;
+  --bg-navy-400: #0c0c0e;
+  --bg-navy-500: #09090b;   /* page background — matches indigo-marketing --color-bg */
+  --bg-navy-600: #09090a;
+  --bg-navy-700: #08080a;
+  --bg-navy-800: #070709;
+  --bg-navy-900: #050507;   /* deepest void */
 
-  /* ── Spectrum palette ───────────────────────────────────────────────────
-   * Five-stop prism dispersion used for refraction beams, reveal sweeps,
-   * and accent text masks. Order is physical (short-λ → long-λ).
+  /* ── Spectrum palette ──────────────────────────────────────────────────
+   * Retuned from the original cyan→gold rainbow to a cold cyan→indigo→white
+   * dispersion. Used for the single hero prism-beam and the wordmark
+   * gradient mask. No warm hues.
    */
-  --spectrum-cyan:    #7DE3F4;
-  --spectrum-violet:  #8B6DF0;
-  --spectrum-magenta: #E56AB3;
-  --spectrum-orange:  #F28A4B;
-  --spectrum-gold:    #E8C77A;
+  --spectrum-cyan:    #22d3ee;   /* indigo-marketing cyan token */
+  --spectrum-violet:  #818cf8;   /* indigo-400 — brand accent */
+  --spectrum-magenta: #a5b4fc;   /* indigo-300 — lighter accent */
+  --spectrum-orange:  #c7d2fe;   /* indigo-200 — near-white warm tint */
+  --spectrum-gold:    #fafafa;   /* WHITE — brand primary. Per 2026-04-24
+                                    rule, primary CTAs use white fill, not
+                                    periwinkle/indigo. Name kept for callsite
+                                    compatibility; semantic meaning is now
+                                    "accent punctuation / primary CTA". */
 
-  /* ── Spectrum fallback ──────────────────────────────────────────────────
-   * Solid-color fallback for text that uses `background-clip: text`. Meets
-   * WCAG AA (≥4.5:1) against --bg-navy-900 (#050817): warm-yellow #E8C77A
-   * ≈ 11.9:1 contrast. Applied via @supports not (background-clip: text)
-   * in keyframes.css so modern browsers still get the gradient; legacy
-   * browsers and reduced-motion users see the solid high-contrast color.
+  /* Solid-color fallback for background-clip:text. White-on-near-black
+     hits ~20:1 contrast — well past WCAG AAA. */
+  --spectrum-fallback: var(--spectrum-gold);
+
+  /* ── Neutral tints (was "warm neutrals") ───────────────────────────────
+   * Renamed values only. The palette is now zinc grayscale at the same
+   * 20/40/60/80 steps, matching indigo-marketing's text-secondary /
+   * text-muted tokens.
    */
-  --spectrum-fallback: var(--warm-yellow);
+  --warm-brown:    rgba(255, 255, 255, 0.12);
+  --warm-brown-20: rgba(255, 255, 255, 0.04);
+  --warm-brown-40: rgba(255, 255, 255, 0.08);   /* hairline border */
+  --warm-brown-60: rgba(255, 255, 255, 0.12);   /* soft border */
+  --warm-brown-80: rgba(255, 255, 255, 0.18);   /* hover border */
 
-  /* ── Warm neutrals (tints) ──────────────────────────────────────────────
-   * Ship each at 20 / 40 / 60 / 80 alpha-equivalent tints (toward navy-900).
-   * Used for hairline rules, warm shadows, foreground glyphs over navy.
-   */
-  --warm-brown:    #7C5B3A;
-  --warm-brown-20: #1E1A16;
-  --warm-brown-40: #362B1F;
-  --warm-brown-60: #553F2B;
-  --warm-brown-80: #6E5133;
+  --warm-yellow:    #fafafa;      /* primary text */
+  --warm-yellow-20: #27272a;      /* zinc-800 — faint surface overlay */
+  --warm-yellow-40: rgba(255, 255, 255, 0.14);  /* subtle border */
+  --warm-yellow-60: #52525b;      /* zinc-600 — muted metadata */
+  --warm-yellow-80: #a1a1aa;      /* zinc-400 — body copy */
 
-  --warm-yellow:    #E8C77A;
-  --warm-yellow-20: #2B261A;
-  --warm-yellow-40: #564834;
-  --warm-yellow-60: #8C744E;
-  --warm-yellow-80: #BDA067;
+  --warm-pink:    #fb7185;        /* rose — status/error only, not accent */
+  --warm-pink-20: #27272a;
+  --warm-pink-40: rgba(251, 113, 133, 0.3);
+  --warm-pink-60: rgba(251, 113, 133, 0.5);
+  --warm-pink-80: rgba(251, 113, 133, 0.7);
 
-  --warm-pink:    #A97791;
-  --warm-pink-20: #22181E;
-  --warm-pink-40: #443039;
-  --warm-pink-60: #704F5F;
-  --warm-pink-80: #916678;
-
-  /* ── Gradient macros ────────────────────────────────────────────────────
-   * Predefined spectrum gradients for beams, text masks, WebGL sampling.
-   * Consumers should reference these variables, not redeclare stop colors.
+  /* ── Gradient macros ───────────────────────────────────────────────────
+   * Cold 5-stop spectrum. Kept as a single-use "hero moment" gradient for
+   * the prism beam + wordmark. Consumers should not redeclare stop colors.
    */
   --gradient-spectrum-linear: linear-gradient(
     90deg,
     var(--spectrum-cyan)    0%,
-    var(--spectrum-violet) 25%,
-    var(--spectrum-magenta) 50%,
-    var(--spectrum-orange) 75%,
+    var(--spectrum-violet) 35%,
+    var(--spectrum-magenta) 65%,
+    var(--spectrum-orange) 85%,
     var(--spectrum-gold)  100%
   );
 
   --gradient-spectrum-radial: radial-gradient(
     circle at 50% 50%,
     var(--spectrum-cyan)    0%,
-    var(--spectrum-violet) 30%,
-    var(--spectrum-magenta) 55%,
-    var(--spectrum-orange) 80%,
+    var(--spectrum-violet) 40%,
+    var(--spectrum-magenta) 65%,
+    var(--spectrum-orange) 85%,
     var(--spectrum-gold)  100%
   );
 
-  /* ── Typography ─────────────────────────────────────────────────────────
-   * Inter 800/900 only for display — no new font dependencies.
+  /* ── Typography ────────────────────────────────────────────────────────
+   * JetBrains Mono matches indigo-marketing's metadata/CTA type. Body
+   * copy uses Inter (loaded in the page for body paragraphs); display
+   * wordmark uses the mono face for terminal-card authority.
    */
-  --font-display: "Inter", system-ui, -apple-system, sans-serif;
-  --font-display-weight-bold:  800;
-  --font-display-weight-black: 900;
+  --font-display: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display-weight-bold:  600;
+  --font-display-weight-black: 700;
 
-  /* ── Motion primitives ──────────────────────────────────────────────────
-   * Timing and easing shared by the five keyframes in keyframes.css.
+  /* ── Motion primitives ─────────────────────────────────────────────────
+   * Preserved from v0.1.0 — timing shared by keyframes.css.
    */
   --motion-ease-cinematic: cubic-bezier(0.16, 1, 0.3, 1);
   --motion-ease-drift:     cubic-bezier(0.45, 0, 0.55, 1);

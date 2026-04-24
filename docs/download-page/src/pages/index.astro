@@ -35,7 +35,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="HQ — Personal OS for orchestrating work across companies, workers, and AI. Download the native macOS installer." />
-    <meta name="theme-color" content="#080F24" />
+    <meta name="theme-color" content="#09090b" />
     <title>HQ — Download</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='50' font-size='48'>HQ</text></svg>" />
     <link rel="canonical" href="https://install.getindigo.ai" />
@@ -44,15 +44,15 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
     <meta property="og:type" content="website" />
 
     <!--
-      hq-cinematic pack fonts — Inter only. Pack rule: "No new
-      display fonts. Inter 800/900 only." Body copy shares the
-      same family (400/500/600) so we stay on one `<link>` request.
+      Fonts — JetBrains Mono for display/metadata (matches indigo-marketing
+      CTA + terminal type), Inter for body copy. Single stylesheet request
+      covers both families.
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800;900&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
     />
   </head>
   <body>
@@ -265,7 +265,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         background: var(--bg-navy-500);
         color: rgba(255, 255, 255, 0.88);
         font-family: "Inter", system-ui, -apple-system, sans-serif;
-        font-size: 14px;
+        font-size: 14.5px;
         letter-spacing: 0.005em;
         -webkit-font-smoothing: antialiased;
         /* Subtle vignette — deepest navy at the corners, mid navy in the
@@ -354,8 +354,8 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
          hq-cinematic-keyframes.css `@supports not (background-clip: text)` */
 
       .hero h1 {
-        font-family: var(--font-display);
-        font-weight: var(--font-display-weight-bold);
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        font-weight: 600;
         font-size: 34px;
         line-height: 1.15;
         margin: 0 0 16px;
@@ -412,10 +412,10 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         align-items: center;
         padding: 3px 8px;
         border-radius: 2px;
-        background: rgba(232, 199, 122, 0.12);
-        color: var(--spectrum-gold);
-        border: 1px solid var(--warm-yellow-40);
-        font-family: "Inter", system-ui, sans-serif;
+        background: rgba(129, 140, 248, 0.08);
+        color: var(--spectrum-violet);
+        border: 1px solid rgba(129, 140, 248, 0.3);
+        font-family: var(--font-display);
         font-variant-numeric: tabular-nums;
         font-size: 11px;
         font-weight: 600;
@@ -430,7 +430,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       }
 
       .published {
-        font-family: "Inter", system-ui, sans-serif;
+        font-family: var(--font-display);
         font-variant-numeric: tabular-nums;
         font-size: 11px;
         color: var(--warm-yellow-60);
@@ -463,11 +463,11 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       }
 
       .btn:hover {
-        background: rgba(10, 18, 40, 0.75);
-        border-color: var(--warm-yellow-60);
+        background: rgba(255, 255, 255, 0.04);
+        border-color: rgba(255, 255, 255, 0.25);
         box-shadow:
-          0 0 0 1px rgba(232, 199, 122, 0.1),
-          0 8px 32px -12px rgba(139, 109, 240, 0.35);
+          0 0 0 1px rgba(255, 255, 255, 0.06),
+          0 8px 32px -12px rgba(129, 140, 248, 0.25);
       }
 
       .btn[aria-disabled="true"] {
@@ -479,18 +479,31 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
          rim. Pack's bloom-pulse keyframe is single-shot; we replay it
          on focus-visible and as a one-time entrance. Rim uses a thin
          spectrum gradient border (no colored drop shadow). */
+      /* Featured state (OS-detection match) — primary CTA, white fill.
+         Per indigo-marketing brand rule (2026-04-24): primary CTAs are
+         white, not periwinkle. Matches the "Learn HQ" / "Download .dmg"
+         pattern on www.getindigo.ai. */
       .btn-featured {
         border-color: var(--spectrum-gold);
-        background: linear-gradient(
-          180deg,
-          rgba(232, 199, 122, 0.08) 0%,
-          rgba(10, 18, 40, 0.65) 100%
-        );
-        color: #fff;
+        background: var(--spectrum-gold);
+        color: var(--bg-navy-500);
         box-shadow:
-          inset 0 1px 0 rgba(232, 199, 122, 0.2),
-          0 12px 40px -16px rgba(232, 199, 122, 0.4),
-          0 6px 24px -12px rgba(139, 109, 240, 0.35);
+          0 0 24px -6px rgba(255, 255, 255, 0.5),
+          0 12px 40px -16px rgba(255, 255, 255, 0.25);
+      }
+
+      .btn-featured:hover {
+        background: #ffffff;
+        border-color: #ffffff;
+        box-shadow:
+          0 0 32px -4px rgba(255, 255, 255, 0.7),
+          0 12px 40px -16px rgba(255, 255, 255, 0.3);
+      }
+
+      .btn-featured .btn-arch,
+      .btn-featured .btn-os,
+      .btn-featured .btn-size {
+        color: var(--bg-navy-500);
       }
 
       .btn-featured:focus-visible {
@@ -516,7 +529,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       }
 
       .btn-size {
-        font-family: "Inter", system-ui, sans-serif;
+        font-family: var(--font-display);
         font-variant-numeric: tabular-nums;
         font-size: 11px;
         color: var(--warm-yellow-60);
@@ -538,7 +551,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
 
       .soon {
         color: var(--warm-yellow-60);
-        font-family: "Inter", system-ui, sans-serif;
+        font-family: var(--font-display);
         font-variant-numeric: tabular-nums;
         font-size: 11px;
         letter-spacing: 0.05em;
@@ -588,10 +601,10 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         padding: 12px 14px;
         margin: 0;
         overflow-x: auto;
-        font-family: "Inter", system-ui, sans-serif;
+        font-family: var(--font-display);
         font-variant-numeric: tabular-nums;
         font-size: 13px;
-        color: var(--spectrum-gold);
+        color: var(--spectrum-cyan);
         user-select: all;
       }
 
@@ -620,7 +633,7 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
 
       .copyright {
         margin-top: 14px;
-        font-family: "Inter", system-ui, sans-serif;
+        font-family: var(--font-display);
         font-variant-numeric: tabular-nums;
         font-size: 10px;
         letter-spacing: 0.08em;
