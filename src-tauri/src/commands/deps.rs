@@ -75,6 +75,106 @@ pub struct InstallProgress {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Diagnostic logging (env-gated)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns `true` when `HQ_INSTALLER_DEBUG_DEPS=1`. Any other value — including
+/// `"0"`, `"true"`, empty, or unset — returns `false`. This is the ONLY gate
+/// for `[hq-deps]` stderr output; production builds stay silent unless the
+/// user explicitly opts in via the env var.
+///
+/// Exposed publicly so integration tests can verify the gate contract without
+/// needing to capture stderr.
+pub fn is_deps_debug_enabled() -> bool {
+    std::env::var("HQ_INSTALLER_DEBUG_DEPS").ok().as_deref() == Some("1")
+}
+
+/// Captures what happened during a `shell_login_path()` probe attempt.
+///
+/// The enum exists so the pure `format_shell_probe_log` formatter can render
+/// each outcome consistently — keeping the `[hq-deps]` log contract in one
+/// place and unit-testable without stderr capture.
+pub enum ShellProbeOutcome {
+    /// Shell exited 0 and returned a non-empty PATH. `bytes` is the length
+    /// of the trimmed stdout.
+    Success { bytes: usize },
+    /// Shell exited with a non-zero status. stderr is not retained so the
+    /// log line stays compact; the exit code is usually enough to diagnose.
+    NonZeroExit { code: i32 },
+    /// Shell exited 0 but returned zero bytes (rare — e.g. `PATH=""` or
+    /// profile scripts that erase PATH). Distinct from `Success` so support
+    /// docs can call this case out specifically.
+    EmptyOutput,
+    /// `Command::spawn` failed before the shell ever ran (bad `$SHELL`,
+    /// permission denied, etc.). `msg` is the underlying io::Error message.
+    SpawnError { msg: String },
+}
+
+/// Produce the `[hq-deps]` log line describing a shell-login-path probe.
+///
+/// Pure formatter — does not emit anything itself. The caller decides whether
+/// to `eprintln!` based on `is_deps_debug_enabled()`. Keeping the render pure
+/// lets unit tests assert the log format without capturing stderr.
+pub fn format_shell_probe_log(shell: &str, outcome: &ShellProbeOutcome) -> String {
+    match outcome {
+        ShellProbeOutcome::Success { bytes } => format!(
+            "[hq-deps] shell_login_path shell={} exit=0 bytes={}",
+            shell, bytes
+        ),
+        ShellProbeOutcome::NonZeroExit { code } => format!(
+            "[hq-deps] shell_login_path shell={} exit={}",
+            shell, code
+        ),
+        ShellProbeOutcome::EmptyOutput => format!(
+            "[hq-deps] shell_login_path shell={} exit=0 bytes=0 empty=true",
+            shell
+        ),
+        ShellProbeOutcome::SpawnError { msg } => format!(
+            "[hq-deps] shell_login_path shell={} spawn=error msg={}",
+            shell, msg
+        ),
+    }
+}
+
+/// Compute per-source directory counts for the PATH log line.
+///
+/// `shell_path` is the raw colon-joined PATH string returned by
+/// `shell_login_path()` — counted by splitting on `:`. The other three
+/// are pushed counts tracked by the caller (extras is a static array
+/// length; home and vm are incremented as entries are appended).
+///
+/// Exposed `pub` for hermetic unit testing of the counting logic — no
+/// stderr capture needed.
+pub fn compute_path_counts(
+    shell_path: &str,
+    extras_count: usize,
+    home_count: usize,
+    vm_count: usize,
+) -> (usize, usize, usize, usize) {
+    let shell_count = if shell_path.is_empty() {
+        0
+    } else {
+        shell_path.split(':').count()
+    };
+    (shell_count, extras_count, home_count, vm_count)
+}
+
+/// Produce the `[hq-deps]` log line describing the final composed PATH.
+///
+/// `counts` is `(shell, extras, home_local, version_managers)` — the number of
+/// directories contributed by each source. The PATH is truncated to 500 chars
+/// so copy-pasted support logs stay readable; truncation counts characters
+/// (not bytes) to avoid slicing in the middle of a multi-byte UTF-8 codepoint.
+pub fn format_path_log(path: &str, counts: (usize, usize, usize, usize)) -> String {
+    let truncated: String = path.chars().take(500).collect();
+    let (shell, extras, home, vm) = counts;
+    format!(
+        "[hq-deps] extended_search_path shell={} extras={} home={} vm={} PATH={}",
+        shell, extras, home, vm, truncated
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // check_dep
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -93,20 +193,46 @@ static SHELL_LOGIN_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 ///
 /// Cached with `OnceLock` — the subprocess spawn is ~100 ms the first time
 /// and free on subsequent calls within the app lifetime.
+///
+/// Emits a single `[hq-deps]` stderr line when `HQ_INSTALLER_DEBUG_DEPS=1`
+/// (via `is_deps_debug_enabled()`); fires at most once per process thanks to
+/// the OnceLock cache. Format is treated as a semi-public contract so
+/// support paste-backs stay greppable.
 fn shell_login_path() -> &'static str {
     SHELL_LOGIN_PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let output = Command::new(&shell)
+        let spawn_result = Command::new(&shell)
             .args(["-lc", "printf %s \"$PATH\""])
             .stdin(Stdio::null())
             .output();
-        match output {
-            Ok(out) if out.status.success() => String::from_utf8(out.stdout)
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-            _ => String::new(),
+
+        let (path, outcome) = match spawn_result {
+            Ok(out) if out.status.success() => {
+                let s = String::from_utf8(out.stdout)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let outcome = if s.is_empty() {
+                    ShellProbeOutcome::EmptyOutput
+                } else {
+                    ShellProbeOutcome::Success { bytes: s.len() }
+                };
+                (s, outcome)
+            }
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                (String::new(), ShellProbeOutcome::NonZeroExit { code })
+            }
+            Err(e) => (
+                String::new(),
+                ShellProbeOutcome::SpawnError { msg: e.to_string() },
+            ),
+        };
+
+        if is_deps_debug_enabled() {
+            eprintln!("{}", format_shell_probe_log(&shell, &outcome));
         }
+        path
     })
 }
 
@@ -116,6 +242,15 @@ fn shell_login_path() -> &'static str {
 /// user has Homebrew installed, because LaunchServices-launched apps only
 /// get `/usr/bin:/bin:/usr/sbin:/sbin`.
 pub fn extended_search_path() -> String {
+    extended_search_path_in(None)
+}
+
+/// Same composition as `extended_search_path()` but accepts an explicit
+/// home-directory override so tests can exercise version-manager discovery
+/// against a fixture directory without mutating process-global HOME.
+///
+/// When `home` is `None`, resolves via `dirs::home_dir()` (production path).
+pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     let mut dirs: Vec<String> = Vec::new();
     if let Ok(existing) = std::env::var("PATH") {
         if !existing.is_empty() {
@@ -140,14 +275,132 @@ pub fn extended_search_path() -> String {
     for e in extras {
         dirs.push(e.to_string());
     }
+    // Resolve home directory: explicit override for tests, else dirs::home_dir().
+    let home_buf = home.map(|p| p.to_path_buf()).or_else(dirs::home_dir);
+
     // User-local installs (~/.claude/bin, ~/.cargo/bin, ~/.local/bin, ~/bin).
-    if let Some(home) = dirs::home_dir() {
+    let mut home_count: usize = 0;
+    if let Some(home) = home_buf.as_deref() {
         for rel in [".claude/bin", ".cargo/bin", ".local/bin", "bin"] {
             let p = home.join(rel);
             dirs.push(p.to_string_lossy().into_owned());
+            home_count += 1;
         }
     }
-    dirs.join(":")
+    // Node version managers — enumerate installed Node versions so CLIs
+    // installed via `npm i -g` under nvm/fnm (plus volta and pnpm's global
+    // bin) are detected even when the shell-login PATH probe returns empty
+    // (GUI launch without inherited SHELL). Each block tolerates missing
+    // dirs and read_dir errors silently; a failed probe never blocks other
+    // managers from being tried.
+    let mut vm_count: usize = 0;
+    if let Some(home) = home_buf.as_deref() {
+        for d in version_manager_dirs(home) {
+            dirs.push(d);
+            vm_count += 1;
+        }
+    }
+    let joined = dirs.join(":");
+    // Env-gated diagnostic — emits at most one line per call when
+    // HQ_INSTALLER_DEBUG_DEPS=1. Silent for any other value of the env var.
+    // shell_path is colon-joined; count individual dirs so support can
+    // see how many dirs the login-shell actually contributed.
+    if is_deps_debug_enabled() {
+        eprintln!(
+            "{}",
+            format_path_log(
+                &joined,
+                compute_path_counts(&shell_path, extras.len(), home_count, vm_count)
+            )
+        );
+    }
+    joined
+}
+
+/// Collect bin directories from Node version managers present under `home`.
+///
+/// Covers: nvm (~/.nvm/versions/node/<v>/bin), fnm
+/// (~/.fnm/node-versions/<v>/installation/bin), volta (~/.volta/bin),
+/// pnpm (~/Library/pnpm — macOS location).
+///
+/// Missing dirs, permission errors, and stale version entries without a
+/// `/bin` subdir are silently skipped. This function never panics.
+fn version_manager_dirs(home: &std::path::Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    // nvm: enumerate ~/.nvm/versions/node/*/bin
+    // read_dir order is filesystem-defined (unspecified). We sort descending by
+    // parsed version tuple so which::which_in resolves to the newest toolchain
+    // first — otherwise install_claude_code / install_qmd could target an older
+    // global prefix on multi-version systems.
+    let nvm_root = home.join(".nvm").join("versions").join("node");
+    if let Ok(entries) = std::fs::read_dir(&nvm_root) {
+        let mut collected: Vec<((u32, u32, u32), String)> = Vec::new();
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let bin = p.join("bin");
+                if bin.exists() {
+                    let name = entry.file_name();
+                    let version = parse_node_version(&name.to_string_lossy());
+                    collected.push((version, bin.to_string_lossy().into_owned()));
+                }
+            }
+        }
+        collected.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in collected {
+            out.push(path);
+        }
+    }
+
+    // fnm: enumerate ~/.fnm/node-versions/*/installation/bin
+    // Same descending-version sort as the nvm block above.
+    let fnm_root = home.join(".fnm").join("node-versions");
+    if let Ok(entries) = std::fs::read_dir(&fnm_root) {
+        let mut collected: Vec<((u32, u32, u32), String)> = Vec::new();
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let bin = p.join("installation").join("bin");
+                if bin.exists() {
+                    let name = entry.file_name();
+                    let version = parse_node_version(&name.to_string_lossy());
+                    collected.push((version, bin.to_string_lossy().into_owned()));
+                }
+            }
+        }
+        collected.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in collected {
+            out.push(path);
+        }
+    }
+
+    // volta: single dir ~/.volta/bin
+    let volta_bin = home.join(".volta").join("bin");
+    if volta_bin.is_dir() {
+        out.push(volta_bin.to_string_lossy().into_owned());
+    }
+
+    // pnpm global bin on macOS: ~/Library/pnpm
+    let pnpm_bin = home.join("Library").join("pnpm");
+    if pnpm_bin.is_dir() {
+        out.push(pnpm_bin.to_string_lossy().into_owned());
+    }
+
+    out
+}
+
+/// Parse a Node version directory name like `v22.17.0` or `20.10.1` into a
+/// `(major, minor, patch)` tuple for ordering. Strips a leading `v`, splits
+/// on `.`, and takes the first 3 components. Any unparseable component (or
+/// missing component) becomes `0` so malformed names sort last. Never panics.
+fn parse_node_version(dir_name: &str) -> (u32, u32, u32) {
+    let trimmed = dir_name.strip_prefix('v').unwrap_or(dir_name);
+    let mut parts = trimmed.split('.');
+    let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, patch)
 }
 
 /// Internal implementation shared by `check_dep` (uses real PATH) and
