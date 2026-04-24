@@ -317,6 +317,26 @@ function decodeIdToken(idToken: string): Record<string, unknown> {
   return JSON.parse(atob(padded)) as Record<string, unknown>;
 }
 
+/**
+ * Decode the user identity from an already-obtained token bundle.
+ * Pure: no keychain access, no refresh, no side effects.
+ * Returns null if the idToken has no email claim.
+ * Throws if the idToken is structurally invalid (caller should guard).
+ */
+export function getUserFromTokens(tokens: CognitoTokens): CurrentUser | null {
+  const payload = decodeIdToken(tokens.idToken);
+  const email = payload["email"] as string | undefined;
+  if (!email) return null;
+  return {
+    sub: payload["sub"] as string,
+    email,
+    name: (payload["name"] as string | undefined) || undefined, // treat empty claim as absent
+    givenName: (payload["given_name"] as string | undefined) || undefined, // treat empty claim as absent
+    familyName: (payload["family_name"] as string | undefined) || undefined, // treat empty claim as absent
+    tokens,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -387,9 +407,9 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   return {
     sub: payload["sub"] as string,
     email: payload["email"] as string,
-    name: (payload["name"] as string | undefined) || undefined,
-    givenName: (payload["given_name"] as string | undefined) || undefined,
-    familyName: (payload["family_name"] as string | undefined) || undefined,
+    name: (payload["name"] as string | undefined) || undefined, // treat empty claim as absent
+    givenName: (payload["given_name"] as string | undefined) || undefined, // treat empty claim as absent
+    familyName: (payload["family_name"] as string | undefined) || undefined, // treat empty claim as absent
     tokens,
   };
 }

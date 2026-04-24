@@ -37,8 +37,18 @@ vi.mock("@tauri-apps/plugin-shell", () => ({
 vi.mock("../../lib/cognito.js", () => ({
   storeTokens: vi.fn().mockResolvedValue(undefined),
   getCurrentUser: vi.fn(),
+  getUserFromTokens: vi.fn(),
   signOut: vi.fn(),
   refreshSession: vi.fn(),
+}));
+
+// ---------------------------------------------------------------------------
+// wizard-state mock — track setGitIdentity calls
+// ---------------------------------------------------------------------------
+vi.mock("../../lib/wizard-state.js", () => ({
+  setGitIdentity: vi.fn(),
+  getWizardState: vi.fn().mockReturnValue({ gitName: null, gitEmail: null }),
+  clearWizardState: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -69,10 +79,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openInBrowser } from "@tauri-apps/plugin-shell";
 import * as cognito from "../../lib/cognito.js";
 import * as oauth from "../../lib/google-oauth.js";
+import * as wizardState from "../../lib/wizard-state.js";
 
 const mockInvoke = vi.mocked(invoke);
 const mockOpen = vi.mocked(openInBrowser);
 const mockStoreTokens = vi.mocked(cognito.storeTokens);
+const mockGetUserFromTokens = vi.mocked(cognito.getUserFromTokens);
+const mockSetGitIdentity = vi.mocked(wizardState.setGitIdentity);
 const mockExchange = vi.mocked(oauth.exchangeCodeForTokens);
 const mockBuildUrl = vi.mocked(oauth.buildAuthorizeUrl);
 
@@ -228,6 +241,43 @@ describe("CognitoAuth screen — Google OAuth", () => {
     it("does NOT render a 'Sign in with GitHub' button", () => {
       render(<CognitoAuth onNext={vi.fn()} />);
       expect(screen.queryByRole("button", { name: /github/i })).toBeNull();
+    });
+  });
+
+  describe("Cognito email pre-fill contract", () => {
+    it("calls setGitIdentity with the Cognito email and name after a successful sign-in", async () => {
+      const user = userEvent.setup();
+      const onNext = vi.fn();
+      mockGetUserFromTokens.mockReturnValue({
+        sub: "sub-123",
+        email: "cognito@example.com",
+        name: "Cognito User",
+        tokens: FAKE_TOKENS,
+      });
+      mockInvoke.mockResolvedValue({ code: "c" });
+      mockExchange.mockResolvedValue(FAKE_TOKENS);
+
+      render(<CognitoAuth onNext={onNext} />);
+      await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(mockSetGitIdentity).toHaveBeenCalledWith("Cognito User", "cognito@example.com");
+    });
+
+    it("still advances the wizard when getUserFromTokens throws (malformed idToken)", async () => {
+      const user = userEvent.setup();
+      const onNext = vi.fn();
+      mockGetUserFromTokens.mockImplementation(() => {
+        throw new Error("Invalid idToken format");
+      });
+      mockInvoke.mockResolvedValue({ code: "c" });
+      mockExchange.mockResolvedValue(FAKE_TOKENS);
+
+      render(<CognitoAuth onNext={onNext} />);
+      await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(screen.queryByRole("alert")).toBeNull();
     });
   });
 });

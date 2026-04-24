@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { exists } from "@tauri-apps/plugin-fs";
+import { getWizardState, setGitIdentity } from "@/lib/wizard-state";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,8 +58,8 @@ const STEP_LABELS = [
 // ---------------------------------------------------------------------------
 
 export function GitInit({ installPath, onNext }: GitInitProps) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [name, setName] = useState(() => getWizardState().gitName ?? "");
+  const [email, setEmail] = useState(() => getWizardState().gitEmail ?? "");
   const [probing, setProbing] = useState(true);
 
   const [steps, setSteps] = useState<StepState[]>([
@@ -82,8 +83,10 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
     )
       .then((user) => {
         if (user) {
-          if (user.name) setName(user.name);
-          if (user.email) setEmail(user.email);
+          // Only fall back to local git config when Cognito pre-fill is absent,
+          // so the Cognito login email is always preferred in the Summary screen.
+          if (user.name && !getWizardState().gitName) setName(user.name);
+          if (user.email && !getWizardState().gitEmail) setEmail(user.email);
         }
       })
       .catch(() => {
@@ -143,6 +146,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
           email,
         });
         appendLog(0, `Initialised repository (${sha.slice(0, 7)})`);
+        setGitIdentity(name, email);
         patchStep(0, { status: "done" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

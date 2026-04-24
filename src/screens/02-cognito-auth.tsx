@@ -16,7 +16,7 @@
 import React, { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openInBrowser } from "@tauri-apps/plugin-shell";
-import { storeTokens } from "@/lib/cognito";
+import { getUserFromTokens, storeTokens } from "@/lib/cognito";
 import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
@@ -24,6 +24,7 @@ import {
   generateState,
   getDefaultConfig,
 } from "@/lib/google-oauth";
+import { setGitIdentity } from "@/lib/wizard-state";
 
 interface CognitoAuthScreenProps {
   onNext?: () => void;
@@ -78,6 +79,18 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       });
       if (myCall !== currentCallRef.current) return;
       await storeTokens(tokens);
+      if (myCall !== currentCallRef.current) return;
+      // Pre-populate wizard state with the Cognito email so Step 10 (Summary)
+      // can display it even if the user skips git-init or doesn't change the email.
+      // Best-effort — a decode failure must never block sign-in advancement.
+      try {
+        const user = getUserFromTokens(tokens);
+        if (user?.email) {
+          setGitIdentity(user.name ?? "", user.email);
+        }
+      } catch (err) {
+        console.warn("[google-oauth] could not decode idToken for wizard pre-fill:", err);
+      }
       if (myCall !== currentCallRef.current) return;
       onNext?.();
     } catch (err) {

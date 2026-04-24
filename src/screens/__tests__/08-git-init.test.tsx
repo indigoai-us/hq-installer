@@ -2,6 +2,8 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GitInit } from "../08-git-init.js";
+import { setGitIdentity, clearWizardState } from "../../lib/wizard-state.js";
+import * as wizardStateModule from "../../lib/wizard-state.js";
 
 // ---------------------------------------------------------------------------
 // GitInit screen tests (US-016)
@@ -109,6 +111,7 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     vi.clearAllMocks();
     listenCallbacks.clear();
     handleCounter = 0;
+    clearWizardState();
     mockInvoke.mockImplementation(buildInvokeMock());
     mockExists.mockResolvedValue(true);
   });
@@ -132,6 +135,28 @@ describe("GitInit screen (08-git-init.tsx)", () => {
       expect(nameInput?.value).toBe("Test User");
       expect(emailInput?.value).toBe("test@example.com");
     });
+  });
+
+  it("preserves Cognito email pre-fill when git_probe_user returns a different email", async () => {
+    // Seed wizard state as if 02-cognito-auth already ran.
+    setGitIdentity("Cognito User", "cognito@example.com");
+
+    // Probe returns a different local git identity.
+    mockInvoke.mockImplementation(
+      buildInvokeMock({ probeResult: { name: "Local User", email: "local@example.com" } })
+    );
+
+    render(<GitInit installPath="/tmp/hq" />);
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("git_probe_user");
+    });
+
+    // Both name and email must remain the Cognito ones — probe must not override either.
+    const nameInput = screen.queryByRole("textbox", { name: /name/i }) as HTMLInputElement | null;
+    const emailInput = screen.queryByRole("textbox", { name: /email/i }) as HTMLInputElement | null;
+    expect(nameInput?.value).toBe("Cognito User");
+    expect(emailInput?.value).toBe("cognito@example.com");
   });
 
   it("handles git_probe_user returning null gracefully", async () => {
@@ -237,6 +262,36 @@ describe("GitInit screen (08-git-init.tsx)", () => {
         email: "test@example.com",
       });
     });
+  });
+
+  // ── 4b. After git_init succeeds, setGitIdentity is called with form values ──────
+
+  it("calls setGitIdentity with the form name and email after git_init succeeds", async () => {
+    const user = userEvent.setup();
+    const spy = vi.spyOn(wizardStateModule, "setGitIdentity");
+    mockInvoke.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "git_probe_user") return DEFAULT_PROBE;
+        if (command === "git_init") return "abc1234";
+        if (command === "spawn_process") return new Promise(() => {}); // never resolves
+        return null;
+      })
+    );
+
+    render(<GitInit installPath="/tmp/hq" />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /run setup/i })).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /run setup/i }));
+
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith("Test User", "test@example.com");
+    });
+
+    spy.mockRestore();
   });
 
   // ── 5. After git_init succeeds, spawn_process is called for compute-checksums.sh ──
