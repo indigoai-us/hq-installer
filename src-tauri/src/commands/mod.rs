@@ -5,6 +5,7 @@ pub mod git;
 pub mod install_menubar;
 pub mod keychain;
 pub mod launch;
+pub mod menubar;
 pub mod oauth;
 pub mod process;
 pub mod template;

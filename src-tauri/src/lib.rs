@@ -80,6 +80,7 @@ pub fn run() {
             commands::launch::launch_claude_code,
             commands::install_menubar::install_menubar_app,
             commands::install_menubar::launch_menubar_app,
+            commands::menubar::write_menubar_telemetry_pref,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

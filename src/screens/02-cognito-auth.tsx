@@ -24,7 +24,8 @@ import {
   generateState,
   getDefaultConfig,
 } from "@/lib/google-oauth";
-import { setGitIdentity } from "@/lib/wizard-state";
+import { getWizardState, setGitIdentity } from "@/lib/wizard-state";
+import { postOptIn } from "@/lib/telemetry";
 
 interface CognitoAuthScreenProps {
   onNext?: () => void;
@@ -92,6 +93,12 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
         console.warn("[google-oauth] could not decode idToken for wizard pre-fill:", err);
       }
       if (myCall !== currentCallRef.current) return;
+      // Fire-and-forget: postOptIn handles retries + local cache internally.
+      // We do not await it so the wizard advances without blocking on network.
+      postOptIn({
+        accessToken: tokens.accessToken,
+        enabled: getWizardState().telemetryEnabled,
+      }).catch(() => {});
       onNext?.();
     } catch (err) {
       // Swallow errors that belong to a superseded attempt — the fresh call
