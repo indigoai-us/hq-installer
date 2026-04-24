@@ -1,35 +1,35 @@
-// 10-indexing.tsx — US-018
-// qmd indexing screen — runs `qmd collection add` (or `qmd update` if the
-// collection already exists) and kicks off `qmd embed` as a detached
-// background task.
+// 10-indexing.tsx — Verify screen
+// Registers this HQ folder with qmd's collection registry and writes a marker
+// telling hq-sync to generate embeddings in the background.
 //
 // Steps (auto-start on mount):
-//   1. qmd collection add . --name <slug>   (fresh install, blocking)
-//        ↳ on "already exists" stderr, fall back to:
-//      qmd update --name <slug>             (re-index in place)
-//   2. qmd embed   (fire-and-forget; output persisted to
-//                   ~/.hq/logs/qmd-embed.log for later monitoring)
+//   qmd collection add . --name <slug>     (fresh install, blocking, fast)
+//     ↳ on "already exists" stderr, fall back to:
+//   qmd update --name <slug>               (re-index in place)
 //
-// Embeddings are optional (semantic search falls back to BM25) and CPU
-// inference can take 10+ minutes on GPU-less machines, so we spawn `qmd
-// embed` detached and let the user advance immediately. Failures are
-// silent — recorded in the log file but not surfaced in the wizard. A
-// future hq-sync background worker can tail the log file to report status.
+// On success, we write {installPath}/.hq-embeddings-pending.json (or
+// ~/.hq/embeddings-pending.json as a fallback) so the hq-sync menubar app
+// picks up the pending job on next launch. Embeddings themselves are
+// generated from sync, not here — keeps the installer fast and makes
+// semantic indexing visible in the tray.
 //
 // The slug is derived from the basename of installPath — e.g.
-// "/Users/stefanjohnson/hq" → "hq". qmd 2.x uses named collections
-// (xdg-based registry at ~/.config/qmd/index.yml) so each HQ install gets
-// its own collection identity instead of the old unnamed 0.3.x flat index.
+// "/Users/stefanjohnson/hq" → "hq".
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  writeTextFile,
+  mkdir,
+  BaseDirectory,
+} from "@tauri-apps/plugin-fs";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type StepStatus = "idle" | "running" | "done" | "error" | "background";
+type StepStatus = "idle" | "running" | "done" | "error";
 
 interface StepState {
   status: StepStatus;
@@ -55,10 +55,7 @@ export interface QmdIndexingProps {
 // Step descriptors (static labels)
 // ---------------------------------------------------------------------------
 
-const STEP_LABELS = [
-  "Index HQ knowledge base",
-  "Generate semantic embeddings",
-];
+const STEP_LABELS = ["Register HQ with semantic search"];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,12 +71,51 @@ function collectionSlug(installPath: string): string {
   return installPath.split("/").filter(Boolean).pop() || "hq";
 }
 
+/**
+ * Write the embeddings-pending marker so hq-sync knows to run `qmd embed`
+ * on next launch. Primary target is `{installPath}/.hq-embeddings-pending.json`;
+ * if `installPath` is not a usable absolute path (empty, relative, or the
+ * write fails for any reason), fall back to `~/.hq/embeddings-pending.json`.
+ * Sync checks both locations.
+ */
+async function writePendingMarker(installPath: string): Promise<void> {
+  const payload = JSON.stringify(
+    { requestedAt: new Date().toISOString(), reason: "post-install" },
+    null,
+    2
+  );
+
+  const hasAbsoluteInstallPath =
+    typeof installPath === "string" && installPath.startsWith("/");
+
+  if (hasAbsoluteInstallPath) {
+    const primary = `${installPath.replace(/\/+$/, "")}/.hq-embeddings-pending.json`;
+    try {
+      await writeTextFile(primary, payload);
+      return;
+    } catch {
+      // Fall through to the home-directory fallback.
+    }
+  }
+
+  // Fallback: ~/.hq/embeddings-pending.json (ensure the directory exists).
+  try {
+    await mkdir(".hq", { baseDir: BaseDirectory.Home, recursive: true });
+  } catch {
+    // mkdir is idempotent; ignore "already exists" and let the write fail loudly
+    // if something more serious is wrong.
+  }
+  await writeTextFile(".hq/embeddings-pending.json", payload, {
+    baseDir: BaseDirectory.Home,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
-  const [steps, setSteps] = useState<StepState[]>([makeStep(), makeStep()]);
+  const [steps, setSteps] = useState<StepState[]>([makeStep()]);
   const [running, setRunning] = useState(false);
   const [failedStep, setFailedStep] = useState<number | null>(null);
 
@@ -90,8 +126,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   const unlistenRefs = useRef<Array<(() => void) | undefined>>([]);
 
   // Handle of the currently-spawned child for step 0 (index), so it can be
-  // cancelled on unmount. Step 1 (embed) is fire-and-forget — we deliberately
-  // do not track its handle so the child survives past this screen.
+  // cancelled on unmount.
   const activeHandleRef = useRef<string | null>(null);
 
   // ---------------------------------------------------------------------------
@@ -282,35 +317,15 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         }
       }
 
-      // ── Step 1: qmd embed (fire-and-forget) ─────────────────────────────────
-      // Embeddings are optional (BM25 via `qmd search` still works) and CPU
-      // inference can take 10+ minutes on machines without a GPU. Spawn
-      // detached via `sh -c`, redirect output to ~/.hq/logs/qmd-embed.log
-      // for later inspection, and advance immediately. We deliberately do
-      // not register listeners or track the handle — the process outlives
-      // this component. A future hq-sync background worker will take over
-      // monitoring by tailing the log file.
-      if (startIdx <= 1) {
-        try {
-          await invoke<string>("spawn_process", {
-            args: {
-              cmd: "sh",
-              args: [
-                "-c",
-                'mkdir -p "$HOME/.hq/logs" && qmd embed > "$HOME/.hq/logs/qmd-embed.log" 2>&1',
-              ],
-              cwd: installPath,
-            },
-          });
-          patchStep(1, { status: "background" });
-        } catch (err) {
-          // Silent: failing to even spawn is rare and non-actionable here.
-          // Log to the step's internal buffer so a curious user can still
-          // toggle the log panel to see what happened.
-          const msg = err instanceof Error ? err.message : String(err);
-          appendLog(1, `[stderr] spawn failed: ${msg}`);
-          patchStep(1, { status: "background" });
-        }
+      // Write the pending-embeddings marker so hq-sync picks up the job on
+      // next launch. Non-fatal: if both primary and fallback writes fail,
+      // log into the step's panel but still let the user continue — they can
+      // always re-trigger embeddings manually from sync Settings.
+      try {
+        await writePendingMarker(installPath);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendLog(0, `[warn] Could not write embeddings marker: ${msg}`);
       }
 
       setRunning(false);
@@ -338,8 +353,6 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   // Derived
   // ---------------------------------------------------------------------------
 
-  // Continue is gated on step 0 (indexing) only. Step 1 (embeddings) runs
-  // detached in the background and never blocks the wizard.
   const canContinue = steps[0].status === "done";
 
   // ---------------------------------------------------------------------------
@@ -351,7 +364,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-medium text-white">Indexing HQ</h1>
         <p className="text-sm font-light text-zinc-400">
-          Building the knowledge index so Claude Code can search your HQ instantly.
+          HQ registered. Embeddings will generate in the background from your menubar.
         </p>
       </div>
 
@@ -367,22 +380,8 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         ))}
       </div>
 
-      {/* Embeddings background note — shown once step 1 has been kicked off.
-          Tells the user the process is still running and where to find logs
-          if they want to check on it. */}
-      {steps[1].status === "background" && (
-        <p className="text-xs text-zinc-500 leading-relaxed -mt-1">
-          Embeddings are generating in the background — this may take several
-          minutes, longer on VMs or machines without a GPU. Safe to continue:
-          semantic search falls back to keyword search until they finish. Logs
-          at <code className="px-1 py-0.5 rounded bg-white/10 text-zinc-300">~/.hq/logs/qmd-embed.log</code>.
-        </p>
-      )}
-
       {/* Action buttons */}
       <div className="flex gap-3">
-        {/* Step 0 (index) failure — retry / view log. Step 1 (embed) never
-            surfaces errors in the UI; it fails silently in the background. */}
         {failedStep !== null && !running && (
           <>
             <button
@@ -442,14 +441,6 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
           {step.status === "done" && (
             <span data-status="done" className="text-xs text-green-400">
               Done
-            </span>
-          )}
-          {step.status === "background" && (
-            <span
-              data-status="background"
-              className="text-xs text-blue-400 hq-text-shimmer"
-            >
-              Running in background
             </span>
           )}
           {step.status === "error" && (

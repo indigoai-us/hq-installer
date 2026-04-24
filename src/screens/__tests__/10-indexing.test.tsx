@@ -34,8 +34,21 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The Verify step writes a post-install marker via @tauri-apps/plugin-fs.
+// Mock writeTextFile + mkdir so tests can assert the marker write without a
+// real filesystem, and so we can force the primary write to fail when
+// exercising the ~/.hq/embeddings-pending.json fallback.
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  writeTextFile: vi.fn().mockResolvedValue(undefined),
+  mkdir: vi.fn().mockResolvedValue(undefined),
+  BaseDirectory: { Home: "Home" },
+}));
+
 import { invoke } from "@tauri-apps/api/core";
+import { writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
 const mockInvoke = vi.mocked(invoke);
+const mockWriteTextFile = vi.mocked(writeTextFile);
+const mockMkdir = vi.mocked(mkdir);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -94,6 +107,10 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     listenCallbacks.clear();
     handleCounter = 0;
     mockInvoke.mockImplementation(buildInvokeMock());
+    // Reset the fs mocks to their default success state each test; individual
+    // cases can override (e.g. force the primary write to reject).
+    mockWriteTextFile.mockResolvedValue(undefined);
+    mockMkdir.mockResolvedValue(undefined);
   });
 
   // ── 1. Tauri environment compatibility ────────────────────────────────────
@@ -167,7 +184,7 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
-  it("spawns qmd embed detached (via sh -c) after qmd collection-add succeeds", async () => {
+  it("does NOT spawn `qmd embed` — embeddings are now deferred to hq-sync", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -183,31 +200,21 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
     render(<QmdIndexing installPath="/tmp/hq" />);
 
-    // Wait for step 0 to be spawned.
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
-
-    // Complete step 0 (qmd collection add .)
     completeProcess(handles[0]);
 
-    // Step 1 is now fire-and-forget: `sh -c 'mkdir -p ... && qmd embed > log 2>&1'`.
-    // Output is redirected to ~/.hq/logs/qmd-embed.log so a future hq-sync
-    // background worker can tail it.
-    await waitFor(() => {
-      const embedCall = mockInvoke.mock.calls.find(
-        ([cmd, payload]) => {
-          if (cmd !== "spawn_process") return false;
-          const args = (payload as { args?: { cmd?: string; args?: string[] } })
-            ?.args;
-          return (
-            args?.cmd === "sh" &&
-            args?.args?.[0] === "-c" &&
-            /qmd embed/.test(args?.args?.[1] ?? "") &&
-            /qmd-embed\.log/.test(args?.args?.[1] ?? "")
-          );
-        }
-      );
-      expect(embedCall).toBeDefined();
+    // Wait for the marker write to settle, then assert no spawn_process call
+    // ever invoked `qmd embed` (neither directly nor via `sh -c`).
+    await waitFor(() => expect(mockWriteTextFile).toHaveBeenCalled());
+
+    const embedCalls = mockInvoke.mock.calls.filter(([cmd, payload]) => {
+      if (cmd !== "spawn_process") return false;
+      const args = (payload as { args?: { cmd?: string; args?: string[] } })
+        ?.args;
+      const argv = [args?.cmd ?? "", ...(args?.args ?? [])].join(" ");
+      return /\bqmd\s+embed\b/.test(argv);
     });
+    expect(embedCalls).toHaveLength(0);
   });
 
   // ── 3. Shows "Running" status while steps are in progress ─────────────────
@@ -232,7 +239,7 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
   // ── 4. Shows "Continue" button when both steps complete ───────────────────
 
-  it("shows 'Continue' as soon as step 0 completes — embed runs in background", async () => {
+  it("shows 'Continue' as soon as step 0 completes", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -248,8 +255,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
     render(<QmdIndexing installPath="/tmp/hq" onNext={vi.fn()} />);
 
-    // Complete step 0 only. Embed (step 1) is fire-and-forget — the user
-    // must not be blocked on its exit event.
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
 
@@ -259,9 +264,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
         screen.queryByRole("button", { name: /next/i });
       expect(btn).not.toBeNull();
     });
-
-    // And the step 1 row shows the new "Running in background" status.
-    expect(document.querySelector('[data-status="background"]')).not.toBeNull();
   });
 
   it("Continue button calls onNext", async () => {
@@ -331,11 +333,115 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     });
   });
 
-  it("step 1 (embed) failures are silent — no Retry surfaced to the user", async () => {
-    // Embed runs detached and its exit is never observed by the component,
-    // but even if a listener were attached, a failure must not surface a
-    // Retry button or block Continue. Semantic search falls back to BM25,
-    // so embeddings are strictly optional.
+  // ── Pending marker (US-001) ───────────────────────────────────────────────
+
+  it("writes {installPath}/.hq-embeddings-pending.json on step 0 success", async () => {
+    const handles: string[] = [];
+    mockInvoke.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "spawn_process") {
+          const h = `handle-${handles.length + 1}`;
+          handles.push(h);
+          return h;
+        }
+        return null;
+      })
+    );
+
+    render(<QmdIndexing installPath="/Users/jane/hq" />);
+
+    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
+    completeProcess(handles[0]);
+
+    await waitFor(() => expect(mockWriteTextFile).toHaveBeenCalled());
+
+    // Primary path: first write goes to `{installPath}/.hq-embeddings-pending.json`
+    // with no baseDir option (absolute path).
+    const [firstPath, firstPayload, firstOpts] = mockWriteTextFile.mock.calls[0];
+    expect(firstPath).toBe("/Users/jane/hq/.hq-embeddings-pending.json");
+    expect(firstOpts).toBeUndefined();
+
+    const parsed = JSON.parse(firstPayload as string);
+    expect(parsed.reason).toBe("post-install");
+    expect(typeof parsed.requestedAt).toBe("string");
+    // requestedAt must be a valid ISO8601 timestamp.
+    expect(Number.isNaN(Date.parse(parsed.requestedAt))).toBe(false);
+    expect(parsed.requestedAt).toMatch(/\dT\d.*Z$/);
+  });
+
+  it("falls back to ~/.hq/embeddings-pending.json when primary write fails", async () => {
+    const handles: string[] = [];
+    mockInvoke.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "spawn_process") {
+          const h = `handle-${handles.length + 1}`;
+          handles.push(h);
+          return h;
+        }
+        return null;
+      })
+    );
+
+    // First write (primary, absolute path) rejects; second write (fallback
+    // via BaseDirectory.Home) must succeed.
+    mockWriteTextFile.mockReset();
+    mockWriteTextFile
+      .mockRejectedValueOnce(new Error("EACCES: permission denied"))
+      .mockResolvedValue(undefined);
+
+    render(<QmdIndexing installPath="/Users/jane/hq" />);
+
+    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
+    completeProcess(handles[0]);
+
+    await waitFor(() =>
+      expect(mockWriteTextFile.mock.calls.length).toBeGreaterThanOrEqual(2)
+    );
+
+    // Ensure ~/.hq was created (recursive) before the fallback write.
+    expect(mockMkdir).toHaveBeenCalledWith(".hq", {
+      baseDir: "Home",
+      recursive: true,
+    });
+
+    const [fallbackPath, , fallbackOpts] = mockWriteTextFile.mock.calls[1];
+    expect(fallbackPath).toBe(".hq/embeddings-pending.json");
+    expect(fallbackOpts).toEqual({ baseDir: "Home" });
+  });
+
+  it("skips the primary write entirely when installPath is not absolute", async () => {
+    const handles: string[] = [];
+    mockInvoke.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "spawn_process") {
+          const h = `handle-${handles.length + 1}`;
+          handles.push(h);
+          return h;
+        }
+        return null;
+      })
+    );
+
+    render(<QmdIndexing installPath="" />);
+
+    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
+    completeProcess(handles[0]);
+
+    await waitFor(() => expect(mockWriteTextFile).toHaveBeenCalled());
+
+    // Only one write, and it targets the ~/.hq fallback.
+    expect(mockWriteTextFile).toHaveBeenCalledTimes(1);
+    const [path, , opts] = mockWriteTextFile.mock.calls[0];
+    expect(path).toBe(".hq/embeddings-pending.json");
+    expect(opts).toEqual({ baseDir: "Home" });
+  });
+
+  // ── Deprecated UI affordances removed (US-001) ────────────────────────────
+
+  it("does NOT render a 'Skip embeddings' button or 'several minutes' warning", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -354,19 +460,18 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
 
-    // Continue must be available immediately after step 0 succeeds,
-    // regardless of whether/how step 1 exits.
     await waitFor(() => {
       expect(
         screen.queryByRole("button", { name: /continue/i })
       ).not.toBeNull();
     });
 
-    // Even if step 1 were to fail (we simulate an exit event to the
-    // embed handle, in case a listener ever gets attached), no Retry
-    // button should appear.
-    if (handles.length >= 2) failProcess(handles[1]);
-    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+    // Neither the legacy Skip button nor the old "several minutes" warning
+    // should be present in the DOM — embeddings are now sync's problem.
+    expect(
+      screen.queryByRole("button", { name: /skip embeddings/i })
+    ).toBeNull();
+    expect(document.body.textContent).not.toMatch(/several minutes/i);
   });
 
   it("Retry button re-spawns from the failed step", async () => {
