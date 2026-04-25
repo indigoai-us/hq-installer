@@ -1,4 +1,4 @@
-/// Acceptance tests for US-006: git.rs — git2-backed init and initial commit.
+//! Acceptance tests for US-006: git.rs — git2-backed init and initial commit.
 
 #[cfg(test)]
 mod git_tests {

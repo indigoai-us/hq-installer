@@ -1,4 +1,4 @@
-/// Acceptance tests for US-007: process.rs — streamed subprocess with cancellation.
+//! Acceptance tests for US-007: process.rs — streamed subprocess with cancellation.
 
 #[cfg(test)]
 mod process_tests {
@@ -13,6 +13,8 @@ mod process_tests {
     use tempfile::TempDir;
     use uuid::Uuid;
 
+    type ExitInfo = Arc<Mutex<Option<(Option<i32>, bool)>>>;
+
     /// Default search path for tests that don't care about PATH resolution —
     /// every system binary used (`echo`, `sleep`, `false`) lives in `/bin`
     /// or `/usr/bin`, so this covers them without leaking the host PATH.
@@ -24,7 +26,7 @@ mod process_tests {
 
     fn collect_events(args: SpawnArgs) -> (Vec<String>, Option<(Option<i32>, bool)>) {
         let stdout_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-        let exit_info: Arc<Mutex<Option<(Option<i32>, bool)>>> = Arc::new(Mutex::new(None));
+        let exit_info: ExitInfo = Arc::new(Mutex::new(None));
 
         let lines_ref = stdout_lines.clone();
         let exit_ref = exit_info.clone();
@@ -215,7 +217,7 @@ mod process_tests {
         };
 
         let stdout_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-        let exit_info: Arc<Mutex<Option<(Option<i32>, bool)>>> = Arc::new(Mutex::new(None));
+        let exit_info: ExitInfo = Arc::new(Mutex::new(None));
         let lines_ref = stdout_lines.clone();
         let exit_ref = exit_info.clone();
 

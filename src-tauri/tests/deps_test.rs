@@ -1,8 +1,8 @@
-/// Acceptance tests for US-003: Rust deps.rs probe and install commands.
-///
-/// Tests use `check_dep_in` (a thin wrapper around the public `check_dep`
-/// logic that accepts an explicit search path) to stay fully thread-safe —
-/// no global PATH mutation is needed, so tests can run in parallel.
+//! Acceptance tests for US-003: Rust deps.rs probe and install commands.
+//!
+//! Tests use `check_dep_in` (a thin wrapper around the public `check_dep`
+//! logic that accepts an explicit search path) to stay fully thread-safe —
+//! no global PATH mutation is needed, so tests can run in parallel.
 
 #[cfg(test)]
 mod deps_tests {

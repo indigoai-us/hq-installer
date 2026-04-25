@@ -1,7 +1,7 @@
-/// Acceptance tests for US-005: keychain.rs — secure token storage.
-///
-/// Each test uses a UUID-based account name so parallel runs never collide.
-/// Teardown always deletes the test entry (idempotent delete makes this safe).
+//! Acceptance tests for US-005: keychain.rs — secure token storage.
+//!
+//! Each test uses a UUID-based account name so parallel runs never collide.
+//! Teardown always deletes the test entry (idempotent delete makes this safe).
 
 #[cfg(test)]
 mod keychain_tests {

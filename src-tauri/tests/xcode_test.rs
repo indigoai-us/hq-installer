@@ -1,7 +1,7 @@
-/// Acceptance tests for US-004: xcode.rs — Xcode Command Line Tools install + polling.
-///
-/// Tests use injectable `clt_dir` parameters (TempDir) so no real
-/// `/Library/Developer/CommandLineTools` access is ever made.
+//! Acceptance tests for US-004: xcode.rs — Xcode Command Line Tools install + polling.
+//!
+//! Tests use injectable `clt_dir` parameters (TempDir) so no real
+//! `/Library/Developer/CommandLineTools` access is ever made.
 
 #[cfg(test)]
 mod xcode_tests {
