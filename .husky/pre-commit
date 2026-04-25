@@ -1,1 +1,1 @@
-pnpm exec lint-staged
+pnpm exec lint-staged && pnpm lint && pnpm typecheck && pnpm test && ( cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test )
