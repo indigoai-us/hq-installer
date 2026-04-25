@@ -7,9 +7,9 @@
 import { fetch } from "@tauri-apps/plugin-http";
 import type { HandoffResult } from "../types/handoff";
 
-// hq-dev stack (canonical; see hq-pro ADR-0003). Override via VITE_VAULT_API_URL.
+// hq-prod stack (canonical post-2026-04-25 cutover). Override via VITE_VAULT_API_URL.
 const DEFAULT_VAULT_API_URL =
-  "https://ky8cgbl4yh.execute-api.us-east-1.amazonaws.com";
+  "https://4nfy67z28h.execute-api.us-east-1.amazonaws.com";
 
 function getVaultApiUrl(): string {
   return (
