@@ -1,8 +1,8 @@
 // oauth.rs — Google OAuth loopback listener.
 //
 // Starts a one-shot HTTP server on 127.0.0.1:53682 (rclone-standard OAuth
-// loopback port, pre-registered in Cognito app client 7r7an9keh0u6hlsvepl74tvqb0
-// — hq-dev stack; see hq-pro ADR-0003)
+// loopback port, pre-registered in Cognito app client 7acei2c8v870enheptb1j5foln
+// — hq-prod stack, canonical post-2026-04-25 cutover)
 // and waits for the browser to redirect back to /callback?code=...&state=...
 // with the authorization code. Responds with a friendly HTML page that tells
 // the user to return to the installer, then shuts the listener down.

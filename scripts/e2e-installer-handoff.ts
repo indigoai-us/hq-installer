@@ -12,8 +12,8 @@
  * Usage: npx tsx scripts/e2e-installer-handoff.ts
  */
 
-// hq-dev stack (canonical; see hq-pro ADR-0003).
-const VAULT_API_URL = "https://ky8cgbl4yh.execute-api.us-east-1.amazonaws.com";
+// hq-prod stack (canonical post-2026-04-25 cutover).
+const VAULT_API_URL = "https://4nfy67z28h.execute-api.us-east-1.amazonaws.com";
 const INSTALLER_URL =
   "https://github.com/indigoai-us/hq-installer/releases/latest/download/hq-installer_universal.zip";
 const ONBOARDING_URL = "https://onboarding.getindigo.ai";
