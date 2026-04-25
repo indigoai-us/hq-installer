@@ -2,10 +2,10 @@
 // Personalization screen: single-step form.
 //
 // Also the de-facto "company detection" point now that the old Step 3
-// (company-detect) has been removed: on mount, calls listUserCompanies(),
-// seeds wizard-state.team from the first cloud company, and records the
-// total count so App.tsx can conditionally skip the HQ Sync install step
-// when the user has nothing to sync.
+// (company-detect) has been removed: on mount, calls listUserCompanies()
+// and seeds wizard-state.team from the first cloud company. When the user
+// has no cloud companies, flips wizard-state.isPersonal so Summary renders
+// the "Personal HQ" label.
 //
 //  - Asks for the user's full name (prefilled from the Google idToken).
 //  - Auto-lists every HQ-Cloud company the signed-in Cognito user belongs to
@@ -25,7 +25,6 @@ import {
   setPersonalized,
   setTeam,
   setIsPersonal,
-  setConnectedCompanyCount,
 } from "@/lib/wizard-state";
 
 // ---------------------------------------------------------------------------
@@ -96,12 +95,9 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
             const entries = await listUserCompanies(user.tokens.accessToken);
             if (cancelled) return;
             setCloudCompanies(entries);
-            // Persist company-count globally so App.tsx can skip the HQ Sync
-            // menu bar install when there's nothing to sync. Also seed the
-            // wizard `team` slot from the first cloud company (old Step 3's
-            // job) so Summary has something to display; or flip isPersonal
-            // when the user genuinely has no cloud companies.
-            setConnectedCompanyCount(entries.length);
+            // Seed the wizard `team` slot from the first cloud company (old
+            // Step 3's job) so Summary has something to display; or flip
+            // isPersonal when the user genuinely has no cloud companies.
             if (entries.length > 0) {
               const first = entries[0];
               setTeam({
