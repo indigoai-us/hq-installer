@@ -39,7 +39,6 @@ function setupInvokeMock({
   pickedPath?: string | null;
   detectResult?: { exists: boolean; isHq: boolean };
 } = {}) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mockInvoke.mockImplementation(async (command: string): Promise<any> => {
     if (command === "pick_directory") return pickedPath;
     if (command === "detect_hq") return detectResult;

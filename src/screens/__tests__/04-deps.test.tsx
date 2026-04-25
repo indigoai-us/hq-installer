@@ -66,7 +66,6 @@ const BINARY_TO_ID: Record<string, Tool> = {
 };
 
 function buildInvokeMock(overrides: Partial<Record<Tool, { installed: boolean }>> = {}) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return vi.fn(async (command: string, args?: any): Promise<any> => {
     if (command === "check_dep") {
       const binary = (args as { tool?: string })?.tool as string;
@@ -347,7 +346,6 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
     it("clicking Install for homebrew calls install_homebrew", async () => {
       const user = userEvent.setup();
       let callCount = 0;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && (args as { tool?: string })?.tool === "brew") {
           callCount++;
@@ -380,8 +378,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
     it("clicking Install for node (with homebrew already installed) calls install_node", async () => {
       const user = userEvent.setup();
-      mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async (command: string, args?: any): Promise<any> => {
+      mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && args?.tool === "node") return { installed: false };
         if (command === "check_dep") return { installed: true };
         return null;
@@ -427,8 +424,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
     it("displays progress output lines when install:progress events are received", async () => {
       const user = userEvent.setup();
-      mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async (command: string, args?: any): Promise<any> => {
+      mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "check_dep") return { installed: true };
         if (command === "install_homebrew" || command === "install_dep") {
@@ -459,8 +455,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
     it("accumulates multiple progress lines", async () => {
       const user = userEvent.setup();
-      mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async (command: string, args?: any): Promise<any> => {
+      mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "check_dep") return { installed: true };
         return new Promise(() => {});
@@ -491,8 +486,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
   describe("failure states — retry + browser fallback", () => {
     it("shows a retry button when an install command fails", async () => {
       const user = userEvent.setup();
-      mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async (command: string, args?: any): Promise<any> => {
+      mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "check_dep") return { installed: true };
         throw new Error("install failed");
@@ -516,8 +510,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
     it("shows an 'Open install page' button when an install command fails", async () => {
       const user = userEvent.setup();
-      mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async (command: string, args?: any): Promise<any> => {
+      mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "check_dep") return { installed: true };
         throw new Error("install failed");
@@ -543,8 +536,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
     it("clicking 'Open install page' calls shell open with a URL", async () => {
       const user = userEvent.setup();
-      mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async (command: string, args?: any): Promise<any> => {
+      mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "check_dep") return { installed: true };
         throw new Error("install failed");
@@ -583,8 +575,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
     it("clicking Retry re-invokes the install command", async () => {
       const user = userEvent.setup();
       let installAttempts = 0;
-      mockInvoke.mockImplementation(// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async (command: string, args?: any): Promise<any> => {
+      mockInvoke.mockImplementation(async (command: string, args?: any): Promise<any> => {
         if (command === "check_dep" && args?.tool === "brew") return { installed: false };
         if (command === "check_dep") return { installed: true };
         installAttempts++;

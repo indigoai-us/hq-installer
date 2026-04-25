@@ -83,7 +83,6 @@ function buildInvokeMock(overrides: {
   spawnHandles?: string[];
 } = {}) {
   const spawnQueue = [...(overrides.spawnHandles ?? ["handle-1", "handle-2"])];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return vi.fn(async (command: string): Promise<any> => {
     if (command === "git_probe_user") {
       const r = overrides.probeResult !== undefined ? overrides.probeResult : DEFAULT_PROBE;
@@ -238,7 +237,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     const user = userEvent.setup();
     // Use a slow spawn so we can assert git_init before scripts complete.
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") return "abc1234";
@@ -270,7 +268,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     const user = userEvent.setup();
     const spy = vi.spyOn(wizardStateModule, "setGitIdentity");
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") return "abc1234";
@@ -300,7 +297,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     const user = userEvent.setup();
 
     const invokeMock = vi.fn(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") return "abc1234";
@@ -336,7 +332,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
 
     const handles: string[] = [];
     const invokeMock = vi.fn(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") return "abc1234";
@@ -383,7 +378,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
 
     const handles: string[] = [];
     const invokeMock = vi.fn(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") return "abc1234";
@@ -445,7 +439,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
 
     const handles: string[] = [];
     const invokeMock = vi.fn(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") return "abc1234";
@@ -489,7 +482,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
 
     const handles: string[] = [];
     const invokeMock = vi.fn(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") return "abc1234";
@@ -538,7 +530,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     const user = userEvent.setup();
 
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") throw new Error("git init failed");
@@ -567,7 +558,6 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     let gitInitCount = 0;
 
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "git_probe_user") return DEFAULT_PROBE;
         if (command === "git_init") {

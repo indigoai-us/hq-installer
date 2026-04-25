@@ -87,7 +87,6 @@ let handleCounter = 0;
  */
 function buildInvokeMock(opts: { spawnHandles?: string[] } = {}) {
   const spawnQueue = [...(opts.spawnHandles ?? [])];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return vi.fn(async (command: string): Promise<any> => {
     if (command === "spawn_process") {
       const h = spawnQueue.shift() ?? `handle-${++handleCounter}`;
@@ -144,7 +143,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     // component should transparently retry as `qmd update --name <slug>`.
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -187,7 +185,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("does NOT spawn `qmd embed` — embeddings are now deferred to hq-sync", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -222,7 +219,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("shows 'Running' status text while step 0 is in progress", async () => {
     // spawn_process never resolves — keeps step 0 in running state indefinitely.
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") return new Promise(() => {});
         return null;
@@ -242,7 +238,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("shows 'Continue' as soon as step 0 completes", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -272,7 +267,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
 
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -308,7 +302,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("shows 'Retry' button when step 0 exits with failure", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -338,7 +331,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("writes {installPath}/.hq-embeddings-pending.json on step 0 success", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -373,7 +365,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("falls back to ~/.hq/embeddings-pending.json when primary write fails", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -414,7 +405,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("skips the primary write entirely when installPath is not absolute", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -444,7 +434,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("does NOT render a 'Skip embeddings' button or 'several minutes' warning", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -478,7 +467,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     const user = userEvent.setup();
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
@@ -513,7 +501,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
   it("shows ABI-mismatch remediation hint when ERR_DLOPEN_FAILED appears in stderr", async () => {
     const handles: string[] = [];
     mockInvoke.mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.fn(async (command: string): Promise<any> => {
         if (command === "spawn_process") {
           const h = `handle-${handles.length + 1}`;
