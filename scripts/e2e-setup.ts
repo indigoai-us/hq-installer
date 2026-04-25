@@ -30,9 +30,10 @@ import { randomBytes } from "crypto";
 // Config
 // ---------------------------------------------------------------------------
 
-const VAULT_API_URL = "https://tqdwdqxv75.execute-api.us-east-1.amazonaws.com";
-const USER_POOL_ID = "us-east-1_IksCYBcBr";
-const CLIENT_ID = "4mmujmjq3srakdueg656b9m0mp";
+// hq-dev stack (canonical; see hq-pro ADR-0003).
+const VAULT_API_URL = "https://ky8cgbl4yh.execute-api.us-east-1.amazonaws.com";
+const USER_POOL_ID = "us-east-1_tj0uvVtDv";
+const CLIENT_ID = "7r7an9keh0u6hlsvepl74tvqb0";
 const REGION = "us-east-1";
 const TOKEN_CACHE_PATH = join(
   process.env.HOME ?? "/tmp",

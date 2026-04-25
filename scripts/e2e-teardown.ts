@@ -42,8 +42,9 @@ import { join } from "path";
 // Config
 // ---------------------------------------------------------------------------
 
-const VAULT_API_URL = "https://tqdwdqxv75.execute-api.us-east-1.amazonaws.com";
-const USER_POOL_ID = "us-east-1_IksCYBcBr";
+// hq-dev stack (canonical; see hq-pro ADR-0003).
+const VAULT_API_URL = "https://ky8cgbl4yh.execute-api.us-east-1.amazonaws.com";
+const USER_POOL_ID = "us-east-1_tj0uvVtDv";
 const REGION = "us-east-1";
 const TOKEN_CACHE_PATH = join(
   process.env.HOME ?? "/tmp",

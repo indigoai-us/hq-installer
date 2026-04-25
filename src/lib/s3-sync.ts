@@ -89,9 +89,10 @@ export function resolveLocalPath(
 }
 
 function getVaultApiUrl(): string {
+  // hq-dev stack (canonical; see hq-pro ADR-0003). Override via VITE_VAULT_API_URL.
   return (
     (import.meta.env.VITE_VAULT_API_URL as string | undefined) ??
-    "https://tqdwdqxv75.execute-api.us-east-1.amazonaws.com"
+    "https://ky8cgbl4yh.execute-api.us-east-1.amazonaws.com"
   );
 }
 
