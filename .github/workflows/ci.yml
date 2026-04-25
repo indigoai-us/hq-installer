@@ -50,13 +50,21 @@ jobs:
           VITE_COGNITO_DOMAIN: https://mock-cognito.auth.us-east-1.amazoncognito.com
 
   rust:
-    name: Rust (cargo check)
+    name: Rust (fmt + check + clippy + test)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
       - run: cargo check
+        working-directory: src-tauri
+      - run: cargo fmt --check
+        working-directory: src-tauri
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+      - run: cargo test
         working-directory: src-tauri
