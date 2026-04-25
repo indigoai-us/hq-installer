@@ -5,7 +5,6 @@ import {
   setTeam,
   setIsPersonal,
   setPersonalized,
-  setConnectedCompanyCount,
   clearWizardState,
 } from "../wizard-state.js";
 import type { TeamMetadata } from "../wizard-state.js";
@@ -59,11 +58,6 @@ describe("wizard-state", () => {
     it("returns an object with personalized=false by default", () => {
       const state = getWizardState();
       expect(state.personalized).toBe(false);
-    });
-
-    it("returns an object with connectedCompanyCount=0 by default", () => {
-      const state = getWizardState();
-      expect(state.connectedCompanyCount).toBe(0);
     });
 
     it("returns a consistent object on repeated calls (same reference or equal shape)", () => {
@@ -220,37 +214,6 @@ describe("wizard-state", () => {
       setPersonalized(true);
       clearWizardState();
       expect(getWizardState().personalized).toBe(false);
-    });
-
-    it("resets connectedCompanyCount back to 0", () => {
-      setConnectedCompanyCount(3);
-      clearWizardState();
-      expect(getWizardState().connectedCompanyCount).toBe(0);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  describe("setConnectedCompanyCount()", () => {
-    // This field gates the App.tsx auto-skip of the HQ Sync menu bar install.
-    // It must survive set/clear cycles cleanly so the skip doesn't mis-fire
-    // on a re-run or after a back-nav + forward walk.
-    it("stores the count returned by listUserCompanies", () => {
-      setConnectedCompanyCount(3);
-      expect(getWizardState().connectedCompanyCount).toBe(3);
-    });
-
-    it("accepts 0 (no cloud companies)", () => {
-      setConnectedCompanyCount(3);
-      setConnectedCompanyCount(0);
-      expect(getWizardState().connectedCompanyCount).toBe(0);
-    });
-
-    it("does not affect unrelated fields", () => {
-      setTeam(MOCK_TEAM);
-      setConnectedCompanyCount(2);
-      const state = getWizardState();
-      expect(state.team?.teamId).toBe("team-abc123");
-      expect(state.connectedCompanyCount).toBe(2);
     });
   });
 

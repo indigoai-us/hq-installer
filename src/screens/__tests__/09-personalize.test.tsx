@@ -10,8 +10,8 @@ import { Personalize } from "../09-personalize.js";
 // Screen: single-step form
 //   - Full-name input prefilled from the Google idToken (via getCurrentUser)
 //   - Read-only list of HQ-Cloud companies the user is a member of. On mount
-//     the screen persists `connectedCompanyCount` (for App.tsx HQ Sync skip),
-//     seeds `team` from the first company, or flips `isPersonal` if empty.
+//     the screen seeds `team` from the first company, or flips `isPersonal`
+//     when the list is empty.
 //   - Optional manual companies list (free-text rows the user adds)
 //   - Single "Continue" button: calls personalize() with merged company seeds,
 //     then onNext(). S3 reconciliation is no longer the installer's job — the
@@ -77,12 +77,10 @@ vi.mock("../../lib/wizard-state.js", () => ({
     gitName: null,
     gitEmail: null,
     personalized: false,
-    connectedCompanyCount: 0,
   })),
   setPersonalized: vi.fn(),
   setTeam: vi.fn(),
   setIsPersonal: vi.fn(),
-  setConnectedCompanyCount: vi.fn(),
 }));
 
 import { personalize } from "../../lib/personalize-writer.js";
@@ -93,7 +91,6 @@ import {
   setPersonalized,
   setTeam,
   setIsPersonal,
-  setConnectedCompanyCount,
 } from "../../lib/wizard-state.js";
 
 const mockPersonalize = vi.mocked(personalize);
@@ -103,7 +100,6 @@ const mockGetWizardState = vi.mocked(getWizardState);
 const mockSetPersonalized = vi.mocked(setPersonalized);
 const mockSetTeam = vi.mocked(setTeam);
 const mockSetIsPersonal = vi.mocked(setIsPersonal);
-const mockSetConnectedCompanyCount = vi.mocked(setConnectedCompanyCount);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,7 +149,6 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
       gitName: null,
       gitEmail: null,
       personalized: false,
-      connectedCompanyCount: 0,
     });
   });
 
@@ -394,49 +389,10 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
   // HQ-Sync menu bar app (Step 9) owns continuous sync. But Personalize is
   // still the de-facto "company detection" point (old Step 3 was removed),
   // so on mount it must:
-  //   • Call setConnectedCompanyCount(entries.length) so App.tsx can skip
-  //     the HQ Sync install step when the user has no cloud companies.
   //   • setTeam() from the first cloud company, or setIsPersonal(true)
   //     when the user has none.
 
   describe("wizard-state seeding on mount", () => {
-    it("persists the cloud-company count (0) when the user has none", async () => {
-      mockListUserCompanies.mockResolvedValueOnce([]);
-
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      await waitFor(() =>
-        expect(mockSetConnectedCompanyCount).toHaveBeenCalledWith(0),
-      );
-    });
-
-    it("persists the cloud-company count when the user has multiple", async () => {
-      mockListUserCompanies.mockResolvedValueOnce([
-        {
-          companyUid: "uid-acme",
-          companySlug: "acme",
-          companyName: "Acme Corp",
-          bucketName: "hq-vault-acme",
-          role: "admin",
-          status: "active",
-        },
-        {
-          companyUid: "uid-initech",
-          companySlug: "initech",
-          companyName: "Initech",
-          bucketName: "hq-vault-initech",
-          role: "member",
-          status: "active",
-        },
-      ]);
-
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      await waitFor(() =>
-        expect(mockSetConnectedCompanyCount).toHaveBeenCalledWith(2),
-      );
-    });
-
     it("seeds wizard `team` from the first cloud company", async () => {
       mockListUserCompanies.mockResolvedValueOnce([
         {

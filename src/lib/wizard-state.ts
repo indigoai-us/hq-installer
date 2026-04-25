@@ -16,8 +16,7 @@ export interface WizardState {
   telemetryEnabled: boolean;
   team: TeamMetadata | null;
   /** True when the user opted into a personal HQ (no company connection).
-   *  When set, the Summary screen shows "Personal HQ" instead of team info,
-   *  and the HQ Sync menu bar install step is skipped (no bucket to sync). */
+   *  When set, the Summary screen shows "Personal HQ" instead of team info. */
   isPersonal: boolean;
   installPath: string | null;
   gitName: string | null;
@@ -26,10 +25,6 @@ export interface WizardState {
    *  the starter project, and any user-supplied companies. Gates the global
    *  Next button so users can't bypass the screen. */
   personalized: boolean;
-  /** Count of HQ-Cloud companies detected at Personalize time. Drives the
-   *  conditional skip of the HQ Sync menu bar install: if 0, the app has
-   *  nothing to sync, so there's no value in installing it right now. */
-  connectedCompanyCount: number;
 }
 
 const state: WizardState = {
@@ -40,7 +35,6 @@ const state: WizardState = {
   gitName: null,
   gitEmail: null,
   personalized: false,
-  connectedCompanyCount: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,14 +102,6 @@ export function setPersonalized(value: boolean): void {
   notify();
 }
 
-/** Record how many HQ-Cloud companies the user has connected. Set by
- *  Personalize when it resolves the cloud-companies list; read by App.tsx
- *  to decide whether to auto-skip the HQ Sync menu bar install step. */
-export function setConnectedCompanyCount(count: number): void {
-  state.connectedCompanyCount = count;
-  notify();
-}
-
 /** Reset all wizard state to initial defaults. */
 export function clearWizardState(): void {
   state.telemetryEnabled = true;
@@ -125,6 +111,5 @@ export function clearWizardState(): void {
   state.gitName = null;
   state.gitEmail = null;
   state.personalized = false;
-  state.connectedCompanyCount = 0;
   notify();
 }

@@ -21,11 +21,6 @@ import { QmdIndexing } from "@/screens/10-indexing";
 import { InstallMenubarStep } from "@/components/InstallMenubarStep";
 import { Summary } from "@/screens/11-summary";
 
-// Step 9 in the renumbered flow: the HQ Sync menu bar installer. Extracted
-// as a constant so the conditional-skip effect and the switch case don't
-// drift out of sync if a future step is reordered.
-const HQ_SYNC_STEP = 9;
-
 function App() {
   const [router] = useState(() => createWizardRouter());
   const [, forceRender] = useState(0);
@@ -84,22 +79,6 @@ function App() {
 
   const wizardState = getWizardState();
   const { currentStep } = router;
-
-  // Conditional skip: the HQ Sync menu bar app is only useful when the user
-  // has at least one HQ-Cloud company to sync. If Personalize detected none,
-  // there's nothing for the menu bar app to reconcile — auto-advance past it
-  // straight to Summary. Works both for forward walks (Next) and sidebar
-  // jumps because the effect keys on `currentStep`.
-  useEffect(() => {
-    if (
-      currentStep === HQ_SYNC_STEP &&
-      wizardState.connectedCompanyCount === 0
-    ) {
-      router.next();
-      setMaxReachedStep((m) => Math.max(m, router.currentStep));
-      forceRender((n) => n + 1);
-    }
-  }, [currentStep, wizardState.connectedCompanyCount, router]);
 
   // Screen flow (post-removal):
   //   1 Welcome → 2 Cognito Auth → 3 Prerequisites → 4 Install (dir) →
