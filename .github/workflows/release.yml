@@ -144,7 +144,14 @@ jobs:
           args: --target universal-apple-darwin
           updaterJsonKeepUniversal: true
 
+      # Sentry symbol upload is best-effort — it should never gate a release.
+      # tauri-action's universal-apple-darwin build doesn't reliably emit
+      # .dSYM bundles in the per-arch target dirs we search, so the prior
+      # exit-1-on-zero-uploaded behavior wedged v0.1.24 with assets uploaded
+      # but the publish step skipped. Step is allowed to fail loudly — the
+      # signed/notarized binary, latest.json, and .zip alias still ship.
       - name: Create Sentry release and upload Rust debug symbols
+        continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
