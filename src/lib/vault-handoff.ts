@@ -184,28 +184,36 @@ export async function resolveUserCompany(
     console.log("[vault-handoff] no person entity → found:false");
     return { found: false };
   }
-  // Use the first person entity (single-user context after Cognito auth)
-  const person = persons[0];
 
-  // Step 2: Find company memberships for this person
-  console.log(`[vault-handoff] step 2: GET /membership/person/${person.uid}`);
-  const membershipsRes = await fetch(
-    `${base}/membership/person/${person.uid}`,
-    { headers }
-  );
-  if (!membershipsRes.ok) {
-    throw new Error(
-      `vault-service /membership/person/${person.uid} failed: ${membershipsRes.status}`
-    );
+  // Step 2: pick the person that actually owns memberships. The server's
+  // /entity/by-type GSI has no sort key, so order is unspecified — naïvely
+  // taking persons[0] returns "no company" whenever Dynamo hands back a
+  // duplicate orphan first. (That orphan-person scenario is rare but real:
+  // see 2026-04-25 Vercel-env outage that left the user with three
+  // person rows for a single Cognito sub.) Walk the list, return the first
+  // person with at least one active membership; fall back to memberships[0]
+  // for backwards compat with single-person callers.
+  let person: VaultEntity | null = null;
+  let memberships: MembershipEntry[] = [];
+  for (const p of persons) {
+    console.log(`[vault-handoff] step 2: GET /membership/person/${p.uid}`);
+    const r = await fetch(`${base}/membership/person/${p.uid}`, { headers });
+    if (!r.ok) {
+      throw new Error(
+        `vault-service /membership/person/${p.uid} failed: ${r.status}`
+      );
+    }
+    const body = (await r.json()) as { memberships: MembershipEntry[] };
+    if (body.memberships.length) {
+      person = p;
+      memberships = body.memberships;
+      break;
+    }
   }
-  const membershipsBody = (await membershipsRes.json()) as {
-    memberships: MembershipEntry[];
-  };
-  const memberships = membershipsBody.memberships;
-  if (!memberships.length) {
+  if (!person || !memberships.length) {
     return { found: false };
   }
-  // MVP: use the first company membership
+  // MVP: use the first company membership for the chosen person
   const membership = memberships[0];
 
   // Step 3: Get company entity details
@@ -269,24 +277,28 @@ export async function listUserCompanies(
   }
   const personsBody = (await personsRes.json()) as { entities: VaultEntity[] };
   if (!personsBody.entities.length) return [];
-  const person = personsBody.entities[0];
 
-  const membershipsRes = await fetch(
-    `${base}/membership/person/${person.uid}`,
-    { headers }
-  );
-  if (!membershipsRes.ok) {
-    throw new Error(
-      `vault-service /membership/person/${person.uid} failed: ${membershipsRes.status}`
-    );
+  // Same orphan-person guard as resolveUserCompany — pick the person that
+  // actually has memberships, since the server-side GSI returns persons in
+  // unspecified order.
+  let memberships: MembershipEntry[] = [];
+  for (const p of personsBody.entities) {
+    const r = await fetch(`${base}/membership/person/${p.uid}`, { headers });
+    if (!r.ok) {
+      throw new Error(
+        `vault-service /membership/person/${p.uid} failed: ${r.status}`
+      );
+    }
+    const body = (await r.json()) as { memberships: MembershipEntry[] };
+    if (body.memberships.length) {
+      memberships = body.memberships;
+      break;
+    }
   }
-  const membershipsBody = (await membershipsRes.json()) as {
-    memberships: MembershipEntry[];
-  };
-  if (!membershipsBody.memberships.length) return [];
+  if (!memberships.length) return [];
 
   const companies = await Promise.all(
-    membershipsBody.memberships.map(async (m) => {
+    memberships.map(async (m) => {
       const res = await fetch(`${base}/entity/${m.companyUid}`, { headers });
       if (!res.ok) return null;
       const body = (await res.json()) as { entity: VaultEntity };

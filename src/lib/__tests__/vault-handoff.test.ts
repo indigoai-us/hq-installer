@@ -179,6 +179,70 @@ describe("resolveUserCompany", () => {
     );
   });
 
+  // Regression: 2026-04-25 cutover left some users with multiple person
+  // entities (orphan duplicates) for the same Cognito sub. The server's
+  // /entity/by-type GSI has no sort key, so persons[0] could be the orphan.
+  // The handoff must walk the list and pick the person with active
+  // memberships rather than blindly trusting position 0.
+  it("picks the person with memberships when persons[0] is an orphan", async () => {
+    globalThis.fetch = mockFetch([
+      // GET /entity/by-type/person → 2 persons, [0] is the orphan
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entities: [
+            { uid: "per_orphan", type: "person", slug: "stefan", name: "Stefan" },
+            { uid: "per_real", type: "person", slug: "stefan", name: "Stefan" },
+          ],
+        },
+      },
+      // GET /membership/person/per_orphan → empty (orphan)
+      { ok: true, status: 200, body: { memberships: [] } },
+      // GET /membership/person/per_real → has the membership
+      {
+        ok: true,
+        status: 200,
+        body: {
+          memberships: [
+            {
+              membershipKey: "per_real#cmp_001",
+              personUid: "per_real",
+              companyUid: "cmp_001",
+              role: "owner",
+              status: "active",
+            },
+          ],
+        },
+      },
+      // GET /entity/cmp_001
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entity: {
+            uid: "cmp_001",
+            type: "company",
+            slug: "acme",
+            name: "Acme Inc",
+            metadata: { bucketName: "hq-vault-acme" },
+          },
+        },
+      },
+    ]);
+
+    const result = await resolveUserCompany(MOCK_TOKEN);
+    expect(result).toEqual({
+      found: true,
+      companyUid: "cmp_001",
+      companySlug: "acme",
+      companyName: "Acme Inc",
+      bucketName: "hq-vault-acme",
+      personUid: "per_real",
+      role: "owner",
+    });
+  });
+
   it("derives bucket name from slug when bucketName is missing", async () => {
     globalThis.fetch = mockFetch([
       {
