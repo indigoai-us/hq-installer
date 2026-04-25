@@ -14,7 +14,7 @@
 //! `MenubarInstallProgress` payload.  All error paths return `Err(String)`
 //! so the frontend can surface a readable message without crashing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
@@ -222,7 +222,7 @@ fn parse_dmg_url_from_json(json: &str) -> Result<String, String> {
 /// Download `url` to `dest` using curl with `--progress-bar` output parsed
 /// for percentage updates.  Progress events are emitted on `app` as the
 /// download proceeds.
-fn download_dmg(app: &AppHandle, url: &str, dest: &PathBuf) -> Result<(), String> {
+fn download_dmg(app: &AppHandle, url: &str, dest: &Path) -> Result<(), String> {
     emit_progress(app, "downloading", 5, &format!("Downloading from {}", url));
 
     // curl with --progress-bar writes lines like "##... xx.x%" to stderr.
@@ -264,7 +264,7 @@ fn download_dmg(app: &AppHandle, url: &str, dest: &PathBuf) -> Result<(), String
 ///
 /// hdiutil output (with `-plist` flag) is XML; we parse the mount point
 /// by looking for the last `/Volumes/…` entry in the raw XML text.
-fn mount_dmg(app: &AppHandle, dmg_path: &PathBuf) -> Result<String, String> {
+fn mount_dmg(app: &AppHandle, dmg_path: &Path) -> Result<String, String> {
     emit_progress(app, "mounting", 55, "Mounting disk image…");
 
     let dmg_str = dmg_path
@@ -296,7 +296,7 @@ fn mount_dmg(app: &AppHandle, dmg_path: &PathBuf) -> Result<String, String> {
                 .find(|col| col.trim().starts_with("/Volumes/"))
                 .map(|s| s.trim().to_string())
         })
-        .last()
+        .next_back()
         .ok_or_else(|| {
             format!(
                 "Could not locate /Volumes mount point in hdiutil output:\n{}",

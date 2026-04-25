@@ -276,7 +276,6 @@ mod tests {
             name: Some("rust".into()),
             version: Some("1.80".into()),
             other: other_fields,
-            ..Default::default()
         };
         event.contexts.insert(
             "runtime".to_string(),

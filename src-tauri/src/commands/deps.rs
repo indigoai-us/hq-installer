@@ -306,7 +306,7 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
             "{}",
             format_path_log(
                 &joined,
-                compute_path_counts(&shell_path, extras.len(), home_count, vm_count)
+                compute_path_counts(shell_path, extras.len(), home_count, vm_count)
             )
         );
     }
@@ -480,8 +480,8 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 #[tauri::command]
 pub fn cancel_install(handle: String) -> bool {
     let mut reg = cancel_registry().lock().unwrap();
-    if reg.contains_key(&handle) {
-        reg.insert(handle, true);
+    if let std::collections::hash_map::Entry::Occupied(mut e) = reg.entry(handle) {
+        e.insert(true);
         true
     } else {
         false
