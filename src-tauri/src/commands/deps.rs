@@ -343,7 +343,7 @@ fn version_manager_dirs(home: &std::path::Path) -> Vec<String> {
                 }
             }
         }
-        collected.sort_by(|a, b| b.0.cmp(&a.0));
+        collected.sort_by_key(|b| std::cmp::Reverse(b.0));
         for (_, path) in collected {
             out.push(path);
         }
@@ -365,7 +365,7 @@ fn version_manager_dirs(home: &std::path::Path) -> Vec<String> {
                 }
             }
         }
-        collected.sort_by(|a, b| b.0.cmp(&a.0));
+        collected.sort_by_key(|b| std::cmp::Reverse(b.0));
         for (_, path) in collected {
             out.push(path);
         }
