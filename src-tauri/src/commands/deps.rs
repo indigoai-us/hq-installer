@@ -30,10 +30,7 @@ fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, bool>>> {
 /// Exposed publicly so the test suite can exercise `cancel_install` without
 /// spawning a real Tauri runtime.
 pub fn register_cancel_handle(handle: String) {
-    cancel_registry()
-        .lock()
-        .unwrap()
-        .insert(handle, false);
+    cancel_registry().lock().unwrap().insert(handle, false);
 }
 
 fn is_cancelled(handle: &str) -> bool {
@@ -121,10 +118,9 @@ pub fn format_shell_probe_log(shell: &str, outcome: &ShellProbeOutcome) -> Strin
             "[hq-deps] shell_login_path shell={} exit=0 bytes={}",
             shell, bytes
         ),
-        ShellProbeOutcome::NonZeroExit { code } => format!(
-            "[hq-deps] shell_login_path shell={} exit={}",
-            shell, code
-        ),
+        ShellProbeOutcome::NonZeroExit { code } => {
+            format!("[hq-deps] shell_login_path shell={} exit={}", shell, code)
+        }
         ShellProbeOutcome::EmptyOutput => format!(
             "[hq-deps] shell_login_path shell={} exit=0 bytes=0 empty=true",
             shell
@@ -267,7 +263,7 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     }
     // Standard macOS install locations that GUI app PATH misses.
     let extras = [
-        "/opt/homebrew/bin",  // Apple Silicon Homebrew
+        "/opt/homebrew/bin", // Apple Silicon Homebrew
         "/opt/homebrew/sbin",
         "/usr/local/bin", // Intel Homebrew + generic
         "/usr/local/sbin",
@@ -515,11 +511,7 @@ pub fn cancel_install(handle: String) -> bool {
 /// of macOS locations a GUI-launched Tauri app does NOT inherit.
 ///
 /// Returns `Ok(handle)` on success or `Err(message)` on failure.
-async fn run_streaming(
-    app: &AppHandle,
-    program: &str,
-    args: &[&str],
-) -> Result<String, String> {
+async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<String, String> {
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 

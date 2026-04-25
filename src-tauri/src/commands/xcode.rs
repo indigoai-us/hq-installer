@@ -200,12 +200,7 @@ pub async fn xcode_clt_poll_impl(
 /// a generic heartbeat is still needed. The file is world-readable on macOS
 /// so this works without elevated permissions. If the file is absent or a
 /// read fails we just report zero — the poller keeps running.
-fn drain_install_log(
-    path: &Path,
-    position: &mut u64,
-    app: &AppHandle,
-    handle: &str,
-) -> u64 {
+fn drain_install_log(path: &Path, position: &mut u64, app: &AppHandle, handle: &str) -> u64 {
     let Ok(mut file) = std::fs::File::open(path) else {
         return 0;
     };
@@ -254,7 +249,8 @@ fn drain_install_log(
 /// accepted. Presence ⇒ install was authorized and packages are being
 /// written. Absence after a grace period ⇒ the dialog was dismissed or
 /// never appeared (hidden behind other windows, etc.).
-const CLT_IN_PROGRESS_MARKER: &str = "/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress";
+const CLT_IN_PROGRESS_MARKER: &str =
+    "/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress";
 
 /// Same as `xcode_clt_poll_impl` but also emits Tauri progress events.
 ///
@@ -394,10 +390,7 @@ async fn xcode_clt_poll_with_events(
         }
 
         // Fallback hint at DISMISS_HINT_SECS if the auth check was silent.
-        if !dismiss_hint_sent
-            && elapsed_secs >= DISMISS_HINT_SECS
-            && last_real_progress == start
-        {
+        if !dismiss_hint_sent && elapsed_secs >= DISMISS_HINT_SECS && last_real_progress == start {
             dismiss_hint_sent = true;
             let _ = app.emit(
                 "xcode:progress",
@@ -434,7 +427,9 @@ pub async fn xcode_clt_install_impl(
             return Err("Xcode Command Line Tools are already installed.".to_string());
         }
         XcodeCltState::Installing => {
-            return Err("Xcode Command Line Tools installation is already in progress.".to_string());
+            return Err(
+                "Xcode Command Line Tools installation is already in progress.".to_string(),
+            );
         }
         XcodeCltState::NotInstalled => {}
     }
@@ -457,7 +452,8 @@ pub async fn xcode_clt_install_impl(
         "xcode:progress",
         XcodeProgress {
             handle: handle_id.clone(),
-            line: "Xcode Command Line Tools installation started. Follow the system dialog.".to_string(),
+            line: "Xcode Command Line Tools installation started. Follow the system dialog."
+                .to_string(),
             finished: false,
             error: None,
         },

@@ -87,10 +87,8 @@ mod keychain_tests {
         let secret = "will-be-deleted";
 
         // Set, then delete
-        keychain_set_impl(SUB_SERVICE, &account, secret)
-            .expect("set should succeed");
-        keychain_delete_impl(SUB_SERVICE, &account)
-            .expect("delete should succeed");
+        keychain_set_impl(SUB_SERVICE, &account, secret).expect("set should succeed");
+        keychain_delete_impl(SUB_SERVICE, &account).expect("delete should succeed");
 
         let result = keychain_get_impl(SUB_SERVICE, &account);
         assert!(
@@ -98,11 +96,7 @@ mod keychain_tests {
             "get after delete should return Ok, got: {:?}",
             result
         );
-        assert_eq!(
-            result.unwrap(),
-            None,
-            "get after delete should return None"
-        );
+        assert_eq!(result.unwrap(), None, "get after delete should return None");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -143,8 +137,7 @@ mod keychain_tests {
         let first = "first-value";
         let second = "second-value";
 
-        keychain_set_impl(SUB_SERVICE, &account, first)
-            .expect("first set should succeed");
+        keychain_set_impl(SUB_SERVICE, &account, first).expect("first set should succeed");
         keychain_set_impl(SUB_SERVICE, &account, second)
             .expect("second set (overwrite) should succeed");
 
@@ -170,8 +163,7 @@ mod keychain_tests {
         let service_a = "service-a";
         let service_b = "service-b";
 
-        keychain_set_impl(service_a, &account, "value-a")
-            .expect("set on service_a should succeed");
+        keychain_set_impl(service_a, &account, "value-a").expect("set on service_a should succeed");
 
         // service_b has never had this account set
         let _ = keychain_delete_impl(service_b, &account);

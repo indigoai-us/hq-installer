@@ -120,13 +120,11 @@ fn fetch_latest_dmg_url() -> Result<String, String> {
 fn classify_release_response(status_code: &str, body: &str) -> Result<String, String> {
     match status_code {
         "200" => parse_dmg_url_from_json(body),
-        "404" => Err(
-            "No release has been published for HQ Sync yet. \
+        "404" => Err("No release has been published for HQ Sync yet. \
              If the repository is private, the installer would also need an \
              auth token to read it. Click Skip to continue without HQ Sync — \
              you can install it later from the menubar."
-                .to_string(),
-        ),
+            .to_string()),
         "401" | "403" => Err(format!(
             "GitHub denied access to the HQ Sync release (HTTP {}). \
              The repository is likely private and requires an auth token. \
@@ -315,16 +313,19 @@ fn mount_dmg(app: &AppHandle, dmg_path: &PathBuf) -> Result<String, String> {
 /// If /Applications/HQ Sync.app already exists it is removed first so that
 /// `cp -R` doesn't nest the bundle inside an existing directory.
 fn copy_app(app: &AppHandle, mount_point: &str) -> Result<(), String> {
-    emit_progress(app, "installing", 65, "Copying HQ Sync.app to /Applications…");
+    emit_progress(
+        app,
+        "installing",
+        65,
+        "Copying HQ Sync.app to /Applications…",
+    );
 
     // Guard against path traversal — mount_point must be under /Volumes/
     let source_path = PathBuf::from(mount_point).join("HQ Sync.app");
     if !source_path.starts_with("/Volumes/") {
         return Err(format!("Unexpected mount point path: {}", mount_point));
     }
-    let source = source_path
-        .to_str()
-        .ok_or("Source path is non-UTF-8")?;
+    let source = source_path.to_str().ok_or("Source path is non-UTF-8")?;
     let dest = "/Applications/HQ Sync.app";
 
     // Remove existing installation so cp -R doesn't nest inside it.
@@ -630,7 +631,10 @@ mod tests {
     fn test_classify_403_explains_private_repo() {
         let err = classify_release_response("403", "{}").expect_err("403 should error");
         assert!(err.contains("private"), "got: {err}");
-        assert!(err.contains("403"), "should include status code; got: {err}");
+        assert!(
+            err.contains("403"),
+            "should include status code; got: {err}"
+        );
     }
 
     #[test]

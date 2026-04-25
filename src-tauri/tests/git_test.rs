@@ -37,9 +37,7 @@ mod git_tests {
 
         // Branch should be 'main'
         let head = repo.head().expect("HEAD");
-        let branch_name = head
-            .shorthand()
-            .expect("HEAD shorthand");
+        let branch_name = head.shorthand().expect("HEAD shorthand");
         assert_eq!(branch_name, "main", "default branch should be 'main'");
 
         // Commit message

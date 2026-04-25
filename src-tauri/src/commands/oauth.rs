@@ -45,9 +45,7 @@ fn cancel_slot() -> &'static Mutex<Option<Arc<AtomicBool>>> {
 
 fn install_cancel_flag(flag: Arc<AtomicBool>) {
     let prior = {
-        let mut slot = cancel_slot()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut slot = cancel_slot().lock().unwrap_or_else(|p| p.into_inner());
         let prior = slot.take();
         *slot = Some(flag);
         prior
@@ -63,9 +61,7 @@ fn install_cancel_flag(flag: Arc<AtomicBool>) {
 }
 
 fn clear_cancel_flag(flag: &Arc<AtomicBool>) {
-    let mut slot = cancel_slot()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut slot = cancel_slot().lock().unwrap_or_else(|p| p.into_inner());
     // Only clear if the slot still holds *our* flag. If a newer listener has
     // already installed itself, don't yank its flag.
     if let Some(current) = slot.as_ref() {
@@ -297,14 +293,8 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                         Some((_code, _state, Some(error))) => {
                             let reason = format!("Provider error: {error}");
                             log_line(&format!("[oauth] callback rejected — {reason}"));
-                            write_response(
-                                &mut stream,
-                                "400 Bad Request",
-                                &error_html(&reason),
-                            );
-                            return Err(format!(
-                                "OAuth provider returned error: {error}"
-                            ));
+                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
+                            return Err(format!("OAuth provider returned error: {error}"));
                         }
                         Some((code, state, None)) => {
                             if state != state_copy {
@@ -319,8 +309,7 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                                     &error_html(&reason),
                                 );
                                 return Err(
-                                    "OAuth state mismatch — possible CSRF, aborting."
-                                        .into(),
+                                    "OAuth state mismatch — possible CSRF, aborting.".into()
                                 );
                             }
                             log_line(&format!(

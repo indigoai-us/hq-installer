@@ -250,8 +250,8 @@ fn gen_password() -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let pool_id = std::env::var("VITE_COGNITO_USER_POOL_ID")
-        .unwrap_or_else(|_| DEFAULT_POOL_ID.to_string());
+    let pool_id =
+        std::env::var("VITE_COGNITO_USER_POOL_ID").unwrap_or_else(|_| DEFAULT_POOL_ID.to_string());
     let ts = Utc::now().format("%Y%m%dT%H%M%S").to_string();
     let email = format!("hq-installer-e2e+{ts}@indigo.ai");
     let password = gen_password();
@@ -281,8 +281,7 @@ async fn run_wizard(artifacts_dir: &PathBuf, email: &str, password: &str) -> Res
     let fixtures_raw = tokio::fs::read_to_string(&fixtures_path)
         .await
         .with_context(|| format!("read {}", fixtures_path.display()))?;
-    let fixtures: Fixtures =
-        serde_json::from_str(&fixtures_raw).context("parse fixtures JSON")?;
+    let fixtures: Fixtures = serde_json::from_str(&fixtures_raw).context("parse fixtures JSON")?;
 
     // 3. Connect to MCP server
     println!("🔌 Connecting to MCP {}:{}", MCP_HOST, MCP_PORT);
@@ -316,8 +315,8 @@ async fn run_wizard(artifacts_dir: &PathBuf, email: &str, password: &str) -> Res
     .context("screen 02 did not load")?;
     save_screenshot(&provider, artifacts_dir, "02-cognito-auth").await?;
 
-    let email_input = find_ref_by_text(&snap, "Email")
-        .ok_or_else(|| anyhow!("screen 02: no Email input"))?;
+    let email_input =
+        find_ref_by_text(&snap, "Email").ok_or_else(|| anyhow!("screen 02: no Email input"))?;
     provider
         .fill(email_input.element_ref.as_str(), email)
         .await
@@ -349,7 +348,12 @@ async fn run_wizard(artifacts_dir: &PathBuf, email: &str, password: &str) -> Res
             tree_contains(n, &fixture.assert_text)
         })
         .await
-        .with_context(|| format!("screen {} never showed '{}'", fixture.id, fixture.assert_text))?;
+        .with_context(|| {
+            format!(
+                "screen {} never showed '{}'",
+                fixture.id, fixture.assert_text
+            )
+        })?;
         save_screenshot(&provider, artifacts_dir, &fixture.id).await?;
 
         if fixture.cta_text.is_empty() {

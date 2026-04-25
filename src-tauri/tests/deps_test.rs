@@ -25,11 +25,7 @@ mod deps_tests {
     fn make_fake_bin_at(parent: &Path, name: &str) {
         fs::create_dir_all(parent).unwrap();
         let path = parent.join(name);
-        fs::write(
-            &path,
-            format!("#!/bin/sh\necho '{} version 1.2.3'\n", name),
-        )
-        .unwrap();
+        fs::write(&path, format!("#!/bin/sh\necho '{} version 1.2.3'\n", name)).unwrap();
         let mut perms = fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&path, perms).unwrap();
@@ -66,14 +62,23 @@ mod deps_tests {
         // Use an empty dir that contains no binaries.
         let dir = TempDir::new().unwrap();
 
-        let status = check_dep_in("definitely_not_a_real_binary_xyz123", dir.path().to_str().unwrap());
+        let status = check_dep_in(
+            "definitely_not_a_real_binary_xyz123",
+            dir.path().to_str().unwrap(),
+        );
 
         assert!(
             !status.installed,
             "check_dep should report installed:false when binary is not in path"
         );
-        assert!(status.version.is_none(), "version should be None when not installed");
-        assert!(status.path.is_none(), "path should be None when not installed");
+        assert!(
+            status.version.is_none(),
+            "version should be None when not installed"
+        );
+        assert!(
+            status.path.is_none(),
+            "path should be None when not installed"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -87,7 +92,9 @@ mod deps_tests {
         let status = check_dep_in("versiontool", dir.path().to_str().unwrap());
 
         assert!(status.installed, "should be installed");
-        let version = status.version.expect("version should be Some when installed");
+        let version = status
+            .version
+            .expect("version should be Some when installed");
         assert!(
             !version.is_empty(),
             "version string should be non-empty, got: {:?}",
@@ -254,7 +261,9 @@ mod deps_tests {
         assert!(status.installed, "fake-tool under nvm should be detected");
         let resolved = status.path.expect("path should be populated");
         assert!(
-            resolved.to_string_lossy().contains(".nvm/versions/node/v22.17.0/bin"),
+            resolved
+                .to_string_lossy()
+                .contains(".nvm/versions/node/v22.17.0/bin"),
             "resolved path should be the nvm bin dir, got: {:?}",
             resolved
         );
@@ -420,7 +429,11 @@ mod deps_tests {
             "npm ERR! errno -13".to_string(),
         ];
         let msg = format_install_error(1, &lines);
-        assert!(msg.contains("code 1"), "should include exit code, got: {}", msg);
+        assert!(
+            msg.contains("code 1"),
+            "should include exit code, got: {}",
+            msg
+        );
         assert!(
             msg.contains("EACCES"),
             "should surface the real error from stderr, got: {}",
@@ -443,8 +456,16 @@ mod deps_tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let msg = format_install_error(2, &lines);
         // Last five lines should appear; earlier ones should not.
-        assert!(msg.contains("line 19"), "should include last line, got: {}", msg);
-        assert!(msg.contains("line 15"), "should include 5th-from-last, got: {}", msg);
+        assert!(
+            msg.contains("line 19"),
+            "should include last line, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("line 15"),
+            "should include 5th-from-last, got: {}",
+            msg
+        );
         assert!(
             !msg.contains("line 14"),
             "should not include lines older than last 5, got: {}",
@@ -468,7 +489,11 @@ mod deps_tests {
         assert!(msg.contains("real error here"));
         assert!(msg.contains("second real line"));
         // Delimiter between real lines only — no double-pipe from blanks.
-        assert!(!msg.contains("| |"), "should not double-delimit blanks: {}", msg);
+        assert!(
+            !msg.contains("| |"),
+            "should not double-delimit blanks: {}",
+            msg
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -479,7 +504,11 @@ mod deps_tests {
     #[test]
     fn test_format_install_error_empty_stderr_uses_exit_code() {
         let msg = format_install_error(127, &[]);
-        assert!(msg.contains("127"), "should mention exit code, got: {}", msg);
+        assert!(
+            msg.contains("127"),
+            "should mention exit code, got: {}",
+            msg
+        );
         assert!(
             !msg.contains(":"),
             "should not have 'code N:' separator when stderr is empty, got: {}",
@@ -509,11 +538,7 @@ mod deps_tests {
             &ShellProbeOutcome::NonZeroExit { code: 1 },
         );
         assert!(msg.contains("[hq-deps]"), "must include tag, got: {}", msg);
-        assert!(
-            msg.contains("exit="),
-            "must include exit=<code>: {}",
-            msg
-        );
+        assert!(msg.contains("exit="), "must include exit=<code>: {}", msg);
         assert!(
             msg.contains("/usr/bin/false"),
             "must include shell path: {}",
@@ -538,7 +563,10 @@ mod deps_tests {
             "spawn failures must be tagged spawn=error, got: {}",
             msg
         );
-        assert!(msg.contains("No such file"), "must include spawn error detail");
+        assert!(
+            msg.contains("No such file"),
+            "must include spawn error detail"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -546,10 +574,7 @@ mod deps_tests {
     // ─────────────────────────────────────────────────────────────────────────
     #[test]
     fn test_format_shell_probe_log_success_includes_bytes() {
-        let msg = format_shell_probe_log(
-            "/bin/zsh",
-            &ShellProbeOutcome::Success { bytes: 512 },
-        );
+        let msg = format_shell_probe_log("/bin/zsh", &ShellProbeOutcome::Success { bytes: 512 });
         assert!(msg.contains("[hq-deps]"));
         assert!(msg.contains("exit=0"));
         assert!(msg.contains("bytes=512"));

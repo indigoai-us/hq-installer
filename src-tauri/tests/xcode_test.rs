@@ -6,8 +6,8 @@
 #[cfg(test)]
 mod xcode_tests {
     use hq_installer_lib::commands::xcode::{
-        xcode_clt_status_impl, XcodeCltState, reset_xcode_state, set_xcode_state_installing,
-        xcode_clt_poll_impl,
+        reset_xcode_state, set_xcode_state_installing, xcode_clt_poll_impl, xcode_clt_status_impl,
+        XcodeCltState,
     };
     use serial_test::serial;
     use tempfile::TempDir;
@@ -129,8 +129,8 @@ mod xcode_tests {
         let result = rt.block_on(xcode_clt_poll_impl(
             clt_dir.clone(),
             "test-handle-005".to_string(),
-            3,    // timeout_secs
-            50,   // poll_interval_ms (short for tests)
+            3,  // timeout_secs
+            50, // poll_interval_ms (short for tests)
         ));
 
         reset_xcode_state();
@@ -163,8 +163,8 @@ mod xcode_tests {
         let result = rt.block_on(xcode_clt_poll_impl(
             absent.clone(),
             "test-handle-006".to_string(),
-            1,   // timeout_secs
-            50,  // poll_interval_ms
+            1,  // timeout_secs
+            50, // poll_interval_ms
         ));
 
         reset_xcode_state();

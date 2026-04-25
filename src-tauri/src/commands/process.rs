@@ -279,7 +279,10 @@ where
     enum ReaderMsg {
         Event(ProcessEvent),
         /// Reader finished (either EOF or fatal read error).
-        Done { stream: &'static str, err: Option<String> },
+        Done {
+            stream: &'static str,
+            err: Option<String>,
+        },
     }
 
     let (tx, rx) = mpsc::channel::<ReaderMsg>();
@@ -291,7 +294,10 @@ where
         for line_result in BufReader::new(stdout).lines() {
             match line_result {
                 Ok(line) => {
-                    if tx_stdout.send(ReaderMsg::Event(ProcessEvent::Stdout(line))).is_err() {
+                    if tx_stdout
+                        .send(ReaderMsg::Event(ProcessEvent::Stdout(line)))
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -301,7 +307,10 @@ where
                 }
             }
         }
-        let _ = tx_stdout.send(ReaderMsg::Done { stream: "stdout", err });
+        let _ = tx_stdout.send(ReaderMsg::Done {
+            stream: "stdout",
+            err,
+        });
     });
 
     // stderr reader
@@ -311,7 +320,10 @@ where
         for line_result in BufReader::new(stderr).lines() {
             match line_result {
                 Ok(line) => {
-                    if tx_stderr.send(ReaderMsg::Event(ProcessEvent::Stderr(line))).is_err() {
+                    if tx_stderr
+                        .send(ReaderMsg::Event(ProcessEvent::Stderr(line)))
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -321,7 +333,10 @@ where
                 }
             }
         }
-        let _ = tx_stderr.send(ReaderMsg::Done { stream: "stderr", err });
+        let _ = tx_stderr.send(ReaderMsg::Done {
+            stream: "stderr",
+            err,
+        });
     });
 
     // Drop the original sender so the rx loop terminates once both readers

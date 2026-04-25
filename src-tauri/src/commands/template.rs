@@ -63,11 +63,13 @@ where
     // we use `--progress-bar` piped through stderr=stdout and parse the output.
     let mut curl = Command::new("curl")
         .args([
-            "-L",                             // follow redirects
-            "--fail",                         // non-zero exit on HTTP errors
-            "--stderr", "-",                  // merge stderr into stdout so we can read it
-            "--progress-bar",                 // human-readable progress on stderr (now stdout)
-            "-o", tmp_path.to_str().unwrap(), // output file
+            "-L",     // follow redirects
+            "--fail", // non-zero exit on HTTP errors
+            "--stderr",
+            "-",              // merge stderr into stdout so we can read it
+            "--progress-bar", // human-readable progress on stderr (now stdout)
+            "-o",
+            tmp_path.to_str().unwrap(), // output file
             url,
         ])
         .stdout(Stdio::piped())
@@ -108,10 +110,7 @@ where
 
     if !status.success() {
         let _ = std::fs::remove_file(&tmp_path);
-        let err = format!(
-            "curl exited with code {}",
-            status.code().unwrap_or(-1)
-        );
+        let err = format!("curl exited with code {}", status.code().unwrap_or(-1));
         emit(TemplateProgress {
             downloaded: 0,
             total: None,
@@ -123,12 +122,7 @@ where
 
     // ── 3. Extract with tar ───────────────────────────────────────────────────
     let extract_status = Command::new("tar")
-        .args([
-            "-xzf",
-            tmp_path.to_str().unwrap(),
-            "-C",
-            target_dir,
-        ])
+        .args(["-xzf", tmp_path.to_str().unwrap(), "-C", target_dir])
         .status()
         .map_err(|e| format!("Failed to spawn tar: {}", e))?;
 
@@ -171,11 +165,7 @@ where
 /// The work is done on a background thread so the Tauri async runtime is not
 /// blocked.
 #[tauri::command]
-pub fn fetch_template(
-    app: AppHandle,
-    url: String,
-    target_dir: String,
-) -> Result<(), String> {
+pub fn fetch_template(app: AppHandle, url: String, target_dir: String) -> Result<(), String> {
     let app_clone = app.clone();
 
     thread::spawn(move || {

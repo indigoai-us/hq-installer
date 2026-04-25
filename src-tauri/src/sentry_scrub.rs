@@ -278,9 +278,10 @@ mod tests {
             other: other_fields,
             ..Default::default()
         };
-        event
-            .contexts
-            .insert("runtime".to_string(), Context::Runtime(Box::new(runtime_ctx)));
+        event.contexts.insert(
+            "runtime".to_string(),
+            Context::Runtime(Box::new(runtime_ctx)),
+        );
 
         let result = before_send(event).unwrap();
         let ctx = &result.contexts["runtime"];

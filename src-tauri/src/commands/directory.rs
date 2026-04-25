@@ -94,8 +94,7 @@ pub fn detect_hq(path: String) -> DetectHqResult {
     // Either marker is sufficient. `companies/manifest.yaml` is the strongest
     // signal (HQ-specific); `.claude/CLAUDE.md` covers older HQ trees that
     // didn't yet ship a manifest.
-    let is_hq = p.join("companies/manifest.yaml").exists()
-        || p.join(".claude/CLAUDE.md").exists();
+    let is_hq = p.join("companies/manifest.yaml").exists() || p.join(".claude/CLAUDE.md").exists();
     DetectHqResult {
         exists: true,
         is_hq,

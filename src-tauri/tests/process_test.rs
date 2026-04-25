@@ -144,7 +144,10 @@ mod process_tests {
 
         // Cancel with a very short SIGKILL escalation timeout for test speed.
         let cancelled = cancel_process_impl(&handle, Duration::from_millis(500));
-        assert!(cancelled, "cancel_process_impl should return true for a registered handle");
+        assert!(
+            cancelled,
+            "cancel_process_impl should return true for a registered handle"
+        );
 
         // SIGTERM causes sleep to exit quickly; the run thread deregisters it.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -260,16 +263,12 @@ mod process_tests {
         };
 
         let handle = Uuid::new_v4().to_string();
-        let result = run_process_impl(
-            &handle,
-            &args,
-            empty_dir.path().to_str().unwrap(),
-            |_| {},
-        );
+        let result = run_process_impl(&handle, &args, empty_dir.path().to_str().unwrap(), |_| {});
 
         let err = result.expect_err("should fail when cmd is not in search path");
         assert!(
-            err.to_lowercase().contains("not found") || err.contains("definitely_not_a_real_binary_xyz123"),
+            err.to_lowercase().contains("not found")
+                || err.contains("definitely_not_a_real_binary_xyz123"),
             "error message should mention the missing cmd, got: {}",
             err
         );

@@ -1,7 +1,7 @@
+use serde_json::{Map, Value};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use serde_json::{Map, Value};
 
 // Internal helper that accepts an explicit path so tests can pass a tmpdir
 // path without mutating the process-global HOME env var (which causes data
@@ -28,8 +28,7 @@ fn write_telemetry_pref_to(path: PathBuf, enabled: bool) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    let body = serde_json::to_string_pretty(&Value::Object(obj))
-        .map_err(|e| e.to_string())?;
+    let body = serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
     let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
     f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
     f.sync_all().ok();
@@ -71,16 +70,21 @@ mod tests {
 
         write_telemetry_pref_to(path.clone(), true).expect("should succeed");
 
-        let result: Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let result: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let obj = result.as_object().unwrap();
 
         // All five keys must be present.
         assert!(obj.contains_key("hqPath"), "hqPath missing");
         assert!(obj.contains_key("syncOnLaunch"), "syncOnLaunch missing");
         assert!(obj.contains_key("notifications"), "notifications missing");
-        assert!(obj.contains_key("autostartDaemon"), "autostartDaemon missing");
-        assert!(obj.contains_key("telemetryEnabled"), "telemetryEnabled missing");
+        assert!(
+            obj.contains_key("autostartDaemon"),
+            "autostartDaemon missing"
+        );
+        assert!(
+            obj.contains_key("telemetryEnabled"),
+            "telemetryEnabled missing"
+        );
 
         // Original values must be unchanged.
         assert_eq!(obj["hqPath"], Value::String("/custom".into()));
@@ -99,8 +103,7 @@ mod tests {
         write_telemetry_pref_to(path.clone(), false).expect("should succeed");
 
         assert!(path.exists());
-        let result: Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let result: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(result["telemetryEnabled"], Value::Bool(false));
     }
 
@@ -113,8 +116,7 @@ mod tests {
         // Should succeed by starting from {} (fail-open).
         write_telemetry_pref_to(path.clone(), true).expect("should succeed");
 
-        let result: Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let result: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(result["telemetryEnabled"], Value::Bool(true));
     }
 }
