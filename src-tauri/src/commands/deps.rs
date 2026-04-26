@@ -768,25 +768,113 @@ pub async fn install_gh(app: AppHandle) -> Result<String, String> {
 // install_yq
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install yq via `brew install yq`.
+/// Pinned `mikefarah/yq` version for the binary fallback. Matches what
+/// Homebrew was shipping at the time this fallback was added; bump alongside
+/// installer releases so support reproductions stay deterministic.
+const YQ_BINARY_VERSION: &str = "v4.53.2";
+
+/// Install yq.
+///
+/// Strategy: try `brew install yq` first, fall back to a direct binary
+/// download from `mikefarah/yq`'s GitHub releases when brew fails or is
+/// missing.
+///
+/// **Why the fallback exists:** the Homebrew formula declares `pandoc` as a
+/// build-time dep (just for the man page). On macOS configs without prebuilt
+/// bottles available (Tier 2/3 — older OS, outdated Command Line Tools),
+/// brew falls through to building pandoc from source, which drags in
+/// `cabal-install` + `ghc` and fails. yq itself is a single static Go
+/// binary, so we sidestep the Haskell toolchain by grabbing the prebuilt
+/// asset directly.
+///
+/// The fallback writes to `~/.local/bin/yq`, which is already on
+/// `extended_search_path()` — the post-install `which yq` check picks it up
+/// without PATH wiring. No sudo required.
 ///
 /// Required by the Workspace integrity scripts (compute-checksums.sh,
 /// core-integrity.sh) that read/write scripts/core.yaml.
 #[tauri::command]
 pub async fn install_yq(app: AppHandle) -> Result<String, String> {
-    let brew = match which::which_in(
+    if let Ok(brew) = which::which_in(
         "brew",
         Some(extended_search_path()),
         std::env::current_dir().unwrap_or_default(),
     ) {
-        Ok(p) => p,
-        Err(_) => {
-            let msg = "Homebrew is not installed. Install Homebrew first.";
-            emit_preflight_line(&app, msg);
-            return Err(msg.to_string());
+        let brew_str = brew.to_str().unwrap_or("brew").to_string();
+        match run_streaming(&app, &brew_str, &["install", "yq"]).await {
+            Ok(out) => return Ok(out),
+            Err(brew_err) => {
+                let first_line = brew_err.lines().next().unwrap_or("error");
+                emit_preflight_line(
+                    &app,
+                    &format!(
+                        "[yq] brew install failed ({first_line}); falling back to direct binary download"
+                    ),
+                );
+            }
+        }
+    } else {
+        emit_preflight_line(
+            &app,
+            "[yq] Homebrew not found; installing via direct binary download",
+        );
+    }
+
+    install_yq_via_binary(&app).await
+}
+
+/// Download `mikefarah/yq`'s prebuilt darwin binary into `~/.local/bin/yq`.
+///
+/// `~/.local/bin` is already part of `extended_search_path()` (see the
+/// `extras` block there), so the installer's existing `which yq` probe picks
+/// the binary up the same way it would a brew-installed yq. No sudo, no
+/// PATH wiring on the user's side.
+async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => {
+            let msg =
+                format!("[yq] unsupported arch '{other}' — cannot install yq via binary fallback");
+            emit_preflight_line(app, &msg);
+            return Err(msg);
         }
     };
-    run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "yq"]).await
+
+    let url = format!(
+        "https://github.com/mikefarah/yq/releases/download/{YQ_BINARY_VERSION}/yq_darwin_{arch}"
+    );
+
+    let Some(home) = dirs::home_dir() else {
+        let msg = "[yq] could not resolve home directory".to_string();
+        emit_preflight_line(app, &msg);
+        return Err(msg);
+    };
+    let bin_dir = home.join(".local").join("bin");
+    let target = bin_dir.join("yq");
+
+    if let Err(e) = std::fs::create_dir_all(&bin_dir) {
+        let msg = format!("[yq] failed to create {}: {e}", bin_dir.display());
+        emit_preflight_line(app, &msg);
+        return Err(msg);
+    }
+
+    emit_preflight_line(
+        app,
+        &format!("[yq] downloading {url} → {}", target.display()),
+    );
+
+    let target_str = target.to_string_lossy().into_owned();
+
+    // curl flags: -f fails on HTTP error (so a 404 surfaces instead of
+    // writing an HTML error page to disk and chmod'ing it +x), -sS keeps
+    // the progress bar quiet but still emits errors to stderr (which
+    // `run_streaming` captures), -L follows redirects (GitHub redirects
+    // release assets to S3).
+    run_streaming(app, "curl", &["-fsSL", "-o", &target_str, &url]).await?;
+    run_streaming(app, "chmod", &["+x", &target_str]).await?;
+
+    Ok(format!("yq installed at {}", target.display()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
