@@ -81,6 +81,7 @@ pub fn run() {
             commands::install_menubar::install_menubar_app,
             commands::install_menubar::launch_menubar_app,
             commands::menubar::write_menubar_telemetry_pref,
+            commands::menubar::write_menubar_hq_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -244,6 +244,22 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       );
       appendLog(`Downloaded release ${version}.`);
       appendLog("Template extracted successfully.");
+
+      // Persist the chosen HQ folder to ~/.hq/menubar.json `hqPath` so HQ Sync
+      // (a separate menubar app, no IPC with this installer) reads it as
+      // Priority 1 instead of falling back to its core.yaml discovery scan
+      // or the hardcoded ~/HQ default. Best-effort — install must not fail
+      // if this write fails.
+      try {
+        await invoke("write_menubar_hq_path", { hqPath: targetDir });
+        appendLog(`Recorded HQ path ${targetDir} for HQ Sync.`);
+      } catch (writeErr) {
+        appendLog(
+          `Warning: couldn't write hqPath to menubar.json — HQ Sync will fall back to discovery (${
+            writeErr instanceof Error ? writeErr.message : String(writeErr)
+          })`,
+        );
+      }
     } catch (err) {
       if (controller.signal.aborted) return;
       const msg =
