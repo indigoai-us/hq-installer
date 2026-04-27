@@ -43,6 +43,47 @@ pub fn write_menubar_telemetry_pref(enabled: bool) -> Result<(), String> {
     write_telemetry_pref_to(path, enabled)
 }
 
+// Internal helper that accepts an explicit path so tests can pass a tmpdir
+// path without mutating HOME. Same key-merge pattern as
+// `write_telemetry_pref_to` — preserves any other keys already present in
+// menubar.json (telemetryEnabled, machineId, etc.).
+fn write_hq_path_to(path: PathBuf, hq_path: &str) -> Result<(), String> {
+    let mut obj: Map<String, Value> = if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    } else {
+        Map::new()
+    };
+
+    obj.insert("hqPath".into(), Value::String(hq_path.to_string()));
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
+    let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
+    f.sync_all().ok();
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// Persist the chosen HQ folder path to `~/.hq/menubar.json` `hqPath`.
+/// Called from the installer wizard after the template fetch + extraction
+/// succeeds, so HQ Sync can read it as Priority 1 (skipping its core.yaml
+/// discovery fallback). Best-effort from the wizard's POV — install must
+/// not fail just because this write fails.
+#[tauri::command]
+pub fn write_menubar_hq_path(hq_path: String) -> Result<(), String> {
+    let path: PathBuf = dirs::home_dir()
+        .ok_or("home dir unavailable")?
+        .join(".hq/menubar.json");
+    write_hq_path_to(path, &hq_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
