@@ -39,14 +39,21 @@ This rewrites `templates/starter-projects/` and mirrors into any existing `src-t
 
 ## Quality Gates
 
-All gates must pass before merging:
+All gates must pass before merging. They run automatically on every commit (husky + lint-staged) and on every PR (`.github/workflows/ci.yml`):
 
 ```bash
 pnpm typecheck    # TypeScript check
 pnpm lint         # ESLint
 pnpm test         # Vitest unit tests
 cargo check       # Rust compilation check (run from src-tauri/)
+cargo fmt --check # Rustfmt drift check (run from src-tauri/)
+cargo clippy      # Rust linter, deny warnings (run from src-tauri/)
+cargo test        # Rust unit tests (run from src-tauri/)
 ```
+
+**Pre-commit gate:** `.husky/pre-commit` runs `lint-staged` (TS files) + the full Rust gate (`fmt --check` + `clippy -- -D warnings` + `cargo test`). Bypass only for true emergencies with `git commit --no-verify` and fix forward.
+
+**CI gate:** `.github/workflows/ci.yml` runs the same gates on a clean macos-latest runner. Branch protection blocks merges on red CI.
 
 ## Branch Workflow
 

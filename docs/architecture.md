@@ -21,12 +21,17 @@ All OS-level work lives in Rust (`src-tauri/src/commands/`). TypeScript calls ac
 
 | Module | Commands | Purpose |
 |---|---|---|
-| `deps.rs` | `check_dep`, `install_homebrew`, `install_node`, `install_git`, `install_gh`, `install_claude_code`, `install_qmd`, `cancel_install` | Homebrew-backed dependency probe + install with per-handle cancellation |
+| `deps.rs` | `check_dep`, `install_homebrew`, `install_node`, `install_git`, `install_gh`, `install_claude_code`, `install_qmd`, `install_yq`, `cancel_install` | Homebrew-backed dependency probe + install with per-handle cancellation |
 | `xcode.rs` | `xcode_clt_status`, `xcode_clt_install` | Xcode Command Line Tools detection + polling install |
 | `keychain.rs` | `keychain_set`, `keychain_get`, `keychain_delete` | macOS Keychain via `keyring` crate; all services prefixed `com.indigoai.hq-installer` |
 | `git.rs` | `git_init`, `git_probe_user` | git2-backed repo init + global config probe |
-| `process.rs` | `spawn_process`, `cancel_process` | Streamed subprocess output (Tauri events) with cancellation |
+| `process.rs` | `spawn_process`, `cancel_process` | Streamed subprocess output (Tauri events) with cancellation; Sentry breadcrumb capture |
 | `template.rs` | `fetch_template` | GitHub releases tarball fetch (wraps TS logic for Tauri resource access) |
+| `directory.rs` | `pick_directory`, `detect_hq` | Native folder picker + probe for an existing HQ install (core.yaml signature) |
+| `fs.rs` | `read_text_file`, `write_text_file`, `path_exists` | Sandboxed filesystem access for personalization writes |
+| `menubar.rs` | `write_menubar_telemetry_pref`, `write_menubar_hq_path` | Atomic key-merge writes to `~/.hq/menubar.json` (preserves other keys) |
+| `install_menubar.rs` | `install_menubar_app`, `launch_menubar_app` | Downloads + installs the HQ Sync `.app` bundle, launches it after wizard completion |
+| `launch.rs` | `launch_claude_code` | Final-step "Launch Claude Code" handoff |
 | `deep_link.rs` | (event handler, not a command) | Parses `hq-installer://callback` OAuth redirect URLs, emits `deep-link://received` event |
 
 ## Wizard Flow
@@ -39,11 +44,11 @@ All OS-level work lives in Rust (`src-tauri/src/commands/`). TypeScript calls ac
 | 2 — Sign In | `02-cognito-auth.tsx` | Sign in / sign up (email+pw or GitHub OAuth) |
 | 3 — Prerequisites | `04-deps.tsx` | Probe + install system deps |
 | 4 — Install | `06-directory.tsx` | Native directory picker for HQ install path |
-| 5 — Templates | `07-template.tsx` | Download + extract HQ tarball from GitHub releases |
+| 5 — Templates | `07-template.tsx` | Download + extract HQ tarball from GitHub releases. Persists chosen install path to `~/.hq/menubar.json` `hqPath` (Priority 1 input for HQ Sync's folder resolver) |
 | 6 — Workspace | `08-git-init.tsx` | `git_init` command + initial commit |
 | 7 — Personalize | `09-personalize.tsx` | Name + detect cloud companies (lists user's HQ-Cloud memberships, seeds `team` + `connectedCompanyCount` in wizard state) |
 | 8 — Verify | `10-indexing.tsx` | `qmd update` via `spawn_process` |
-| 9 — HQ Sync | `InstallMenubarStep.tsx` | Install HQ Sync menu bar app for continuous S3 reconciliation. Auto-skipped when `connectedCompanyCount === 0` (nothing to sync) |
+| 9 — HQ Sync | `InstallMenubarStep.tsx` | Always installs the HQ Sync menu bar app (universal install — no longer gated on `connectedCompanyCount`). Even users with no cloud-connected companies get personal HQ sync |
 | 10 — Done | `11-summary.tsx` | Launch Claude Code |
 
 Navigation is managed by `wizard-router.ts` (plain JS state machine, no React context). Step 3 (Prerequisites) is auth-gated: no back navigation allowed once the user has signed in. Wizard session data (team, installPath, gitIdentity, personalized flag, connectedCompanyCount) is held in the `wizard-state.ts` module singleton.
@@ -86,6 +91,14 @@ companies/personal/workers/.gitkeep
 
 Templates are bundled Tauri resources (`templates/`). The `loadTemplate()` helper supports injected strings for unit testing without a real Tauri runtime.
 
+In addition to the install directory, the wizard writes one path back to the user's home dir:
+
+```
+~/.hq/menubar.json                   ← { "hqPath": "<chosen install dir>" }
+```
+
+This is written via `write_menubar_hq_path` after template extraction succeeds. HQ Sync (a separate menubar app, no IPC with this installer) reads it as Priority 1 in its folder resolver. The write is a key-merge — existing keys (`telemetryEnabled`, `machineId`, etc.) are preserved. It's best-effort: a failed write logs a warning but doesn't fail the install (HQ Sync's core.yaml discovery covers the gap).
+
 ## Template Fetching
 
 `src/lib/template-fetcher.ts` fetches the latest non-prerelease, non-draft GitHub release from `indigoai-us/hq-core`, downloads the tarball, decompresses with `fflate` (gunzip), and extracts the tar in-memory using a manual parser — all in the browser context. hq-core is a standalone template repo (the repo root IS the template), so extraction strips only the GitHub tarball wrapper. Progress events are throttled to 60fps. A `TemplateFetchError` class carries a `retriable` flag for UI retry logic.
@@ -118,8 +131,18 @@ Templates are bundled Tauri resources (`templates/`). The `loadTemplate()` helpe
 | gh (GitHub CLI) | `which gh` | `brew install gh` |
 | Claude Code | `which claude` | `npm install -g @anthropic-ai/claude-code` |
 | qmd | `which qmd` | `brew install tobi/tap/qmd` |
+| yq | `which yq` | `brew install yq`, with direct binary download fallback (`github.com/mikefarah/yq/releases/latest`) when brew fails — covers cases where the user's brew tap is broken or rate-limited |
 
 All installs stream stdout lines to the frontend via `install:progress` Tauri events and support cancellation via a per-handle cancel registry.
+
+## Observability (Sentry)
+
+Sentry is wired into both layers:
+
+- **Frontend (React webview):** `@sentry/react` initialized in `src/main.tsx`. Source maps uploaded to Sentry on each release via the `@sentry/vite-plugin` (release workflow step is non-blocking — sourcemap upload failures don't fail the release).
+- **Backend (Rust):** `sentry` crate initialized in `src-tauri/src/lib.rs` with a custom event scrubber in `src-tauri/src/sentry_scrub.rs`. The scrubber strips Cognito tokens, refresh tokens, file paths under `~/`, and any string matching the AWS access-key prefix pattern before events leave the process.
+
+Both layers share the same DSN, set via `VITE_SENTRY_DSN` (frontend) / `SENTRY_DSN` (Rust).
 
 ## Release Pipeline
 
