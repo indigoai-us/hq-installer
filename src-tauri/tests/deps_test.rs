@@ -9,7 +9,8 @@ mod deps_tests {
     use hq_installer_lib::commands::deps::{
         cancel_install, check_dep_in, compute_path_counts, extended_search_path,
         extended_search_path_in, format_install_error, format_path_log, format_shell_probe_log,
-        is_deps_debug_enabled, register_cancel_handle, ShellProbeOutcome,
+        is_deps_debug_enabled, managed_tool_paths_in, node_dist_arch_for, register_cancel_handle,
+        ShellProbeOutcome,
     };
     use serial_test::serial;
     use std::fs;
@@ -235,6 +236,32 @@ mod deps_tests {
             "should include Intel Homebrew / generic prefix, got: {}",
             path
         );
+    }
+
+    #[test]
+    fn test_extended_search_path_prefers_managed_toolchain() {
+        let home = TempDir::new().unwrap();
+        let managed_paths = managed_tool_paths_in(home.path());
+        let path = extended_search_path_in(Some(home.path()));
+
+        for managed in &managed_paths {
+            assert!(
+                path.contains(managed),
+                "managed path should be included: {managed}; PATH={path}"
+            );
+        }
+        assert_eq!(
+            path.split(':').next(),
+            managed_paths.first().map(String::as_str),
+            "managed Node bin should be first so qmd/npx use HQ's Node ABI"
+        );
+    }
+
+    #[test]
+    fn test_node_dist_arch_mapping_for_macos_downloads() {
+        assert_eq!(node_dist_arch_for("aarch64"), Some("arm64"));
+        assert_eq!(node_dist_arch_for("x86_64"), Some("x64"));
+        assert_eq!(node_dist_arch_for("powerpc"), None);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

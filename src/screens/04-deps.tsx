@@ -6,11 +6,10 @@
 // blocker flips, the Install button fades + scales in so the unlock reads
 // as a small reward instead of a dead-button surprise.
 //
-// Xcode CLT was removed in v0.1.22: Homebrew's installer bootstraps the
-// commandline tools itself, and the separate row used to race Homebrew's
-// own CLT prompt and fail. The `xcode_clt_*` Tauri commands are still
-// registered on the Rust side as dead IPC — safe to leave, trivial to
-// delete in a follow-up.
+// Xcode CLT was removed in v0.1.22. Homebrew is no longer a required root
+// dependency: fresh Macs without admin access can use the managed HQ toolchain
+// for Node/npm, qmd, and yq, while Homebrew/Git/gh remain optional system
+// conveniences.
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -38,38 +37,33 @@ interface DepDef {
 
 const DEPS: readonly DepDef[] = [
   {
-    id: "homebrew",
-    label: "Homebrew",
-    installCmd: "install_homebrew",
-    installUrl: "https://brew.sh",
-    binary: "brew",
-  },
-  {
     id: "node",
     label: "Node.js",
     installCmd: "install_node",
     installUrl: "https://nodejs.org",
-    dependsOn: ["homebrew"],
-  },
-  {
-    id: "git",
-    label: "Git",
-    installCmd: "install_git",
-    installUrl: "https://git-scm.com",
-    dependsOn: ["homebrew"],
+    subtitle: "Managed local install — no admin access required",
   },
   {
     id: "yq",
     label: "yq",
     installCmd: "install_yq",
     installUrl: "https://github.com/mikefarah/yq",
-    // Serialized behind `node` (not `homebrew`) on purpose: brew holds a
-    // per-prefix lock (~/.../var/homebrew/locks) while a formula installs,
-    // and kicking off `brew install yq` mid-`brew install node` aborts
-    // with "Another active Homebrew process is already in progress". Gating
-    // yq on node's completion removes the race without adding any custom
-    // locking logic on the Rust side.
+    subtitle: "Installed directly when Homebrew is unavailable",
+  },
+  {
+    id: "qmd",
+    label: "qmd",
+    installCmd: "install_qmd",
+    installUrl: "https://github.com/tobi/qmd",
     dependsOn: ["node"],
+  },
+  {
+    id: "git",
+    label: "Git",
+    installCmd: "install_git",
+    installUrl: "https://git-scm.com",
+    optional: true,
+    subtitle: "CLI optional — HQ uses built-in Git for initial setup",
   },
   {
     id: "gh",
@@ -77,7 +71,6 @@ const DEPS: readonly DepDef[] = [
     installCmd: "install_gh",
     installUrl: "https://cli.github.com",
     optional: true,
-    dependsOn: ["homebrew"],
   },
   {
     id: "claude-code",
@@ -90,12 +83,13 @@ const DEPS: readonly DepDef[] = [
     subtitle: "Anthropic CLI — not the Claude desktop app",
   },
   {
-    id: "qmd",
-    label: "qmd",
-    installCmd: "install_qmd",
-    installUrl: "https://github.com/tobi/qmd",
+    id: "homebrew",
+    label: "Homebrew",
+    installCmd: "install_homebrew",
+    installUrl: "https://brew.sh",
+    binary: "brew",
     optional: true,
-    dependsOn: ["node"],
+    subtitle: "Optional system package manager — may require admin access",
   },
 ] as const;
 
@@ -262,7 +256,7 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-medium text-white">Install dependencies</h1>
         <p className="text-sm font-light text-zinc-400">
-          The following tools are required. Missing ones will be installed automatically.
+          Required tools install locally when needed. Optional system tools can be added now or later.
         </p>
       </div>
 
