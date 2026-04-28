@@ -19,6 +19,7 @@
       "identifier": "http:default",
       "allow": [
         { "url": "https://*.execute-api.us-east-1.amazonaws.com/*" },
+        { "url": "https://hqapi.getindigo.ai/*" },
         { "url": "https://*.auth.us-east-1.amazoncognito.com/*" },
         { "url": "https://api.github.com/*" },
         { "url": "https://codeload.github.com/*" },
