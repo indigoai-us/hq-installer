@@ -6,10 +6,9 @@ import { DepsInstall } from "../04-deps.js";
 // ---------------------------------------------------------------------------
 // DepsInstall screen tests (US-014)
 //
-// v0.1.22: Xcode CLT row removed (Homebrew installs it transitively) and rows
-// are now dependency-gated — a dep stays locked ("Waiting for X") until every
-// parent reports `installed`. Tests below reflect that: `node` and friends
-// depend on `homebrew`; `claude-code`/`qmd` depend on `node`.
+// Homebrew is optional. Required setup is now the managed local toolchain path:
+// Node.js + yq + qmd. Rows are still dependency-gated — a dep stays locked
+// ("Waiting for X") until every parent reports `installed`.
 // ---------------------------------------------------------------------------
 
 // Track listen callbacks so tests can fire install:progress events
@@ -222,7 +221,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
   // -------------------------------------------------------------------------
   describe("dependency gating (locked/unlock)", () => {
-    it("node stays locked (data-locked='true') while homebrew is missing", async () => {
+    it("node is installable even when homebrew is missing", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
           homebrew: { installed: false },
@@ -234,32 +233,32 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       await waitFor(() => {
         const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']");
         expect(nodeRow).not.toBeNull();
-        expect(nodeRow!.getAttribute("data-locked")).toBe("true");
+        expect(nodeRow!.getAttribute("data-locked")).toBe("false");
+        expect(nodeRow!.textContent ?? "").toMatch(/install node\.js/i);
       });
 
-      // Homebrew row is the root — must NOT be locked
+      // Homebrew is optional and no longer gates Node.
       const brewRow = document.querySelector<HTMLElement>("[data-dep='homebrew']");
       expect(brewRow?.getAttribute("data-locked")).toBe("false");
     });
 
-    it("shows 'Waiting for Homebrew' on node row when homebrew is missing", async () => {
+    it("qmd waits for Node.js when node is missing", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
-          homebrew: { installed: false },
           node: { installed: false },
+          qmd: { installed: false },
         })
       );
       render(<DepsInstall onNext={vi.fn()} />);
 
       await waitFor(() => {
-        const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']");
-        expect(nodeRow?.textContent ?? "").toMatch(/waiting for.*homebrew/i);
+        const qmdRow = document.querySelector<HTMLElement>("[data-dep='qmd']");
+        expect(qmdRow?.getAttribute("data-locked")).toBe("true");
+        expect(qmdRow?.textContent ?? "").toMatch(/waiting for.*node\.js/i);
       });
     });
 
-    it("yq stays locked while node is missing (brew-lock race fix)", async () => {
-      // yq gating on node (not homebrew) serializes past the brew formula-lock
-      // race when node + yq try to install concurrently under the same brew prefix.
+    it("yq is installable without Node or Homebrew", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
           node: { installed: false },
@@ -271,12 +270,12 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       await waitFor(() => {
         const yqRow = document.querySelector<HTMLElement>("[data-dep='yq']");
         expect(yqRow).not.toBeNull();
-        expect(yqRow!.getAttribute("data-locked")).toBe("true");
-        expect(yqRow!.textContent ?? "").toMatch(/waiting for.*node/i);
+        expect(yqRow!.getAttribute("data-locked")).toBe("false");
+        expect(yqRow!.textContent ?? "").toMatch(/install yq/i);
       });
     });
 
-    it("claude-code stays locked while node is missing (even if homebrew is installed)", async () => {
+    it("claude-code stays locked while node is missing", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
           node: { installed: false },
@@ -292,7 +291,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
         expect(ccRow!.textContent ?? "").toMatch(/waiting for.*node/i);
       });
 
-      // Node itself is unlocked (homebrew is installed by default override)
+      // Node itself is unlocked because it uses the managed local toolchain.
       const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']");
       expect(nodeRow?.getAttribute("data-locked")).toBe("false");
     });
@@ -300,20 +299,20 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
     it("locked row does NOT render an Install button", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
-          homebrew: { installed: false },
           node: { installed: false },
+          qmd: { installed: false },
         })
       );
       render(<DepsInstall onNext={vi.fn()} />);
 
       await waitFor(() => {
-        const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']");
-        expect(nodeRow?.getAttribute("data-locked")).toBe("true");
+        const qmdRow = document.querySelector<HTMLElement>("[data-dep='qmd']");
+        expect(qmdRow?.getAttribute("data-locked")).toBe("true");
       });
 
-      const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']")!;
-      const installBtn = nodeRow.querySelector("button");
-      // Node row should have no install button while locked
+      const qmdRow = document.querySelector<HTMLElement>("[data-dep='qmd']")!;
+      const installBtn = qmdRow.querySelector("button");
+      // qmd row should have no install button while locked
       expect(installBtn).toBeNull();
     });
   });
@@ -648,12 +647,12 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
     it("Continue button is absent when at least one required dep is still missing", async () => {
       mockInvoke.mockImplementation(
-        buildInvokeMock({ homebrew: { installed: false } })
+        buildInvokeMock({ qmd: { installed: false } })
       );
       render(<DepsInstall onNext={vi.fn()} />);
 
       await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "brew" });
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "qmd" });
       });
 
       const continueBtn =
@@ -665,12 +664,13 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       expect(continueBtn).toBeNull();
     });
 
-    it("Continue appears when optional deps (claude-code, qmd, gh) are missing but required deps are installed", async () => {
+    it("Continue appears when optional deps are missing but required deps are installed", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
+          git: { installed: false },
           gh: { installed: false },
           "claude-code": { installed: false },
-          qmd: { installed: false },
+          homebrew: { installed: false },
         })
       );
       render(<DepsInstall onNext={vi.fn()} />);
@@ -719,31 +719,27 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
-    it("multiple missing children with missing parent: only parent is installable", async () => {
-      // homebrew missing blocks node + gh — so only homebrew's Install renders
+    it("multiple missing children with missing parent: locked children do not install", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
-          homebrew: { installed: false },
           node: { installed: false },
-          gh: { installed: false },
+          qmd: { installed: false },
+          "claude-code": { installed: false },
         })
       );
       render(<DepsInstall onNext={vi.fn()} />);
 
       await waitFor(() => {
-        const installBtns = screen.queryAllByRole("button", { name: /install/i });
-        expect(installBtns).toHaveLength(1);
-        expect(installBtns[0].textContent ?? "").toMatch(/homebrew/i);
+        const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']");
+        const qmdRow = document.querySelector<HTMLElement>("[data-dep='qmd']");
+        const ccRow = document.querySelector<HTMLElement>("[data-dep='claude-code']");
+        expect(nodeRow?.getAttribute("data-locked")).toBe("false");
+        expect(qmdRow?.getAttribute("data-locked")).toBe("true");
+        expect(ccRow?.getAttribute("data-locked")).toBe("true");
       });
-
-      // node and gh should be locked
-      const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']");
-      const ghRow = document.querySelector<HTMLElement>("[data-dep='gh']");
-      expect(nodeRow?.getAttribute("data-locked")).toBe("true");
-      expect(ghRow?.getAttribute("data-locked")).toBe("true");
     });
 
-    it("all missing: only homebrew is installable initially; Continue is absent", async () => {
+    it("all missing: required roots plus optional roots are installable; Continue is absent", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
           homebrew: { installed: false },
@@ -759,9 +755,13 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
       await waitFor(() => {
         const installBtns = screen.queryAllByRole("button", { name: /install/i });
-        // Only homebrew (root) is installable; the other 6 are locked behind it
-        expect(installBtns).toHaveLength(1);
-        expect(installBtns[0].textContent ?? "").toMatch(/homebrew/i);
+        const labels = installBtns.map((btn) => btn.textContent ?? "").join(" ");
+        expect(installBtns).toHaveLength(5);
+        expect(labels).toMatch(/node\.js/i);
+        expect(labels).toMatch(/yq/i);
+        expect(labels).toMatch(/git/i);
+        expect(labels).toMatch(/gh/i);
+        expect(labels).toMatch(/homebrew/i);
       });
 
       const continueBtn =

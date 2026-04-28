@@ -1,8 +1,9 @@
 //! Dependency probe and install commands for the HQ installer.
 //!
-//! All install commands are macOS / Homebrew-centric.  Each installer
-//! streams stdout lines to the frontend via `install:progress` events and
-//! supports cancellation through a shared handle registry.
+//! Each installer streams stdout lines to the frontend via `install:progress`
+//! events and supports cancellation through a shared handle registry. Required
+//! tools use a user-local HQ-managed toolchain when possible; Homebrew remains
+//! an optional system package-manager provider.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -248,6 +249,17 @@ pub fn extended_search_path() -> String {
 /// When `home` is `None`, resolves via `dirs::home_dir()` (production path).
 pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     let mut dirs: Vec<String> = Vec::new();
+    // Prefer the managed HQ toolchain first when it exists. This keeps later
+    // qmd/npx runs on the same Node ABI the installer provisioned, even if the
+    // user's shell has an older Node earlier in PATH.
+    let home_buf = home.map(|p| p.to_path_buf()).or_else(dirs::home_dir);
+    let mut home_count: usize = 0;
+    if let Some(home) = home_buf.as_deref() {
+        for p in managed_tool_paths_in(home) {
+            dirs.push(p);
+            home_count += 1;
+        }
+    }
     if let Ok(existing) = std::env::var("PATH") {
         if !existing.is_empty() {
             dirs.push(existing);
@@ -271,11 +283,7 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
     for e in extras {
         dirs.push(e.to_string());
     }
-    // Resolve home directory: explicit override for tests, else dirs::home_dir().
-    let home_buf = home.map(|p| p.to_path_buf()).or_else(dirs::home_dir);
-
     // User-local installs (~/.claude/bin, ~/.cargo/bin, ~/.local/bin, ~/bin).
-    let mut home_count: usize = 0;
     if let Some(home) = home_buf.as_deref() {
         for rel in [".claude/bin", ".cargo/bin", ".local/bin", "bin"] {
             let p = home.join(rel);
@@ -397,6 +405,86 @@ fn parse_node_version(dir_name: &str) -> (u32, u32, u32) {
     let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     (major, minor, patch)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Managed HQ toolchain
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Pinned Node LTS used for admin-free fresh installs.
+///
+/// This intentionally moves slower than Node latest. HQ needs a stable Node 22+
+/// runtime for npx/qmd/Claude Code, not the newest dist-tag.
+const MANAGED_NODE_VERSION: &str = "v22.17.0";
+
+fn managed_toolchain_dir_in(home: &std::path::Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("Indigo HQ")
+        .join("toolchain")
+}
+
+fn managed_node_dir_in(home: &std::path::Path) -> PathBuf {
+    managed_toolchain_dir_in(home).join("node")
+}
+
+fn managed_node_bin_in(home: &std::path::Path) -> PathBuf {
+    managed_node_dir_in(home).join("bin")
+}
+
+fn managed_npm_prefix_in(home: &std::path::Path) -> PathBuf {
+    managed_toolchain_dir_in(home).join("npm-global")
+}
+
+fn managed_npm_bin_in(home: &std::path::Path) -> PathBuf {
+    managed_npm_prefix_in(home).join("bin")
+}
+
+/// User-local tool paths owned by HQ Installer. Exposed for unit tests.
+pub fn managed_tool_paths_in(home: &std::path::Path) -> Vec<String> {
+    vec![
+        managed_node_bin_in(home).to_string_lossy().into_owned(),
+        managed_npm_bin_in(home).to_string_lossy().into_owned(),
+    ]
+}
+
+/// Map Rust's `std::env::consts::ARCH` values to Node's darwin tarball names.
+/// Exposed for unit tests so the download URL stays deterministic.
+pub fn node_dist_arch_for(arch: &str) -> Option<&'static str> {
+    match arch {
+        "aarch64" => Some("arm64"),
+        "x86_64" => Some("x64"),
+        _ => None,
+    }
+}
+
+fn managed_node_url_for(arch: &str) -> Option<String> {
+    let node_arch = node_dist_arch_for(arch)?;
+    Some(format!(
+        "https://nodejs.org/dist/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-{node_arch}.tar.gz"
+    ))
+}
+
+fn home_dir_or_err(app: &AppHandle, tool: &str) -> Result<PathBuf, String> {
+    dirs::home_dir().ok_or_else(|| {
+        let msg = format!("[{tool}] could not resolve home directory");
+        emit_preflight_line(app, &msg);
+        msg
+    })
+}
+
+fn npm_global_prefix_arg(app: &AppHandle, tool: &str) -> Result<String, String> {
+    let home = home_dir_or_err(app, tool)?;
+    let prefix = managed_npm_prefix_in(&home);
+    if let Err(e) = std::fs::create_dir_all(&prefix) {
+        let msg = format!(
+            "[{tool}] failed to create npm prefix {}: {e}",
+            prefix.display()
+        );
+        emit_preflight_line(app, &msg);
+        return Err(msg);
+    }
+    Ok(prefix.to_string_lossy().into_owned())
 }
 
 /// Internal implementation shared by `check_dep` (uses real PATH) and
@@ -699,25 +787,83 @@ pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
 // install_node
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install Node.js via `brew install node`.
+/// Install Node.js into HQ's user-local managed toolchain.
 ///
-/// Errors if Homebrew is not available — surfaces the reason in the terminal
-/// panel via `emit_preflight_line` before returning.
+/// The installer used to require Homebrew here, which stranded fresh Macs
+/// where the first user was not an Administrator. Node/npm/npx do not require
+/// a system package manager, so we download the official darwin tarball into:
+/// `~/Library/Application Support/Indigo HQ/toolchain/node`.
 #[tauri::command]
 pub async fn install_node(app: AppHandle) -> Result<String, String> {
-    let brew = match which::which_in(
-        "brew",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    ) {
-        Ok(p) => p,
-        Err(_) => {
-            let msg = "Homebrew is not installed. Install Homebrew first.";
-            emit_preflight_line(&app, msg);
-            return Err(msg.to_string());
-        }
+    let home = home_dir_or_err(&app, "node")?;
+    let toolchain_dir = managed_toolchain_dir_in(&home);
+    let node_dir = managed_node_dir_in(&home);
+    let node_bin = managed_node_bin_in(&home).join("node");
+
+    if node_bin.exists() {
+        emit_preflight_line(
+            &app,
+            &format!(
+                "[node] managed Node already present at {}",
+                node_bin.display()
+            ),
+        );
+        return Ok(format!("node already installed at {}", node_bin.display()));
+    }
+
+    let Some(url) = managed_node_url_for(std::env::consts::ARCH) else {
+        let msg = format!(
+            "[node] unsupported arch '{}' — cannot install managed Node",
+            std::env::consts::ARCH
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
     };
-    run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "node"]).await
+
+    if let Err(e) = std::fs::create_dir_all(&node_dir) {
+        let msg = format!("[node] failed to create {}: {e}", node_dir.display());
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+
+    let archive = toolchain_dir.join(format!("node-{MANAGED_NODE_VERSION}-darwin.tar.gz"));
+    let archive_str = archive.to_string_lossy().into_owned();
+    let node_dir_str = node_dir.to_string_lossy().into_owned();
+
+    emit_preflight_line(
+        &app,
+        &format!("[node] downloading {url} → {}", archive.display()),
+    );
+    run_streaming(&app, "/usr/bin/curl", &["-fsSL", "-o", &archive_str, &url]).await?;
+
+    emit_preflight_line(
+        &app,
+        &format!("[node] extracting to {}", node_dir.display()),
+    );
+    run_streaming(
+        &app,
+        "/usr/bin/tar",
+        &[
+            "-xzf",
+            &archive_str,
+            "-C",
+            &node_dir_str,
+            "--strip-components",
+            "1",
+        ],
+    )
+    .await?;
+
+    if !node_bin.exists() {
+        let msg = format!(
+            "[node] install completed but node binary was not found at {}",
+            node_bin.display()
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+
+    Ok(format!("node installed at {}", node_bin.display()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -734,7 +880,7 @@ pub async fn install_git(app: AppHandle) -> Result<String, String> {
     ) {
         Ok(p) => p,
         Err(_) => {
-            let msg = "Homebrew is not installed. Install Homebrew first.";
+            let msg = "Git CLI is optional for HQ setup. Install Homebrew or Xcode Command Line Tools later if you want the system git command.";
             emit_preflight_line(&app, msg);
             return Err(msg.to_string());
         }
@@ -756,7 +902,7 @@ pub async fn install_gh(app: AppHandle) -> Result<String, String> {
     ) {
         Ok(p) => p,
         Err(_) => {
-            let msg = "Homebrew is not installed. Install Homebrew first.";
+            let msg = "GitHub CLI is optional. Install Homebrew later if you want hq-installer to add gh automatically.";
             emit_preflight_line(&app, msg);
             return Err(msg.to_string());
         }
@@ -886,6 +1032,7 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
 /// Errors if npm is not available.
 #[tauri::command]
 pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, "claude")?;
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -901,7 +1048,13 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     run_streaming(
         &app,
         npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "@anthropic-ai/claude-code"],
+        &[
+            "install",
+            "-g",
+            "--prefix",
+            &prefix,
+            "@anthropic-ai/claude-code",
+        ],
     )
     .await
 }
@@ -915,6 +1068,7 @@ pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
 /// Errors if npm is not available.
 #[tauri::command]
 pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, "qmd")?;
     let npm = match which::which_in(
         "npm",
         Some(extended_search_path()),
@@ -930,7 +1084,7 @@ pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
     run_streaming(
         &app,
         npm.to_str().unwrap_or("npm"),
-        &["install", "-g", "@tobilu/qmd"],
+        &["install", "-g", "--prefix", &prefix, "@tobilu/qmd"],
     )
     .await
 }
