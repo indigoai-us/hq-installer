@@ -42,8 +42,8 @@ import { join } from "path";
 // Config
 // ---------------------------------------------------------------------------
 
-// hq-prod stack (canonical post-2026-04-25 cutover).
-const VAULT_API_URL = "https://4nfy67z28h.execute-api.us-east-1.amazonaws.com";
+// hq-prod custom domain (canonical post-2026-04-28 cutover).
+const VAULT_API_URL = "https://hqapi.getindigo.ai";
 const USER_POOL_ID = "us-east-1_AXf6Kb5nE";
 const REGION = "us-east-1";
 const TOKEN_CACHE_PATH = join(

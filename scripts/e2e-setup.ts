@@ -30,8 +30,8 @@ import { randomBytes } from "crypto";
 // Config
 // ---------------------------------------------------------------------------
 
-// hq-prod stack (canonical post-2026-04-25 cutover).
-const VAULT_API_URL = "https://4nfy67z28h.execute-api.us-east-1.amazonaws.com";
+// hq-prod custom domain (canonical post-2026-04-28 cutover).
+const VAULT_API_URL = "https://hqapi.getindigo.ai";
 const USER_POOL_ID = "us-east-1_AXf6Kb5nE";
 const CLIENT_ID = "7acei2c8v870enheptb1j5foln";
 const REGION = "us-east-1";

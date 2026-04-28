@@ -89,10 +89,10 @@ export function resolveLocalPath(
 }
 
 function getVaultApiUrl(): string {
-  // hq-prod stack (canonical post-2026-04-25 cutover). Override via VITE_VAULT_API_URL.
+  // hq-prod custom domain (canonical post-2026-04-28 cutover). Override via VITE_VAULT_API_URL.
   return (
     (import.meta.env.VITE_VAULT_API_URL as string | undefined) ??
-    "https://4nfy67z28h.execute-api.us-east-1.amazonaws.com"
+    "https://hqapi.getindigo.ai"
   );
 }
 

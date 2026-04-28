@@ -7,9 +7,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 const TELEMETRY_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/success";
 
-// hq-prod stack (canonical post-2026-04-25 cutover). Override via VITE_VAULT_API_URL.
-const DEFAULT_VAULT_API_URL =
-  "https://4nfy67z28h.execute-api.us-east-1.amazonaws.com";
+// hq-prod custom domain (canonical post-2026-04-28 cutover). Override via VITE_VAULT_API_URL.
+const DEFAULT_VAULT_API_URL = "https://hqapi.getindigo.ai";
 
 function getVaultApiUrl(): string {
   return (
