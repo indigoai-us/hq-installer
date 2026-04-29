@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "hq-installer"
-version = "0.1.30"
+version = "0.2.0"
 dependencies = [
  "dirs 5.0.1",
  "git2",
