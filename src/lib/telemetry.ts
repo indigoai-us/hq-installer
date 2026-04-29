@@ -7,6 +7,22 @@ import { invoke } from "@tauri-apps/api/core";
 
 const TELEMETRY_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/success";
 
+/**
+ * Failure-notification endpoint. The server forwards POSTs here to the
+ * #installer-alerts Slack channel. Override via VITE_INSTALLER_FAILURE_URL
+ * for staging or a self-hosted alternative; setting it to an empty string
+ * disables failure pings entirely (useful for local dev).
+ */
+const FAILURE_ENDPOINT_DEFAULT =
+  "https://telemetry.getindigo.ai/v1/installer/failure";
+
+function getFailureEndpoint(): string | null {
+  const v = import.meta.env.VITE_INSTALLER_FAILURE_URL as string | undefined;
+  // An explicit empty string disables; undefined falls back to the default.
+  if (v === "") return null;
+  return v ?? FAILURE_ENDPOINT_DEFAULT;
+}
+
 // hq-prod custom domain (canonical post-2026-04-28 cutover). Override via VITE_VAULT_API_URL.
 const DEFAULT_VAULT_API_URL = "https://hqapi.getindigo.ai";
 
@@ -29,6 +45,44 @@ export async function pingSuccess(version?: string): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ version: version ?? "unknown", ts: Date.now() }),
   });
+}
+
+export interface FailurePayload {
+  /** Short identifier for where the failure happened. e.g. "template-fetch",
+   *  "pack-install:hq-pack-design-quality", "deps:node", "cognito-auth". */
+  stage: string;
+  /** Human-readable error message. */
+  message: string;
+  /** Optional installer version. */
+  version?: string;
+  /** Optional small structured payload (truncated server-side if oversized). */
+  detail?: Record<string, unknown>;
+}
+
+/**
+ * Fire-and-forget ping to the failure endpoint. The server forwards the
+ * payload to a Slack channel so on-call engineers see install regressions
+ * immediately. Errors are logged to console only — never throw.
+ *
+ * Caller responsibility: gate on `wizardState.telemetryEnabled` if the
+ * failure happens before opt-in is meaningful.
+ */
+export async function pingFailure(payload: FailurePayload): Promise<void> {
+  const endpoint = getFailureEndpoint();
+  if (!endpoint) return;
+  try {
+    await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        version: payload.version ?? "unknown",
+        ts: Date.now(),
+      }),
+    });
+  } catch (err) {
+    console.error("[telemetry] pingFailure failed:", err);
+  }
 }
 
 /**

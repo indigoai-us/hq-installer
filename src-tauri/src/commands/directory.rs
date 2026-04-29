@@ -82,6 +82,65 @@ pub struct DetectHqResult {
     pub is_hq: bool,
 }
 
+#[derive(Serialize, Debug)]
+pub struct CreateDirectoryResult {
+    /// Absolute path of the resulting directory (parent + name joined).
+    pub path: String,
+    /// True when the directory existed prior to this call. False when this
+    /// call created it. Lets the frontend decide whether to surface a
+    /// "directory already exists" state vs. a fresh creation.
+    pub already_existed: bool,
+    /// True when the directory was non-empty at the moment of creation.
+    /// Frontend uses this to warn before installing on top of arbitrary files.
+    pub non_empty: bool,
+}
+
+/// Create `{parent}/{name}` if missing and report what was found.
+///
+/// Mirrors the safety checks in `detect_hq`: callers can chain
+/// `create_directory` → `detect_hq` to learn whether the resulting path is
+/// fresh, an existing HQ, or a non-empty foreign directory.
+#[tauri::command]
+pub fn create_directory(parent: String, name: String) -> Result<CreateDirectoryResult, String> {
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    if trimmed_name.contains('/') || trimmed_name.contains('\\') {
+        return Err("Folder name cannot contain path separators".to_string());
+    }
+
+    let parent_path = expand_tilde(&parent);
+    if !parent_path.exists() {
+        return Err(format!(
+            "Parent directory does not exist: {}",
+            parent_path.display()
+        ));
+    }
+
+    let target = parent_path.join(trimmed_name);
+    let already_existed = target.exists();
+    if !already_existed {
+        std::fs::create_dir_all(&target)
+            .map_err(|e| format!("Failed to create {}: {}", target.display(), e))?;
+    }
+
+    let non_empty = if target.is_dir() {
+        match std::fs::read_dir(&target) {
+            Ok(mut entries) => entries.next().is_some(),
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+
+    Ok(CreateDirectoryResult {
+        path: target.to_string_lossy().into_owned(),
+        already_existed,
+        non_empty,
+    })
+}
+
 #[tauri::command]
 pub fn detect_hq(path: String) -> DetectHqResult {
     let p = PathBuf::from(&path);
@@ -148,5 +207,54 @@ mod tests {
         assert_eq!(expand_tilde("~/hq"), PathBuf::from("/Users/test/hq"));
         assert_eq!(expand_tilde("~"), PathBuf::from("/Users/test"));
         assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn create_directory_makes_fresh_subfolder() {
+        let parent = tempdir().unwrap();
+        let result = create_directory(
+            parent.path().to_string_lossy().into_owned(),
+            "hq".to_string(),
+        )
+        .unwrap();
+        assert!(!result.already_existed);
+        assert!(!result.non_empty);
+        assert!(parent.path().join("hq").exists());
+    }
+
+    #[test]
+    fn create_directory_detects_existing_non_empty() {
+        let parent = tempdir().unwrap();
+        let target = parent.path().join("hq");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("README.md"), "x").unwrap();
+        let result = create_directory(
+            parent.path().to_string_lossy().into_owned(),
+            "hq".to_string(),
+        )
+        .unwrap();
+        assert!(result.already_existed);
+        assert!(result.non_empty);
+    }
+
+    #[test]
+    fn create_directory_rejects_path_separators_in_name() {
+        let parent = tempdir().unwrap();
+        let err = create_directory(
+            parent.path().to_string_lossy().into_owned(),
+            "evil/path".to_string(),
+        )
+        .unwrap_err();
+        assert!(err.contains("path separators"));
+    }
+
+    #[test]
+    fn create_directory_rejects_missing_parent() {
+        let err = create_directory(
+            "/definitely/does/not/exist/zzzz".to_string(),
+            "hq".to_string(),
+        )
+        .unwrap_err();
+        assert!(err.contains("does not exist"));
     }
 }

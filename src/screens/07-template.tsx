@@ -29,6 +29,14 @@ import {
   TemplateFetchError,
   type ProgressEvent as TemplateProgressEvent,
 } from "@/lib/template-fetcher";
+import {
+  getInstallerVersion,
+  recordStepStart,
+  recordStepFailure,
+  recordPacks,
+  updateManifest,
+} from "@/lib/install-manifest";
+import { pingFailure } from "@/lib/telemetry";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -136,11 +144,33 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     setPacks((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   }
 
+  /** Best-effort pack-status write to {targetDir}/.hq/install-manifest.json.
+   *  Failures are swallowed — the diskLog flush + UI state remain the user-
+   *  visible record. The manifest is the agent-readable record. */
+  async function writePackStatus(
+    name: string,
+    status: "running" | "ok" | "failed",
+    error?: string,
+  ): Promise<void> {
+    if (!targetDir) return;
+    try {
+      const installerVersion = await getInstallerVersion();
+      await recordPacks(targetDir, installerVersion, {
+        [name]: { status, error },
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** Spawn `npx ... hq install <pkg>` with cwd = targetDir and stream
    *  stdout/stderr into the visible log. Resolves true on exit 0. */
   async function installOnePack(idx: number, pkg: string): Promise<boolean> {
     patchPack(idx, { status: "running" });
     appendLog(`→ Installing ${pkg}`);
+    // Snapshot pack as `running` in the install manifest so an interrupted
+    // install reads as "in progress" for any agent self-healing pass.
+    void writePackStatus(pkg, "running");
 
     let handle: string;
     try {
@@ -155,6 +185,12 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       const msg = err instanceof Error ? err.message : String(err);
       patchPack(idx, { status: "error", errorMsg: msg });
       appendLog(`[spawn error] ${msg}`);
+      void writePackStatus(pkg, "failed", msg);
+      void pingFailure({
+        stage: `pack-install:${pkg}`,
+        message: `spawn failed: ${msg}`,
+        detail: { pkg, kind: "spawn-error" },
+      });
       return false;
     }
 
@@ -180,11 +216,18 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
           const payload = event.payload as { code: number | null; success: boolean };
           if (payload.success) {
             patchPack(idx, { status: "done" });
+            void writePackStatus(pkg, "ok");
             resolve(true);
           } else {
             const msg = `exit ${payload.code ?? -1}`;
             patchPack(idx, { status: "error", errorMsg: msg });
             appendLog(`✗ ${pkg} failed (${msg})`);
+            void writePackStatus(pkg, "failed", msg);
+            void pingFailure({
+              stage: `pack-install:${pkg}`,
+              message: `pack install ${msg}`,
+              detail: { pkg, kind: "non-zero-exit", code: payload.code },
+            });
             resolve(false);
           }
           (stdoutUnlisten as () => void)();
@@ -229,6 +272,15 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     setPacks(initialPacks());
     diskLogRef.current = ["Resolving latest release…"];
 
+    const installerVersion = await getInstallerVersion();
+    if (targetDir) {
+      try {
+        await recordStepStart(targetDir, installerVersion, "templates");
+      } catch {
+        /* manifest write failures are non-fatal */
+      }
+    }
+
     const handleProgress = (event: TemplateProgressEvent) => {
       setDownloaded(event.bytes);
       if (event.total > 0) setTotal(event.total);
@@ -244,6 +296,19 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       );
       appendLog(`Downloaded release ${version}.`);
       appendLog("Template extracted successfully.");
+      // Persist the resolved release version into the manifest so agents
+      // self-healing a partial install know what template version landed.
+      try {
+        await updateManifest(targetDir, installerVersion, (m) => {
+          m.steps["templates"] = {
+            ...(m.steps["templates"] ?? {}),
+            status: "running",
+          };
+          (m as unknown as Record<string, unknown>).templateVersion = version;
+        });
+      } catch {
+        /* non-fatal */
+      }
 
       // Persist the chosen HQ folder to ~/.hq/menubar.json `hqPath` so HQ Sync
       // (a separate menubar app, no IPC with this installer) reads it as
@@ -272,6 +337,27 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       setErrorMsg(msg);
       appendLog(`Error: ${msg}`);
       await flushDiskLog();
+      // Manifest + Slack notify so an interrupted install is visible to
+      // agents and engineers without the user having to surface it.
+      if (targetDir) {
+        try {
+          await recordStepFailure(
+            targetDir,
+            installerVersion,
+            "templates",
+            msg,
+            { phase: "fetch" },
+          );
+        } catch {
+          /* non-fatal */
+        }
+      }
+      void pingFailure({
+        stage: "template-fetch",
+        message: msg,
+        version: installerVersion,
+        detail: { targetDir },
+      });
       runningRef.current = false;
       return;
     }
@@ -281,6 +367,36 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     const packsOutcome = await installPacks();
     setPhase(packsOutcome);
     await flushDiskLog();
+    // Final manifest write — mark templates step ok if everything landed,
+    // or note that warnings exist so an agent can target failed packs.
+    if (targetDir) {
+      try {
+        await updateManifest(targetDir, installerVersion, (m) => {
+          m.steps["templates"] = {
+            ...(m.steps["templates"] ?? {}),
+            status: packsOutcome === "done" ? "ok" : "failed",
+            completedAt: new Date().toISOString(),
+            error:
+              packsOutcome === "done"
+                ? undefined
+                : "one or more packs failed — see packs map",
+          };
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
+    if (packsOutcome === "done-with-warnings") {
+      // packsOutcome failures are recoverable — recorded per-pack above —
+      // but we still want a single rolled-up Slack ping so on-call sees
+      // the run as a whole.
+      void pingFailure({
+        stage: "template-fetch",
+        message: "one or more HQ packs failed during install",
+        version: installerVersion,
+        detail: { targetDir, kind: "pack-warnings" },
+      });
+    }
     runningRef.current = false;
     // flushDiskLog and installPacks close over state setters and refs that
     // don't change across renders — safe to omit from deps.

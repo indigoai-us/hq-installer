@@ -11,14 +11,14 @@ import { ProgressIndicator } from "../ProgressIndicator.js";
 
 // Step labels are defined here as the source of truth for the test assertions.
 // The implementation must render labels that match these strings.
-// Updated after removal of old Step 3 (Company) and old Step 8 (Sync) —
-// 10 steps total now.
+// 2026-04-29 reorder: Install + Templates moved before Sign In so files land
+// before login (manifest visible on disk for partial-install self-heal).
 const STEP_LABELS = [
   "Welcome",
-  "Sign In",
-  "Prerequisites",
   "Install",
   "Templates",
+  "Sign In",
+  "Prerequisites",
   "Workspace",
   "Personalize",
   "Verify",
@@ -137,15 +137,15 @@ describe("ProgressIndicator", () => {
       const onStepClick = vi.fn();
       render(
         <ProgressIndicator
-          currentStep={5}
-          maxReachedStep={5}
+          currentStep={6}
+          maxReachedStep={6}
           canNavigateTo={() => true}
           onStepClick={onStepClick}
         />,
       );
-      // Click "Sign In" (step 2)
+      // Click "Sign In" (step 4 in the install-first order)
       fireEvent.click(screen.getByRole("button", { name: /Sign In/i }));
-      expect(onStepClick).toHaveBeenCalledWith(2);
+      expect(onStepClick).toHaveBeenCalledWith(4);
     });
 
     it("respects canNavigateTo — blocked steps render as inert <div>, not <button>", () => {

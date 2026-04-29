@@ -80,10 +80,13 @@ function App() {
   const wizardState = getWizardState();
   const { currentStep } = router;
 
-  // Screen flow (post-removal):
-  //   1 Welcome → 2 Cognito Auth → 3 Prerequisites → 4 Install (dir) →
-  //   5 Templates → 6 Workspace (git init) → 7 Personalize →
+  // Screen flow (install-first, login-after — 2026-04-29):
+  //   1 Welcome → 2 Install (dir) → 3 Templates → 4 Cognito Auth →
+  //   5 Prerequisites → 6 Workspace (git init) → 7 Personalize →
   //   8 Verify (indexing) → 9 HQ Sync (menubar) → 10 Done
+  //
+  // Files land before login so a partial install still leaves a manifest on
+  // disk for agents to self-heal. See wizard-router.ts for AUTH_GATED_STEPS.
   function renderStep() {
     switch (currentStep) {
       case 1:
@@ -98,18 +101,18 @@ function App() {
           />
         );
       case 2:
-        return <CognitoAuth onNext={handleNext} />;
-      case 3:
-        return <DepsInstall onNext={handleNext} />;
-      case 4:
         return <DirectoryPicker onNext={handleNext} />;
-      case 5:
+      case 3:
         return (
           <TemplateFetch
             targetDir={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
+      case 4:
+        return <CognitoAuth onNext={handleNext} />;
+      case 5:
+        return <DepsInstall onNext={handleNext} />;
       case 6:
         return (
           <GitInit
