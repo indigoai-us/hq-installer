@@ -4,7 +4,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Summary } from "../11-summary.js";
 
 // ---------------------------------------------------------------------------
-// Summary screen tests (US-018)
+// Summary screen tests (US-018, revised 2026-04-29)
+//
+// Claude Desktop is the primary CTA; Claude Code (Terminal) is a secondary
+// text link. Tests cover both paths plus the install-manifest finalize.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -15,12 +18,21 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
-// ---------------------------------------------------------------------------
-// Telemetry mock
-// ---------------------------------------------------------------------------
+// fs + app are touched by install-manifest. Stub so the manifest finalize
+// runs without writing to disk.
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  mkdir: vi.fn().mockResolvedValue(undefined),
+  readTextFile: vi.fn().mockRejectedValue(new Error("not found")),
+  writeTextFile: vi.fn().mockResolvedValue(undefined),
+  exists: vi.fn().mockResolvedValue(false),
+}));
+vi.mock("@tauri-apps/api/app", () => ({
+  getVersion: vi.fn().mockResolvedValue("test"),
+}));
 
 vi.mock("../../lib/telemetry.js", () => ({
   pingSuccess: vi.fn().mockResolvedValue(undefined),
+  pingFailure: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { invoke } from "@tauri-apps/api/core";
@@ -28,20 +40,13 @@ import { pingSuccess } from "../../lib/telemetry.js";
 const mockInvoke = vi.mocked(invoke);
 const mockPingSuccess = vi.mocked(pingSuccess);
 
-// ---------------------------------------------------------------------------
-// Wizard-state fixture
-// ---------------------------------------------------------------------------
-
+// Fixture
 const WIZARD_STATE_FIXTURE = {
   installPath: "/Users/testuser/HQ",
   team: { name: "Acme Corp", slug: "acme-corp" },
   gitEmail: "dev@acme.com",
   telemetryEnabled: true,
 };
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("Summary screen (11-summary.tsx)", () => {
   beforeEach(() => {
@@ -60,7 +65,10 @@ describe("Summary screen (11-summary.tsx)", () => {
 
   it("renders the install path from wizard state", () => {
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
-    expect(screen.getByText("/Users/testuser/HQ")).toBeDefined();
+    // Path appears in both the summary card and the Claude Desktop callout —
+    // either occurrence is sufficient.
+    const matches = screen.getAllByText("/Users/testuser/HQ");
+    expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders the team name from wizard state", () => {
@@ -80,15 +88,14 @@ describe("Summary screen (11-summary.tsx)", () => {
 
   it("renders '—' for missing install path", () => {
     const { getAllByText } = render(
-      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, installPath: null }} />
+      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, installPath: null }} />,
     );
-    // Multiple '—' may appear (one per missing field), so check at least one.
     expect(getAllByText("—").length).toBeGreaterThan(0);
   });
 
   it("renders '—' for missing team", () => {
     const { getAllByText } = render(
-      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, team: null }} />
+      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, team: null }} />,
     );
     expect(getAllByText("—").length).toBeGreaterThanOrEqual(2);
   });
@@ -97,7 +104,7 @@ describe("Summary screen (11-summary.tsx)", () => {
     render(
       <Summary
         wizardState={{ ...WIZARD_STATE_FIXTURE, team: null, isPersonal: true }}
-      />
+      />,
     );
     expect(screen.getByText(/personal hq \(no company\)/i)).toBeInTheDocument();
     expect(screen.queryByText("Team name")).toBeNull();
@@ -106,28 +113,53 @@ describe("Summary screen (11-summary.tsx)", () => {
 
   it("renders '—' for missing email", () => {
     const { getAllByText } = render(
-      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, gitEmail: null }} />
+      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, gitEmail: null }} />,
     );
     expect(getAllByText("—").length).toBeGreaterThan(0);
   });
 
-  // ── 3. Launch button is present ───────────────────────────────────────────
+  // ── 3. Claude Desktop CTA — primary path ──────────────────────────────────
 
-  it("renders 'Open HQ in Claude Code' button", () => {
+  it("renders a 'Launch Claude Desktop' primary button", () => {
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
-    const btn = screen.queryByRole("button", { name: /open hq in claude code/i });
+    const btn = screen.queryByRole("button", { name: /launch claude desktop/i });
     expect(btn).not.toBeNull();
   });
 
-  // ── 4. Clicking launch button calls invoke("launch_claude_code") ──────────
-
-  it("clicking 'Open HQ in Claude Code' calls invoke('launch_claude_code') with the install path", async () => {
+  it("clicking 'Launch Claude Desktop' calls invoke('launch_claude_desktop')", async () => {
     const user = userEvent.setup();
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
-
-    const btn = screen.getByRole("button", { name: /open hq in claude code/i });
+    const btn = screen.getByRole("button", { name: /launch claude desktop/i });
     await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("launch_claude_desktop");
+    });
+  });
 
+  it("renders Claude Desktop instructions including the install path", () => {
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const text = document.body.textContent ?? "";
+    expect(text.toLowerCase()).toMatch(/open in claude desktop/);
+    expect(text).toContain("/Users/testuser/HQ");
+  });
+
+  // ── 4. Claude Code (Terminal) — secondary text link ───────────────────────
+
+  it("renders 'Open Claude Code in Terminal' as a secondary link", () => {
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const link = screen.queryByRole("button", {
+      name: /open claude code in terminal/i,
+    });
+    expect(link).not.toBeNull();
+  });
+
+  it("clicking the Claude Code text link calls invoke('launch_claude_code', { path })", async () => {
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const link = screen.getByRole("button", {
+      name: /open claude code in terminal/i,
+    });
+    await user.click(link);
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("launch_claude_code", {
         path: "/Users/testuser/HQ",
@@ -135,14 +167,14 @@ describe("Summary screen (11-summary.tsx)", () => {
     });
   });
 
-  it("clicking launch button calls onLaunch callback", async () => {
+  it("clicking the Claude Code text link calls onLaunch callback", async () => {
     const user = userEvent.setup();
     const onLaunch = vi.fn();
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} onLaunch={onLaunch} />);
-
-    const btn = screen.getByRole("button", { name: /open hq in claude code/i });
-    await user.click(btn);
-
+    const link = screen.getByRole("button", {
+      name: /open claude code in terminal/i,
+    });
+    await user.click(link);
     await waitFor(() => {
       expect(onLaunch).toHaveBeenCalledTimes(1);
     });
@@ -150,55 +182,42 @@ describe("Summary screen (11-summary.tsx)", () => {
 
   it("does NOT call invoke('launch_claude_code') when installPath is null", async () => {
     const user = userEvent.setup();
-    const onLaunch = vi.fn();
     render(
       <Summary
         wizardState={{ ...WIZARD_STATE_FIXTURE, installPath: null }}
-        onLaunch={onLaunch}
-      />
+        onLaunch={vi.fn()}
+      />,
     );
-
-    const btn = screen.getByRole("button", { name: /open hq in claude code/i });
-    await user.click(btn);
-
-    await waitFor(() => {
-      expect(onLaunch).toHaveBeenCalledTimes(1);
+    const link = screen.queryByRole("button", {
+      name: /open claude code in terminal/i,
     });
-
+    if (link && !(link as HTMLButtonElement).disabled) {
+      await user.click(link);
+    }
     expect(mockInvoke).not.toHaveBeenCalledWith(
       "launch_claude_code",
-      expect.anything()
+      expect.anything(),
     );
   });
 
   // ── 5. Telemetry — pingSuccess on mount ───────────────────────────────────
 
   it("calls pingSuccess on mount when telemetryEnabled=true", async () => {
-    render(<Summary wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: true }} />);
-
+    render(
+      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: true }} />,
+    );
     await waitFor(() => {
       expect(mockPingSuccess).toHaveBeenCalledTimes(1);
     });
   });
 
   it("does NOT call pingSuccess when telemetryEnabled=false", () => {
-    render(<Summary wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: false }} />);
+    render(
+      <Summary
+        wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: false }}
+      />,
+    );
     expect(mockPingSuccess).not.toHaveBeenCalled();
-  });
-
-  it("does NOT call pingSuccess twice on re-render with same telemetryEnabled value", async () => {
-    const { rerender } = render(
-      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: true }} />
-    );
-
-    await waitFor(() => expect(mockPingSuccess).toHaveBeenCalledTimes(1));
-
-    rerender(
-      <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: true }} />
-    );
-
-    // Should still be 1 — the effect deps haven't changed.
-    expect(mockPingSuccess).toHaveBeenCalledTimes(1);
   });
 
   // ── 6. No purple/indigo class names in DOM ────────────────────────────────

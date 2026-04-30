@@ -1,16 +1,17 @@
 // wizard-router.ts — US-006
 // Wizard navigation state machine.
 //
-// Screen flow (web-onboarding handoff):
-//   01 Welcome → 02 Cognito Auth → 03 Prerequisites → 04 Install (dir) →
-//   05 Templates → 06 Workspace (git init) → 07 Personalize →
+// Screen flow (install-first, login-after — 2026-04-29):
+//   01 Welcome → 02 Install (dir) → 03 Templates → 04 Cognito Auth →
+//   05 Prerequisites → 06 Workspace (git init) → 07 Personalize →
 //   08 Verify (indexing) → 09 HQ Sync (menubar) → 10 Done
 //
-// Step 03 (company-detect) and old Step 08 (S3 sync) removed: company
-// resolution happens in Personalize (via listUserCompanies), and the
-// HQ-Sync menu bar app owns continuous S3 reconciliation post-install.
-// Screen 05-github-walkthrough also removed (GitHub auth happens in web
-// onboarding). All three files kept only as needed; unused ones deleted.
+// Files land in the chosen HQ folder before the user logs in, so an
+// install-manifest exists on disk even if the user bails partway. Agents
+// reading the HQ tree can then self-heal partial installs.
+//
+// Old step ordering (login first) is preserved in git history; AUTH_GATED_STEPS
+// shifted from [3] to [5] to track the new Cognito position.
 
 import type { WizardState } from "./wizard-state";
 
@@ -22,10 +23,10 @@ export interface WizardStep {
 
 export const WIZARD_STEPS: WizardStep[] = [
   { index: 1, id: "welcome", label: "Welcome" },
-  { index: 2, id: "cognito-auth", label: "Sign In" },
-  { index: 3, id: "prerequisites", label: "Prerequisites" },
-  { index: 4, id: "install", label: "Install" },
-  { index: 5, id: "templates", label: "Templates" },
+  { index: 2, id: "install", label: "Install" },
+  { index: 3, id: "templates", label: "Templates" },
+  { index: 4, id: "cognito-auth", label: "Sign In" },
+  { index: 5, id: "prerequisites", label: "Prerequisites" },
   { index: 6, id: "workspace", label: "Workspace" },
   { index: 7, id: "personalize", label: "Personalize" },
   { index: 8, id: "verify", label: "Verify" },
@@ -34,10 +35,10 @@ export const WIZARD_STEPS: WizardStep[] = [
 ];
 
 /** Step indices (1-based) where back navigation is blocked.
- *  Step 3 (Prerequisites) is the first screen past Cognito auth — crossing it
+ *  Step 5 (Prerequisites) is the first screen past Cognito auth — crossing it
  *  backwards would drop the user behind the auth gate and surface a re-login
  *  prompt they've already handled. */
-export const AUTH_GATED_STEPS: number[] = [3];
+export const AUTH_GATED_STEPS: number[] = [5];
 
 /**
  * Per-step "is the user allowed to advance" check.
@@ -52,8 +53,8 @@ export function getStepValidity(
   state: Readonly<WizardState>,
 ): boolean {
   switch (step) {
-    // Step 4 (DirectoryPicker): must have picked an install path.
-    case 4:
+    // Step 2 (DirectoryPicker): must have picked an install path.
+    case 2:
       return state.installPath !== null && state.installPath.length > 0;
     // Step 7 (Personalize): Screen's Submit runs personalize() which writes
     // profile.md, voice-style.md, the starter project, and scaffolds

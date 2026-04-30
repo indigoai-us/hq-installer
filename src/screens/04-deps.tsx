@@ -15,6 +15,45 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { listen } from "@tauri-apps/api/event";
+import { getWizardState } from "@/lib/wizard-state";
+import {
+  getInstallerVersion,
+  recordDependencies,
+  recordStepOk,
+} from "@/lib/install-manifest";
+import { pingFailure } from "@/lib/telemetry";
+
+/** Snapshot the current `deps` map into the install manifest. Best-effort —
+ *  manifest writes never block the wizard. */
+async function snapshotDepsToManifest(
+  deps: Record<string, { status: string; errorMsg: string | null }>,
+): Promise<void> {
+  const installPath = getWizardState().installPath;
+  if (!installPath) return;
+  try {
+    const installerVersion = await getInstallerVersion();
+    const snapshot: Record<
+      string,
+      { status: "pending" | "running" | "ok" | "failed" | "skipped"; error?: string }
+    > = {};
+    for (const [id, tool] of Object.entries(deps)) {
+      const status: "pending" | "running" | "ok" | "failed" | "skipped" =
+        tool.status === "installed"
+          ? "ok"
+          : tool.status === "installing"
+            ? "running"
+            : tool.status === "error"
+              ? "failed"
+              : tool.status === "missing"
+                ? "skipped"
+                : "pending";
+      snapshot[id] = { status, error: tool.errorMsg ?? undefined };
+    }
+    await recordDependencies(installPath, installerVersion, snapshot);
+  } catch {
+    /* non-fatal */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Dep definitions
@@ -167,7 +206,15 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
       );
     }
 
-    checkAll();
+    checkAll().then(() => {
+      // Snapshot the freshly-detected dep state once so the manifest reflects
+      // what the user saw on entry to this screen. setDeps batches updates,
+      // so we read the latest snapshot back via setDeps' callback.
+      setDeps((latest) => {
+        void snapshotDepsToManifest(latest);
+        return latest;
+      });
+    });
 
     let unlistenInstall: (() => void) | undefined;
     const installListenerPromise = listen(
@@ -216,8 +263,23 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
             ? err.message
             : "Installation failed";
       updateTool(dep.id, { status: "error", errorMsg });
+      // Required-dep failures are Slack-worthy (block the install). Optional
+      // deps are noisy (the user can install them later) — we record to the
+      // manifest but don't ping.
+      if (!dep.optional) {
+        void pingFailure({
+          stage: `deps:${dep.id}`,
+          message: errorMsg,
+          detail: { dep: dep.id, optional: false },
+        });
+      }
     } finally {
       activeToolRef.current = null;
+      // Snapshot post-install regardless of outcome so the manifest is fresh.
+      setDeps((latest) => {
+        void snapshotDepsToManifest(latest);
+        return latest;
+      });
     }
   }
 
@@ -281,7 +343,18 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
       {allRequiredInstalled && (
         <button
           type="button"
-          onClick={onNext}
+          onClick={async () => {
+            const installPath = getWizardState().installPath;
+            if (installPath) {
+              try {
+                const installerVersion = await getInstallerVersion();
+                await recordStepOk(installPath, installerVersion, "prerequisites");
+              } catch {
+                /* non-fatal */
+              }
+            }
+            onNext?.();
+          }}
           className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors animate-in fade-in-0 zoom-in-95 duration-500"
         >
           Continue

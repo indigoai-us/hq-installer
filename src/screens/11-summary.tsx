@@ -1,9 +1,14 @@
-// 11-summary.tsx — US-018
-// Final summary screen — shows what was installed and launches Claude Code.
+// 11-summary.tsx — US-018 (revised 2026-04-29)
+// Final summary screen — Claude Desktop is the recommended way to open HQ;
+// Claude Code (Terminal) is offered as a secondary text link.
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { pingSuccess } from "../lib/telemetry";
+import {
+  getInstallerVersion,
+  recordInstallComplete,
+} from "../lib/install-manifest";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -26,35 +31,70 @@ export interface SummaryProps {
 
 export function Summary({ wizardState, onLaunch }: SummaryProps) {
   const [launchError, setLaunchError] = useState<string | null>(null);
-  const [launching, setLaunching] = useState(false);
+  const [launchingDesktop, setLaunchingDesktop] = useState(false);
+  const [launchingCode, setLaunchingCode] = useState(false);
+  const [pathCopied, setPathCopied] = useState(false);
 
-  // ── Telemetry ping on mount ─────────────────────────────────────────────
+  // ── Telemetry + manifest finalize on mount ──────────────────────────────
   useEffect(() => {
     if (wizardState.telemetryEnabled) {
       pingSuccess().catch(() => {});
     }
-  }, [wizardState.telemetryEnabled]);
-
-  // ── Launch handler ──────────────────────────────────────────────────────
-  // Previously errors here were silently swallowed with .catch(() => {}),
-  // so when the backing Rust command didn't exist the button appeared to do
-  // nothing. Now we surface the error and still invoke onLaunch so the
-  // parent wizard can respond (e.g. close the installer) either way.
-  async function handleLaunch() {
-    setLaunchError(null);
+    // Mark the install complete in the manifest so agents reading the HQ tree
+    // can distinguish a clean install from a partial one.
     if (wizardState.installPath) {
-      setLaunching(true);
-      try {
-        await invoke("launch_claude_code", { path: wizardState.installPath });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setLaunchError(`Couldn't open Terminal: ${msg}`);
-        setLaunching(false);
-        return;
-      }
-      setLaunching(false);
+      (async () => {
+        try {
+          const v = await getInstallerVersion();
+          await recordInstallComplete(wizardState.installPath as string, v);
+        } catch {
+          /* non-fatal */
+        }
+      })();
+    }
+  }, [wizardState.telemetryEnabled, wizardState.installPath]);
+
+  // ── Handlers ────────────────────────────────────────────────────────────
+
+  async function handleLaunchDesktop() {
+    setLaunchError(null);
+    setLaunchingDesktop(true);
+    try {
+      await invoke("launch_claude_desktop");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLaunchError(`Couldn't open Claude Desktop: ${msg}`);
+    } finally {
+      setLaunchingDesktop(false);
     }
     onLaunch?.();
+  }
+
+  async function handleLaunchClaudeCode() {
+    if (!wizardState.installPath) return;
+    setLaunchError(null);
+    setLaunchingCode(true);
+    try {
+      await invoke("launch_claude_code", { path: wizardState.installPath });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLaunchError(`Couldn't open Terminal: ${msg}`);
+    } finally {
+      setLaunchingCode(false);
+    }
+    onLaunch?.();
+  }
+
+  async function handleCopyPath() {
+    if (!wizardState.installPath) return;
+    try {
+      // Web Clipboard API works inside Tauri's webview without a plugin.
+      await navigator.clipboard.writeText(wizardState.installPath);
+      setPathCopied(true);
+      window.setTimeout(() => setPathCopied(false), 1500);
+    } catch {
+      /* clipboard write failures are silent — the path is still on screen */
+    }
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -80,10 +120,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             mono
           />
           {wizardState.isPersonal && !wizardState.team ? (
-            <SummaryRow
-              label="Mode"
-              value="Personal HQ (no company)"
-            />
+            <SummaryRow label="Mode" value="Personal HQ (no company)" />
           ) : (
             <>
               <SummaryRow
@@ -97,11 +134,46 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
               />
             </>
           )}
-          <SummaryRow
-            label="Email"
-            value={wizardState.gitEmail ?? "—"}
-          />
+          <SummaryRow label="Email" value={wizardState.gitEmail ?? "—"} />
         </div>
+      </div>
+
+      {/* Open in Claude Desktop — primary CTA */}
+      <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-4">
+        <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
+          Open in Claude Desktop
+        </p>
+        <ol className="flex flex-col gap-2 text-sm text-zinc-300 list-decimal list-inside">
+          <li>Launch Claude Desktop.</li>
+          <li>
+            Open <span className="font-medium">Settings → Connectors</span> and
+            add the HQ folder.
+          </li>
+          <li>
+            When asked for the path, paste:
+            <div className="mt-2 flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
+              <span className="text-xs font-mono text-zinc-200 break-all flex-1">
+                {wizardState.installPath ?? "—"}
+              </span>
+              <button
+                type="button"
+                onClick={handleCopyPath}
+                disabled={!wizardState.installPath}
+                className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors disabled:opacity-40"
+              >
+                {pathCopied ? "Copied" : "Copy"}
+              </button>
+            </div>
+          </li>
+        </ol>
+        <button
+          type="button"
+          onClick={handleLaunchDesktop}
+          disabled={launchingDesktop}
+          className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {launchingDesktop ? "Opening…" : "Launch Claude Desktop"}
+        </button>
       </div>
 
       {/* Sync next steps */}
@@ -115,18 +187,20 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         </p>
       </div>
 
-      {/* Launch button */}
-      <div className="flex flex-col gap-3">
-        <div className="flex gap-3">
+      {/* Secondary: Claude Code in Terminal — text link */}
+      <div className="flex flex-col gap-2">
+        <p className="text-xs text-zinc-500">
+          Prefer the terminal?{" "}
           <button
             type="button"
-            onClick={handleLaunch}
-            disabled={launching}
-            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={handleLaunchClaudeCode}
+            disabled={launchingCode || !wizardState.installPath}
+            className="underline underline-offset-2 text-zinc-300 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {launching ? "Opening…" : "Open HQ in Claude Code"}
+            {launchingCode ? "Opening…" : "Open Claude Code in Terminal"}
           </button>
-        </div>
+        </p>
+
         {launchError && (
           <div
             role="alert"

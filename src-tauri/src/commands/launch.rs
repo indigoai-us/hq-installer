@@ -2,6 +2,8 @@
 //!
 //! `launch_claude_code` — open a Terminal window at the HQ install path and
 //! auto-run `claude` so the user lands in Claude Code pointed at their new HQ.
+//! `launch_claude_desktop` — open the Claude Desktop macOS app so the user
+//! can connect their HQ folder via the app's "Connect Folder" UI.
 
 use std::process::Command;
 
@@ -46,6 +48,31 @@ end tell"#,
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
             "osascript failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Launch the Claude Desktop macOS app via `open -a Claude`.
+///
+/// We can't deep-link into a specific folder — Claude Desktop has no
+/// documented URL scheme for "Connect Folder" — so the frontend pairs this
+/// command with a copy-able install path the user pastes into the app.
+#[tauri::command]
+pub fn launch_claude_desktop() -> Result<(), String> {
+    let output = Command::new("open")
+        .arg("-a")
+        .arg("Claude")
+        .output()
+        .map_err(|e| format!("Failed to spawn `open`: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "open -a Claude failed (exit {}): {}",
             output.status.code().unwrap_or(-1),
             stderr.trim()
         ));
