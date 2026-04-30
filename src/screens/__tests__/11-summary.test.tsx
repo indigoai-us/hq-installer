@@ -15,7 +15,12 @@ import { Summary } from "../11-summary.js";
 // ---------------------------------------------------------------------------
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn().mockResolvedValue(undefined),
+  invoke: vi.fn(),
+}));
+
+// `open` from the shell plugin opens external URLs (download CTA).
+vi.mock("@tauri-apps/plugin-shell", () => ({
+  open: vi.fn().mockResolvedValue(undefined),
 }));
 
 // fs + app are touched by install-manifest. Stub so the manifest finalize
@@ -36,9 +41,23 @@ vi.mock("../../lib/telemetry.js", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { pingSuccess } from "../../lib/telemetry.js";
 const mockInvoke = vi.mocked(invoke);
+const mockOpenExternal = vi.mocked(openExternal);
 const mockPingSuccess = vi.mocked(pingSuccess);
+
+/** Configure the invoke mock with a command-aware default.
+ *  Pass `claudeInstalled=true|false` to control the desktop-probe branch. */
+function setupInvokeMock({
+  claudeInstalled = true,
+}: { claudeInstalled?: boolean } = {}): void {
+  mockInvoke.mockImplementation(async (command: string): Promise<unknown> => {
+    if (command === "claude_desktop_installed") return claudeInstalled;
+    // launch_claude_desktop / launch_claude_code resolve undefined.
+    return undefined;
+  });
+}
 
 // Fixture
 const WIZARD_STATE_FIXTURE = {
@@ -51,6 +70,9 @@ const WIZARD_STATE_FIXTURE = {
 describe("Summary screen (11-summary.tsx)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: Claude Desktop is installed. Tests covering the missing-app
+    // branch override via setupInvokeMock({ claudeInstalled: false }).
+    setupInvokeMock();
   });
 
   // ── 1. Tauri environment compatibility ────────────────────────────────────
@@ -118,18 +140,22 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(getAllByText("—").length).toBeGreaterThan(0);
   });
 
-  // ── 3. Claude Desktop CTA — primary path ──────────────────────────────────
+  // ── 3. Claude Desktop CTA — primary path (Desktop IS installed) ───────────
 
-  it("renders a 'Launch Claude Desktop' primary button", () => {
+  it("renders a 'Launch Claude Desktop' button when Claude is installed", async () => {
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
-    const btn = screen.queryByRole("button", { name: /launch claude desktop/i });
+    const btn = await screen.findByRole("button", {
+      name: /launch claude desktop/i,
+    });
     expect(btn).not.toBeNull();
   });
 
   it("clicking 'Launch Claude Desktop' calls invoke('launch_claude_desktop')", async () => {
     const user = userEvent.setup();
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
-    const btn = screen.getByRole("button", { name: /launch claude desktop/i });
+    const btn = await screen.findByRole("button", {
+      name: /launch claude desktop/i,
+    });
     await user.click(btn);
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("launch_claude_desktop");
@@ -141,6 +167,73 @@ describe("Summary screen (11-summary.tsx)", () => {
     const text = document.body.textContent ?? "";
     expect(text.toLowerCase()).toMatch(/open in claude desktop/);
     expect(text).toContain("/Users/testuser/HQ");
+  });
+
+  it("instructs the user to use Claude Code with the local filesystem (not Connectors)", async () => {
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    // Wait for the desktop-installed probe to settle so the CTA paints.
+    await screen.findByRole("button", { name: /launch claude desktop/i });
+    const text = (document.body.textContent ?? "").toLowerCase();
+    expect(text).toMatch(/claude code/);
+    expect(text).toMatch(/local filesystem/);
+    // Sanity: the prior wrong instruction (Connectors) is gone.
+    expect(text).not.toMatch(/connectors/);
+  });
+
+  // ── 3b. Claude Desktop CTA — Desktop NOT installed branch ────────────────
+
+  it("renders a 'Download Claude Desktop' CTA when Claude is missing", async () => {
+    setupInvokeMock({ claudeInstalled: false });
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /download claude desktop/i,
+    });
+    expect(btn).not.toBeNull();
+    // Launch button should NOT be shown in this branch.
+    expect(
+      screen.queryByRole("button", { name: /launch claude desktop/i }),
+    ).toBeNull();
+  });
+
+  it("clicking 'Download Claude Desktop' opens the Anthropic quickstart page externally", async () => {
+    setupInvokeMock({ claudeInstalled: false });
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /download claude desktop/i,
+    });
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockOpenExternal).toHaveBeenCalledWith(
+        "https://code.claude.com/docs/en/desktop-quickstart",
+      );
+    });
+  });
+
+  it("renders a 'Claude Desktop quickstart' link even when the app IS installed", async () => {
+    // Discreet help link beneath the Launch button — surfaces the same
+    // quickstart URL so users sharing this machine still see "what next".
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    // Wait for installed-branch CTA so the link below it has rendered.
+    await screen.findByRole("button", { name: /launch claude desktop/i });
+    const link = screen.queryByRole("button", {
+      name: /claude desktop quickstart/i,
+    });
+    expect(link).not.toBeNull();
+  });
+
+  it("falls back to download CTA if claude_desktop_installed probe throws", async () => {
+    mockInvoke.mockImplementation(async (command: string): Promise<unknown> => {
+      if (command === "claude_desktop_installed") {
+        throw new Error("rust panic");
+      }
+      return undefined;
+    });
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /download claude desktop/i,
+    });
+    expect(btn).not.toBeNull();
   });
 
   // ── 4. Claude Code (Terminal) — secondary text link ───────────────────────

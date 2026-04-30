@@ -66,9 +66,18 @@ type Phase =
   | "idle"
   | "fetching"
   | "installing-packs"
+  | "installing-node"
+  | "retrying-packs"
   | "done"
   | "done-with-warnings"
   | "error";
+
+/** Spawn-error pattern when the wizard's npx call fails because Node is
+ *  not yet installed. Surfaces in `pack.errorMsg` as the literal string
+ *  emitted by `commands::process::run_process_impl`:
+ *    "command not found on PATH: npx"
+ *  Also matches `node` in case future npm tooling probes node directly. */
+const NODE_MISSING_PATTERN = /command not found on PATH: (npx|node)/i;
 
 type PackStatus = "pending" | "running" | "done" | "error";
 
@@ -421,6 +430,61 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     startRun();
   }
 
+  /** Re-run the pack install for every pack currently in `error` state.
+   *  Used by both `handleInstallNodeAndRetry` (after Node lands) and
+   *  `handleRetryFailedPacks` (Node already present, transient failure). */
+  async function retryFailedPacks(): Promise<"done" | "done-with-warnings"> {
+    setPhase("retrying-packs");
+    let anyFailed = false;
+    // Snapshot the current pack list so we don't iterate against mid-update
+    // state. `installOnePack` calls `patchPack` which uses functional setState,
+    // so the underlying state is safe; we just need a stable iteration order.
+    const snapshot = packs;
+    for (let i = 0; i < HQ_PACKAGES.length; i++) {
+      if (snapshot[i].status === "error") {
+        // Reset so the row re-shows "Installing…" rather than "Skipped".
+        patchPack(i, { status: "pending", errorMsg: null });
+        const ok = await installOnePack(i, HQ_PACKAGES[i]);
+        if (!ok) anyFailed = true;
+      }
+    }
+    const outcome: "done" | "done-with-warnings" = anyFailed
+      ? "done-with-warnings"
+      : "done";
+    setPhase(outcome);
+    await flushDiskLog();
+    return outcome;
+  }
+
+  /** Click handler for the "Install Node + Retry" button. Runs Node's
+   *  managed-toolchain install, then re-runs every failed pack. */
+  async function handleInstallNodeAndRetry() {
+    setPhase("installing-node");
+    appendLog("→ Installing Node (managed local install — no admin)");
+    try {
+      const result = await invoke<string>("install_node");
+      appendLog(`✓ ${result}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendLog(`✗ Node install failed: ${msg}`);
+      // Drop back to the previous warning state so the user can try again
+      // or skip.
+      setPhase("done-with-warnings");
+      void pingFailure({
+        stage: "install-node-from-templates",
+        message: msg,
+      });
+      await flushDiskLog();
+      return;
+    }
+    await retryFailedPacks();
+  }
+
+  /** Plain "Retry" handler — re-runs failed packs without touching Node. */
+  async function handleRetryFailedPacks() {
+    await retryFailedPacks();
+  }
+
   // -------------------------------------------------------------------------
   // Derived
   // -------------------------------------------------------------------------
@@ -431,6 +495,15 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
   const templateDone = phase !== "idle" && phase !== "fetching" && phase !== "error";
   const finalDone = phase === "done" || phase === "done-with-warnings";
   const failedPacks = packs.filter((p) => p.status === "error");
+  /** True iff at least one failed pack failed because Node/npx wasn't on
+   *  PATH when the wizard tried to run npx. Drives the "Install Node + Retry"
+   *  CTA — fixing the only failure mode that's deterministically actionable
+   *  inline. */
+  const nodeMissingDetected = failedPacks.some(
+    (p) => p.errorMsg !== null && NODE_MISSING_PATTERN.test(p.errorMsg),
+  );
+  const recoveryInProgress =
+    phase === "installing-node" || phase === "retrying-packs";
 
   // -------------------------------------------------------------------------
   // Render
@@ -494,7 +567,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       </div>
 
       {/* Pack install phase */}
-      {(phase === "installing-packs" || finalDone) && (
+      {(phase === "installing-packs" || finalDone || recoveryInProgress) && (
         <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
           <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
             HQ packages
@@ -526,14 +599,53 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
             </div>
           ))}
           {phase === "done-with-warnings" && failedPacks.length > 0 && (
-            <p className="text-xs text-amber-400 mt-1">
-              {failedPacks.length} pack
-              {failedPacks.length === 1 ? "" : "s"} failed — you can continue and
-              retry later with{" "}
-              <span className="font-mono">hq install &lt;pkg&gt;</span>. Log:{" "}
-              <span className="font-mono break-all">
-                {PACK_LOG_DIR}/{PACK_LOG_FILE}
-              </span>
+            <div className="flex flex-col gap-2 mt-1">
+              <p className="text-xs text-amber-400">
+                {failedPacks.length} pack
+                {failedPacks.length === 1 ? "" : "s"} failed
+                {nodeMissingDetected
+                  ? " — Node isn't installed yet. We can install Node and retry."
+                  : " — you can retry now or skip and run "}
+                {!nodeMissingDetected && (
+                  <>
+                    <span className="font-mono">hq install &lt;pkg&gt;</span>{" "}
+                    later.
+                  </>
+                )}{" "}
+                Log:{" "}
+                <span className="font-mono break-all">
+                  {PACK_LOG_DIR}/{PACK_LOG_FILE}
+                </span>
+              </p>
+              <div className="flex gap-2 mt-1">
+                {nodeMissingDetected ? (
+                  <button
+                    type="button"
+                    onClick={handleInstallNodeAndRetry}
+                    className="text-xs px-3 py-1.5 rounded-full font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+                  >
+                    Install Node + Retry
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleRetryFailedPacks}
+                    className="text-xs px-3 py-1.5 rounded-full font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+                  >
+                    Retry
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {phase === "installing-node" && (
+            <p className="text-xs text-zinc-400 mt-1 hq-text-shimmer">
+              Installing Node (managed local install — no admin)…
+            </p>
+          )}
+          {phase === "retrying-packs" && (
+            <p className="text-xs text-zinc-400 mt-1 hq-text-shimmer">
+              Retrying pack installs…
             </p>
           )}
         </div>

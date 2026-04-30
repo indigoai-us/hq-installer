@@ -56,11 +56,36 @@ end tell"#,
     Ok(())
 }
 
+/// Returns true when `Claude.app` is present on disk.
+///
+/// Checks the standard `/Applications` location plus `~/Applications` (where
+/// browsers and per-user installs sometimes land the app). The Summary screen
+/// uses this to branch its CTA between "Launch Claude Desktop" and a download
+/// link when Claude isn't installed yet — avoids the jarring `open -a Claude`
+/// "Unable to find application" error mid-flow.
+#[tauri::command]
+pub fn claude_desktop_installed() -> bool {
+    let system_path = std::path::PathBuf::from("/Applications/Claude.app");
+    if system_path.exists() {
+        return true;
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let user_path = std::path::PathBuf::from(home).join("Applications/Claude.app");
+        if user_path.exists() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Launch the Claude Desktop macOS app via `open -a Claude`.
 ///
 /// We can't deep-link into a specific folder — Claude Desktop has no
 /// documented URL scheme for "Connect Folder" — so the frontend pairs this
-/// command with a copy-able install path the user pastes into the app.
+/// command with a copy-able install path the user picks in Claude Code's
+/// folder selector. Frontend is expected to gate this behind
+/// `claude_desktop_installed` so we don't surface the "Unable to find
+/// application" error path for users who don't have Claude installed yet.
 #[tauri::command]
 pub fn launch_claude_desktop() -> Result<(), String> {
     let output = Command::new("open")
