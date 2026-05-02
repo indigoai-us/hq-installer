@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { listen } from "@tauri-apps/api/event";
 import { exists } from "@tauri-apps/plugin-fs";
 import { getWizardState, setGitIdentity } from "@/lib/wizard-state";
@@ -381,7 +382,10 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
           </>
         )}
 
-        {allDone && (
+      </div>
+
+      {allDone && (
+        <WizardFooterSlot>
           <button
             type="button"
             onClick={onNext}
@@ -389,8 +393,8 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
           >
             Continue
           </button>
-        )}
-      </div>
+        </WizardFooterSlot>
+      )}
     </div>
   );
 }

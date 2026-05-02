@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { listen } from "@tauri-apps/api/event";
 
 // ---------------------------------------------------------------------------
@@ -311,40 +312,43 @@ export function InstallMenubarStep({ onNext }: InstallMenubarStepProps) {
         )}
       </div>
 
-      {/* Action buttons */}
-      <div className="flex items-center gap-3">
-        {/* Done → Continue */}
-        {isDone && (
+      {/* Inline error actions */}
+      {isError && (
+        <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={handleContinue}
-            disabled={continuing}
-            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={() => {
+              startInstall();
+            }}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
           >
-            {continuing ? "Launching…" : "Continue"}
+            Retry
           </button>
-        )}
+          <a
+            href="https://github.com/indigoai-us/hq-sync/releases/latest/download/HQ-Sync_universal.dmg"
+            target="_blank"
+            rel="noreferrer"
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-300 hover:bg-white/20 transition-colors"
+          >
+            Download manually
+          </a>
+        </div>
+      )}
 
-        {/* Error → Retry + manual download + Skip */}
-        {isError && (
-          <>
+      {/* Footer CTA — done or skip */}
+      {(isDone || isError) && (
+        <WizardFooterSlot>
+          {isDone && (
             <button
               type="button"
-              onClick={() => {
-                startInstall();
-              }}
-              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+              onClick={handleContinue}
+              disabled={continuing}
+              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Retry
+              {continuing ? "Launching…" : "Continue"}
             </button>
-            <a
-              href="https://github.com/indigoai-us/hq-sync/releases/latest/download/HQ-Sync_universal.dmg"
-              target="_blank"
-              rel="noreferrer"
-              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-300 hover:bg-white/20 transition-colors"
-            >
-              Download manually
-            </a>
+          )}
+          {isError && (
             <button
               type="button"
               onClick={onNext}
@@ -352,9 +356,9 @@ export function InstallMenubarStep({ onNext }: InstallMenubarStepProps) {
             >
               Skip
             </button>
-          </>
-        )}
-      </div>
+          )}
+        </WizardFooterSlot>
+      )}
     </div>
   );
 }

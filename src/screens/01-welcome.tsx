@@ -2,6 +2,7 @@
 // Welcome screen — product identity, wizard overview, telemetry opt-in
 
 import React, { useState } from "react";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 
 interface WelcomeScreenProps {
   onNext?: () => void;
@@ -70,8 +71,7 @@ export function Welcome({
         </span>
       </label>
 
-      {/* Primary action */}
-      <div>
+      <WizardFooterSlot>
         <button
           type="button"
           onClick={onNext}
@@ -79,7 +79,7 @@ export function Welcome({
         >
           Get Started
         </button>
-      </div>
+      </WizardFooterSlot>
     </div>
   );
 }

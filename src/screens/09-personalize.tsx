@@ -14,6 +14,7 @@
 //  - Keeps the manual "add companies" list for brand-new local companies.
 
 import { useEffect, useState } from "react";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { personalize } from "@/lib/personalize-writer";
 import type { CompanySeed } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
@@ -352,8 +353,13 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
         </div>
       )}
 
-      {/* Submit */}
-      <div className="flex items-center gap-3">
+      {submitting && submitStage && (
+        <span className="text-xs text-zinc-400 hq-text-shimmer">
+          {submitStage}
+        </span>
+      )}
+
+      <WizardFooterSlot>
         <button
           type="button"
           onClick={handleSubmit}
@@ -362,12 +368,7 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
         >
           {submitting ? "Setting up…" : "Continue"}
         </button>
-        {submitting && submitStage && (
-          <span className="text-xs text-zinc-400 hq-text-shimmer">
-            {submitStage}
-          </span>
-        )}
-      </div>
+      </WizardFooterSlot>
     </div>
   );
 }
