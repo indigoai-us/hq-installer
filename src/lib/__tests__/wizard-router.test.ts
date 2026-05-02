@@ -59,8 +59,8 @@ describe("WIZARD_STEPS constant", () => {
 });
 
 describe("AUTH_GATED_STEPS constant", () => {
-  it("includes step index 5 (Prerequisites — first post-auth screen)", () => {
-    expect(AUTH_GATED_STEPS).toContain(5);
+  it("includes step index 6 (Workspace — first post-auth screen)", () => {
+    expect(AUTH_GATED_STEPS).toContain(6);
   });
 });
 
@@ -145,31 +145,31 @@ describe("createWizardRouter", () => {
       expect(router.canGoBack).toBe(true);
     });
 
-    it("canGoBack is true when at step 6 (post-auth, but not on the auth-gated step itself)", () => {
+    it("canGoBack is true when at step 7 (post-auth, but not on the auth-gated step itself)", () => {
       const router = createWizardRouter();
-      router.goTo(6);
+      router.goTo(7);
       expect(router.canGoBack).toBe(true);
     });
   });
 
   // -------------------------------------------------------------------------
-  describe("auth-gated step 5 — back navigation blocked", () => {
-    it("back() from step 5 is a no-op (blocked by auth gate)", () => {
+  describe("auth-gated step 6 — back navigation blocked", () => {
+    it("back() from step 6 is a no-op (blocked by auth gate)", () => {
       const router = createWizardRouter();
-      router.goTo(5);
+      router.goTo(6);
       router.back(); // should be blocked
-      expect(router.currentStep).toBe(5);
+      expect(router.currentStep).toBe(6);
     });
 
-    it("canGoBack is false when at step 5 (auth-gated)", () => {
+    it("canGoBack is false when at step 6 (auth-gated)", () => {
       const router = createWizardRouter();
-      router.goTo(5);
+      router.goTo(6);
       expect(router.canGoBack).toBe(false);
     });
 
-    it("canGoNext is true at step 5 (can still proceed forward from auth step)", () => {
+    it("canGoNext is true at step 6 (can still proceed forward from auth step)", () => {
       const router = createWizardRouter();
-      router.goTo(5);
+      router.goTo(6);
       expect(router.canGoNext).toBe(true);
     });
   });
@@ -230,11 +230,11 @@ describe("createWizardRouter", () => {
       expect(router.currentStep).toBe(10);
     });
 
-    it("given step 5 is auth-gated, clicking back from step 5 leaves currentStep at 5", () => {
+    it("given step 6 is auth-gated, clicking back from step 6 leaves currentStep at 6", () => {
       const router = createWizardRouter();
-      router.goTo(5);
+      router.goTo(6);
       router.back(); // blocked
-      expect(router.currentStep).toBe(5);
+      expect(router.currentStep).toBe(6);
     });
   });
 
@@ -267,21 +267,22 @@ describe("createWizardRouter", () => {
       expect(router.canNavigateTo(7)).toBe(true);
     });
 
-    it("blocks backward jumps that would cross AUTH_GATED_STEPS=[5]", () => {
+    it("blocks backward jumps that would cross AUTH_GATED_STEPS=[6]", () => {
       const router = createWizardRouter();
       router.goTo(8);
-      // step 5 is auth-gated → can't return to steps 1-4
+      // step 6 is auth-gated → can't return to steps 1-5
       expect(router.canNavigateTo(1)).toBe(false);
       expect(router.canNavigateTo(2)).toBe(false);
       expect(router.canNavigateTo(3)).toBe(false);
       expect(router.canNavigateTo(4)).toBe(false);
-      // step 5 itself is reachable (the gate is on leaving it backwards)
-      expect(router.canNavigateTo(5)).toBe(true);
+      expect(router.canNavigateTo(5)).toBe(false);
+      // step 6 itself is reachable (the gate is on leaving it backwards)
+      expect(router.canNavigateTo(6)).toBe(true);
     });
 
     it("AUTH_GATED_STEPS const is honored — modifying gate set affects rule", () => {
       // Sanity: confirm the test fixture matches what the rule reads.
-      expect(AUTH_GATED_STEPS).toContain(5);
+      expect(AUTH_GATED_STEPS).toContain(6);
     });
   });
 });

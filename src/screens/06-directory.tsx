@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { setInstallPath } from "@/lib/wizard-state";
 import {
   getInstallerVersion,
@@ -270,14 +271,16 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
       </div>
 
       {parentPath && !isHq && (
-        <button
-          type="button"
-          onClick={handleCreateAndContinue}
-          disabled={working || !folderName.trim()}
-          className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {working ? "Creating…" : "Create & continue"}
-        </button>
+        <WizardFooterSlot>
+          <button
+            type="button"
+            onClick={handleCreateAndContinue}
+            disabled={working || !folderName.trim()}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {working ? "Creating…" : "Create & continue"}
+          </button>
+        </WizardFooterSlot>
       )}
     </div>
   );

@@ -80,9 +80,9 @@ function App() {
   const wizardState = getWizardState();
   const { currentStep } = router;
 
-  // Screen flow (install-first, login-after — 2026-04-29):
-  //   1 Welcome → 2 Install (dir) → 3 Templates → 4 Cognito Auth →
-  //   5 Prerequisites → 6 Workspace (git init) → 7 Personalize →
+  // Screen flow (install-first, prereqs-then-login — 2026-05-02):
+  //   1 Welcome → 2 Install (dir) → 3 Templates → 4 Prerequisites →
+  //   5 Cognito Auth → 6 Workspace (git init) → 7 Personalize →
   //   8 Verify (indexing) → 9 HQ Sync (menubar) → 10 Done
   //
   // Files land before login so a partial install still leaves a manifest on
@@ -110,9 +110,9 @@ function App() {
           />
         );
       case 4:
-        return <CognitoAuth onNext={handleNext} />;
-      case 5:
         return <DepsInstall onNext={handleNext} />;
+      case 5:
+        return <CognitoAuth onNext={handleNext} />;
       case 6:
         return (
           <GitInit

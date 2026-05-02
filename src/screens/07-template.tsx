@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { listen } from "@tauri-apps/api/event";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
 import {
@@ -668,9 +669,31 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         <p className="text-xs text-red-400">{errorMsg}</p>
       )}
 
-      {/* Action buttons */}
-      <div className="flex gap-3">
-        {finalDone && (
+      {/* Inline error actions — these stay in-content since they're contextual */}
+      {phase === "error" && (
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const log = document.querySelector("[data-log-panel]");
+              log?.scrollIntoView({ behavior: "smooth" });
+            }}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-300 hover:bg-white/20 transition-colors"
+          >
+            View log
+          </button>
+        </div>
+      )}
+
+      {finalDone && (
+        <WizardFooterSlot>
           <button
             type="button"
             onClick={onNext}
@@ -678,30 +701,8 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
           >
             Continue
           </button>
-        )}
-
-        {phase === "error" && (
-          <>
-            <button
-              type="button"
-              onClick={handleRetry}
-              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const log = document.querySelector("[data-log-panel]");
-                log?.scrollIntoView({ behavior: "smooth" });
-              }}
-              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-300 hover:bg-white/20 transition-colors"
-            >
-              View log
-            </button>
-          </>
-        )}
-      </div>
+        </WizardFooterSlot>
+      )}
     </div>
   );
 }

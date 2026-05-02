@@ -13,6 +13,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { open } from "@tauri-apps/plugin-shell";
 import { listen } from "@tauri-apps/api/event";
 import { getWizardState } from "@/lib/wizard-state";
@@ -341,24 +342,26 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
       </div>
 
       {allRequiredInstalled && (
-        <button
-          type="button"
-          onClick={async () => {
-            const installPath = getWizardState().installPath;
-            if (installPath) {
-              try {
-                const installerVersion = await getInstallerVersion();
-                await recordStepOk(installPath, installerVersion, "prerequisites");
-              } catch {
-                /* non-fatal */
+        <WizardFooterSlot>
+          <button
+            type="button"
+            onClick={async () => {
+              const installPath = getWizardState().installPath;
+              if (installPath) {
+                try {
+                  const installerVersion = await getInstallerVersion();
+                  await recordStepOk(installPath, installerVersion, "prerequisites");
+                } catch {
+                  /* non-fatal */
+                }
               }
-            }
-            onNext?.();
-          }}
-          className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors animate-in fade-in-0 zoom-in-95 duration-500"
-        >
-          Continue
-        </button>
+              onNext?.();
+            }}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors animate-in fade-in-0 zoom-in-95 duration-500"
+          >
+            Continue
+          </button>
+        </WizardFooterSlot>
       )}
     </div>
   );

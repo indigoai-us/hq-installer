@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { listen } from "@tauri-apps/api/event";
 import {
   writeTextFile,
@@ -401,7 +402,10 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
           </>
         )}
 
-        {canContinue && (
+      </div>
+
+      {canContinue && (
+        <WizardFooterSlot>
           <button
             type="button"
             onClick={onNext}
@@ -409,8 +413,8 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
           >
             Continue
           </button>
-        )}
-      </div>
+        </WizardFooterSlot>
+      )}
     </div>
   );
 }

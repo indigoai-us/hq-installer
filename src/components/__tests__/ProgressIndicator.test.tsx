@@ -11,14 +11,14 @@ import { ProgressIndicator } from "../ProgressIndicator.js";
 
 // Step labels are defined here as the source of truth for the test assertions.
 // The implementation must render labels that match these strings.
-// 2026-04-29 reorder: Install + Templates moved before Sign In so files land
-// before login (manifest visible on disk for partial-install self-heal).
+// 2026-05-02 reorder: Prerequisites moved before Sign In so the prereq install
+// (which writes to the local HQ folder) doesn't gate on auth tokens.
 const STEP_LABELS = [
   "Welcome",
   "Install",
   "Templates",
-  "Sign In",
   "Prerequisites",
+  "Sign In",
   "Workspace",
   "Personalize",
   "Verify",
@@ -137,15 +137,15 @@ describe("ProgressIndicator", () => {
       const onStepClick = vi.fn();
       render(
         <ProgressIndicator
-          currentStep={6}
-          maxReachedStep={6}
+          currentStep={7}
+          maxReachedStep={7}
           canNavigateTo={() => true}
           onStepClick={onStepClick}
         />,
       );
-      // Click "Sign In" (step 4 in the install-first order)
+      // Click "Sign In" (step 5 in the prereqs-then-login order)
       fireEvent.click(screen.getByRole("button", { name: /Sign In/i }));
-      expect(onStepClick).toHaveBeenCalledWith(4);
+      expect(onStepClick).toHaveBeenCalledWith(5);
     });
 
     it("respects canNavigateTo — blocked steps render as inert <div>, not <button>", () => {
@@ -153,15 +153,15 @@ describe("ProgressIndicator", () => {
       // Block step 1 explicitly
       render(
         <ProgressIndicator
-          currentStep={5}
-          maxReachedStep={5}
+          currentStep={6}
+          maxReachedStep={6}
           canNavigateTo={(s) => s !== 1}
           onStepClick={onStepClick}
         />,
       );
       // Step 1 should not be a button
       expect(screen.queryByRole("button", { name: /Welcome/i })).toBeNull();
-      // Step 2 should be a button
+      // Sign In (step 5) should be a button
       expect(screen.queryByRole("button", { name: /Sign In/i })).not.toBeNull();
     });
 

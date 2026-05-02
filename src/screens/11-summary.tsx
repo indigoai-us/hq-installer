@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { WizardFooterSlot } from "@/components/WizardFooter";
 import { pingSuccess } from "../lib/telemetry";
 import {
   getInstallerVersion,
@@ -205,53 +206,23 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           </li>
         </ol>
 
-        {/* Action — branches on whether Claude Desktop is on disk. */}
         {desktopInstalled === true && (
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={handleLaunchDesktop}
-              disabled={launchingDesktop}
-              className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {launchingDesktop ? "Opening…" : "Launch Claude Desktop"}
-            </button>
-            {/* Discreet quickstart link — surfaces the docs page even when
-                Claude Desktop is already installed, so users sharing the
-                machine (or this URL) always have a path to "what do I do
-                next?". */}
-            <p className="text-xs text-zinc-500">
-              Need help?{" "}
-              <button
-                type="button"
-                onClick={handleDownloadClaude}
-                className="underline underline-offset-2 text-zinc-400 hover:text-white transition-colors"
-              >
-                Claude Desktop quickstart
-              </button>
-            </p>
-          </div>
-        )}
-
-        {desktopInstalled === false && (
-          <div className="flex flex-col gap-2">
-            <p className="text-xs text-zinc-400">
-              Don't have Claude Desktop yet?
-            </p>
+          <p className="text-xs text-zinc-500">
+            Need help?{" "}
             <button
               type="button"
               onClick={handleDownloadClaude}
-              className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+              className="underline underline-offset-2 text-zinc-400 hover:text-white transition-colors"
             >
-              Download Claude Desktop
+              Claude Desktop quickstart
             </button>
-          </div>
+          </p>
         )}
 
-        {desktopInstalled === null && (
-          <div className="self-start px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-500">
-            Checking for Claude Desktop…
-          </div>
+        {desktopInstalled === false && (
+          <p className="text-xs text-zinc-400">
+            Don't have Claude Desktop yet? Download it below.
+          </p>
         )}
       </div>
 
@@ -289,6 +260,33 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           </div>
         )}
       </div>
+
+      <WizardFooterSlot>
+        {desktopInstalled === true && (
+          <button
+            type="button"
+            onClick={handleLaunchDesktop}
+            disabled={launchingDesktop}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {launchingDesktop ? "Opening…" : "Launch Claude Desktop"}
+          </button>
+        )}
+        {desktopInstalled === false && (
+          <button
+            type="button"
+            onClick={handleDownloadClaude}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+          >
+            Download Claude Desktop
+          </button>
+        )}
+        {desktopInstalled === null && (
+          <div className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-500">
+            Checking for Claude Desktop…
+          </div>
+        )}
+      </WizardFooterSlot>
     </div>
   );
 }
