@@ -90,18 +90,26 @@ function WizardShellInner({
             />
           </aside>
 
-          {/* Content area with pinned footer */}
-          <main className="flex-1 flex flex-col bg-zinc-900/40 overflow-hidden">
-            <div className="flex-1 overflow-auto p-8">
+          {/* Content area with overlay footer.
+              `relative` establishes the positioning context for the absolute
+              footer below. */}
+          <main className="flex-1 relative bg-zinc-900/40 overflow-hidden">
+            {/* Scroll container fills main; pb-24 reserves runway so the last
+                bit of content can scroll past the footer-overlay area into
+                view rather than being permanently hidden behind the footer. */}
+            <div className="absolute inset-0 overflow-auto p-8 pb-24">
               <div className="mx-auto w-full max-w-3xl">{children}</div>
             </div>
 
-            {/* Pinned footer — screens portal their CTA here via WizardFooterSlot.
-                Symmetric py-3 ensures the button always has equal breathing room
-                above and below regardless of its intrinsic height. */}
+            {/* Glass-overlay footer — absolutely positioned over the bottom of
+                the scroll container so backdrop-blur-xl actually has scrolling
+                content to blur (in flex-sibling form there's nothing behind
+                it, making the blur visually inert — verified via VM screenshot
+                in the prior iteration). Screens portal their CTA here via
+                WizardFooterSlot. */}
             <div
               ref={footerCallbackRef}
-              className="shrink-0 border-t border-white/10 bg-zinc-900/60 px-8 py-3 flex items-center justify-end gap-3 empty:hidden"
+              className="absolute bottom-0 left-0 right-0 bg-white/[0.05] backdrop-blur-xl px-8 py-5 flex items-center justify-end gap-3 empty:hidden"
             />
           </main>
         </div>
