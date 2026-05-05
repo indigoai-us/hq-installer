@@ -39,9 +39,6 @@ export function Welcome({
           Open-source AI dev team for Claude Code. 45 AI workers, 60+ skills,
           and an orchestrator that ships code autonomously.
         </p>
-        <p className="font-light text-zinc-400 text-sm">
-          Run <code className="font-mono text-zinc-200">npx create-hq</code> to get started
-        </p>
       </div>
 
       {/* Telemetry opt-in */}

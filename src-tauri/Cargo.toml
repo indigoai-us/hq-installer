@@ -1,6 +1,6 @@
 [package]
 name = "hq-installer"
-version = "0.3.1"
+version = "0.3.2"
 description = "HQ native macOS installer"
 authors = []
 edition = "2021"
@@ -50,4 +50,3 @@ opt-level = "s"
 panic = "unwind"
 strip = false
 split-debuginfo = "packed"
-
