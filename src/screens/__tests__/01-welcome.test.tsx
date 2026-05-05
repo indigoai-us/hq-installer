@@ -49,17 +49,16 @@ describe("Welcome screen (01-welcome.tsx)", () => {
       expect(container.textContent?.toLowerCase()).not.toContain("desktop app");
     });
 
-    it("surfaces the install command or core value proposition", () => {
+    it("surfaces the core value proposition without the CLI install command", () => {
       const { container } = render(<Welcome onNext={vi.fn()} />);
-      // Must include either the install command or the core value phrase
       const text = container.textContent ?? "";
-      const hasInstallCmd = text.includes("npx create-hq");
       const hasCoreValue =
         text.toLowerCase().includes("ai worker") ||
         text.toLowerCase().includes("workers") ||
         text.toLowerCase().includes("orchestrator") ||
         text.toLowerCase().includes("ships code");
-      expect(hasInstallCmd || hasCoreValue).toBe(true);
+      expect(text).not.toContain("npx create-hq");
+      expect(hasCoreValue).toBe(true);
     });
   });
 
