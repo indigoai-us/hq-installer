@@ -196,11 +196,10 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       patchPack(idx, { status: "error", errorMsg: msg });
       appendLog(`[spawn error] ${msg}`);
       void writePackStatus(pkg, "failed", msg);
-      void pingFailure({
-        stage: `pack-install:${pkg}`,
-        message: `spawn failed: ${msg}`,
-        detail: { pkg, kind: "spawn-error" },
-      });
+      // Spawn failures here are dominantly "npx not on PATH" — i.e. the user
+      // skipped or didn't complete the deps screen Node install. Recoverable
+      // in-wizard via the "Install Node + Retry" button. Failure is recorded
+      // in the manifest above; Sentry still captures unexpected exceptions.
       return false;
     }
 
@@ -396,17 +395,11 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         /* non-fatal */
       }
     }
-    if (packsOutcome === "done-with-warnings") {
-      // packsOutcome failures are recoverable — recorded per-pack above —
-      // but we still want a single rolled-up Slack ping so on-call sees
-      // the run as a whole.
-      void pingFailure({
-        stage: "template-fetch",
-        message: "one or more HQ packs failed during install",
-        version: installerVersion,
-        detail: { targetDir, kind: "pack-warnings" },
-      });
-    }
+    // Per-pack non-zero-exit failures still ping individually below (real
+    // pack bugs / registry issues). The previous rolled-up ping here was
+    // dominantly fired by the "no Node yet" cascade — every pack spawn
+    // errors at once — and added duplicate noise. Pack outcomes are
+    // recorded in the manifest for support debugging.
     runningRef.current = false;
     // flushDiskLog and installPacks close over state setters and refs that
     // don't change across renders — safe to omit from deps.
