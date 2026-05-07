@@ -22,7 +22,6 @@ import {
   recordDependencies,
   recordStepOk,
 } from "@/lib/install-manifest";
-import { pingFailure } from "@/lib/telemetry";
 
 /** Snapshot the current `deps` map into the install manifest. Best-effort —
  *  manifest writes never block the wizard. */
@@ -264,16 +263,12 @@ export function DepsInstall({ onNext }: DepsInstallProps) {
             ? err.message
             : "Installation failed";
       updateTool(dep.id, { status: "error", errorMsg });
-      // Required-dep failures are Slack-worthy (block the install). Optional
-      // deps are noisy (the user can install them later) — we record to the
-      // manifest but don't ping.
-      if (!dep.optional) {
-        void pingFailure({
-          stage: `deps:${dep.id}`,
-          message: errorMsg,
-          detail: { dep: dep.id, optional: false },
-        });
-      }
+      // Deps-screen failures are not Slack-worthy: the dominant cause is a
+      // user without Node yet (npm-backed installs can't run until Node is
+      // present), which is recoverable in the wizard and not a regression.
+      // Real regressions (auth failures, template fetch, pack install) still
+      // ping from their own screens. Failure is recorded in the manifest
+      // snapshot below for local debugging.
     } finally {
       activeToolRef.current = null;
       // Snapshot post-install regardless of outcome so the manifest is fresh.
