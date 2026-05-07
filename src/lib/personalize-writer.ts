@@ -1,5 +1,9 @@
 import Handlebars from "handlebars";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import {
+  ensureManifestEntries,
+  type ManifestEntrySeed,
+} from "./manifest-writer";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -208,6 +212,10 @@ export async function personalize(
   // Each company gets the standard HQ skeleton: knowledge/, settings/,
   // workers/, projects/ + a company.yaml capturing display name + website.
   // We dedupe by slug so duplicate names don't collide on disk.
+  // Each scaffolded company also gets a manifest entry — without that,
+  // hq-sync's reconciler can't find the folder via manifest-first lookup
+  // and the company stays orphaned from the workspaces list.
+  const manifestSeeds: ManifestEntrySeed[] = [];
   if (companies && companies.length > 0) {
     const seen = new Set<string>();
     for (const co of companies) {
@@ -240,6 +248,23 @@ export async function personalize(
         websiteLine +
         cloudLines;
       await writeTextFile(`${coBase}/company.yaml`, yaml);
+
+      manifestSeeds.push({
+        slug,
+        name: displayName,
+        cloudUid: co.cloud ? co.cloudCompanyUid : undefined,
+      });
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // 8. Update companies/manifest.yaml
+  // -----------------------------------------------------------------------
+  // Add an entry for every scaffolded company that doesn't already have
+  // one. Idempotent — re-running personalize never clobbers existing
+  // entries. Errors here surface to the caller (Personalize screen) so
+  // the user sees the failure rather than getting a silently broken HQ.
+  if (manifestSeeds.length > 0) {
+    await ensureManifestEntries(baseDir, manifestSeeds);
   }
 }
