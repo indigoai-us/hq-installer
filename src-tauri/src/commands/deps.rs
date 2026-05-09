@@ -1089,6 +1089,36 @@ pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
     .await
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// install_hq_cli
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Install the HQ CLI via `npm install -g @indigoai-us/hq-cli`.
+///
+/// Errors if npm is not available.
+#[tauri::command]
+pub async fn install_hq_cli(app: AppHandle) -> Result<String, String> {
+    let prefix = npm_global_prefix_arg(&app, "hq")?;
+    let npm = match which::which_in(
+        "npm",
+        Some(extended_search_path()),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            let msg = "npm is not installed. Install Node.js first.";
+            emit_preflight_line(&app, msg);
+            return Err(msg.to_string());
+        }
+    };
+    run_streaming(
+        &app,
+        npm.to_str().unwrap_or("npm"),
+        &["install", "-g", "--prefix", &prefix, "@indigoai-us/hq-cli"],
+    )
+    .await
+}
+
 // NOTE (2026-04-21): `install_hq_cloud` was removed along with the
 // `hq-cloud` DEPS row in 04-deps.tsx. The HQ Sync menubar app now spawns
 // the runner via `npx -y --package=@indigoai-us/hq-cloud@<ver>

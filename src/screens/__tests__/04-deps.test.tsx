@@ -55,13 +55,14 @@ function fireListenEvent(event: string, payload: unknown) {
   }
 }
 
-const ALL_TOOLS = ["homebrew", "node", "git", "yq", "gh", "claude-code", "qmd"] as const;
+const ALL_TOOLS = ["homebrew", "node", "git", "yq", "gh", "claude-code", "qmd", "hq-cli"] as const;
 type Tool = typeof ALL_TOOLS[number];
 
 /** Binary name used by the Rust `check_dep` command, keyed by UI id. */
 const BINARY_TO_ID: Record<string, Tool> = {
   brew: "homebrew",
   claude: "claude-code",
+  hq: "hq-cli",
 };
 
 function buildInvokeMock(overrides: Partial<Record<Tool, { installed: boolean }>> = {}) {
@@ -166,11 +167,11 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
-    it("checks exactly 7 tools on mount (no xcode-clt, no extras)", async () => {
+    it("checks exactly 8 tools on mount (no xcode-clt, no extras)", async () => {
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
         const checkDepCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "check_dep");
-        expect(checkDepCalls).toHaveLength(7);
+        expect(checkDepCalls).toHaveLength(8);
       });
     });
   });
@@ -664,6 +665,51 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       expect(continueBtn).toBeNull();
     });
 
+    it("calls check_dep with binary name 'hq' (not UI id 'hq-cli') on mount", async () => {
+      render(<DepsInstall onNext={vi.fn()} />);
+      await waitFor(() => {
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "hq" });
+      });
+      const calledWithSlug = mockInvoke.mock.calls.some(
+        ([cmd, args]) => cmd === "check_dep" && (args as Record<string,string>)?.tool === "hq-cli"
+      );
+      expect(calledWithSlug).toBe(false);
+    });
+
+    it("hq-cli stays locked while node is missing", async () => {
+      mockInvoke.mockImplementation(
+        buildInvokeMock({
+          node: { installed: false },
+          "hq-cli": { installed: false },
+        })
+      );
+      render(<DepsInstall onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        const hqRow = document.querySelector<HTMLElement>("[data-dep='hq-cli']");
+        expect(hqRow).not.toBeNull();
+        expect(hqRow!.getAttribute("data-locked")).toBe("true");
+        expect(hqRow!.textContent ?? "").toMatch(/waiting for.*node/i);
+      });
+    });
+
+    it("Continue is absent when hq-cli is missing (it is required)", async () => {
+      mockInvoke.mockImplementation(
+        buildInvokeMock({ "hq-cli": { installed: false } })
+      );
+      render(<DepsInstall onNext={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(mockInvoke).toHaveBeenCalledWith("check_dep", { tool: "hq" });
+      });
+
+      const continueBtn =
+        screen.queryByRole("button", { name: /continue/i }) ||
+        screen.queryByRole("button", { name: /next/i }) ||
+        screen.queryByRole("button", { name: /finish/i });
+      expect(continueBtn).toBeNull();
+    });
+
     it("Continue appears when optional deps are missing but required deps are installed", async () => {
       mockInvoke.mockImplementation(
         buildInvokeMock({
@@ -694,13 +740,13 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
 
   // -------------------------------------------------------------------------
   describe("dep state matrix — React test coverage", () => {
-    it("all installed: shows 7 dep checks, no Install buttons", async () => {
+    it("all installed: shows 8 dep checks, no Install buttons", async () => {
       mockInvoke.mockImplementation(buildInvokeMock());
       render(<DepsInstall onNext={vi.fn()} />);
 
       await waitFor(() => {
         const checkDepCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === "check_dep");
-        expect(checkDepCalls).toHaveLength(7);
+        expect(checkDepCalls).toHaveLength(8);
       });
 
       const installBtns = screen.queryAllByRole("button", { name: /^install/i });
@@ -724,6 +770,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
         buildInvokeMock({
           node: { installed: false },
           qmd: { installed: false },
+          "hq-cli": { installed: false },
           "claude-code": { installed: false },
         })
       );
@@ -732,9 +779,11 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       await waitFor(() => {
         const nodeRow = document.querySelector<HTMLElement>("[data-dep='node']");
         const qmdRow = document.querySelector<HTMLElement>("[data-dep='qmd']");
+        const hqRow = document.querySelector<HTMLElement>("[data-dep='hq-cli']");
         const ccRow = document.querySelector<HTMLElement>("[data-dep='claude-code']");
         expect(nodeRow?.getAttribute("data-locked")).toBe("false");
         expect(qmdRow?.getAttribute("data-locked")).toBe("true");
+        expect(hqRow?.getAttribute("data-locked")).toBe("true");
         expect(ccRow?.getAttribute("data-locked")).toBe("true");
       });
     });
@@ -748,6 +797,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
           yq: { installed: false },
           gh: { installed: false },
           "claude-code": { installed: false },
+          "hq-cli": { installed: false },
           qmd: { installed: false },
         })
       );
