@@ -496,7 +496,7 @@ function DepRow({
 
       {/* Error message */}
       {tool.status === "error" && tool.errorMsg && (
-        <p className="text-xs text-red-400">{tool.errorMsg}</p>
+        <p className="text-xs text-zinc-400">{tool.errorMsg}</p>
       )}
     </div>
   );

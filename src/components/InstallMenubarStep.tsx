@@ -230,7 +230,7 @@ export function InstallMenubarStep({ onNext }: InstallMenubarStepProps) {
               <span className="text-xs text-green-400">Installed</span>
             )}
             {isError && (
-              <span className="text-xs text-red-400">Failed</span>
+              <span className="text-xs text-zinc-400">Noted</span>
             )}
           </div>
         </div>
@@ -307,7 +307,7 @@ export function InstallMenubarStep({ onNext }: InstallMenubarStepProps) {
         {/* Error state */}
         {isError && state.errorMsg && (
           <div className="flex flex-col gap-2">
-            <p className="text-xs text-red-400 break-all">{state.errorMsg}</p>
+            <p className="text-xs text-zinc-400 break-all">{state.errorMsg}</p>
           </div>
         )}
       </div>

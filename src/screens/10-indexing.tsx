@@ -459,7 +459,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
             </span>
           )}
           {step.status === "error" && (
-            <span className="text-xs text-red-400">Failed</span>
+            <span className="text-xs text-zinc-400">Noted</span>
           )}
 
           {/* Log toggle visible once the step has started — critical for
@@ -490,7 +490,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
       )}
 
       {step.status === "error" && step.errorMsg && (
-        <p className="text-xs text-red-400">{step.errorMsg}</p>
+        <p className="text-xs text-zinc-400">{step.errorMsg}</p>
       )}
     </div>
   );
