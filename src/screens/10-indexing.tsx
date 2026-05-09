@@ -25,6 +25,12 @@ import {
   mkdir,
   BaseDirectory,
 } from "@tauri-apps/plugin-fs";
+import {
+  getInstallerVersion,
+  recordStepStart,
+  recordStepOk,
+  recordStepFailure,
+} from "@/lib/install-manifest";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -278,6 +284,9 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
       for (const u of unlistenRefs.current) u?.();
       unlistenRefs.current = [];
 
+      const ver = await getInstallerVersion();
+      await recordStepStart(installPath, ver, "indexing").catch(() => {});
+
       // ── Step 0: qmd collection add (fall back to update on re-runs) ─────────
       // qmd 2.x split the old `qmd index .` into two commands:
       //   - `qmd collection add <path> --name <slug>` creates + indexes a new
@@ -314,6 +323,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         }
         if (!ok) {
           setRunning(false);
+          await recordStepFailure(installPath, ver, "indexing", "qmd indexing failed").catch(() => {});
           return;
         }
       }
@@ -329,6 +339,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
         appendLog(0, `[warn] Could not write embeddings marker: ${msg}`);
       }
 
+      await recordStepOk(installPath, ver, "indexing").catch(() => {});
       setRunning(false);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -448,7 +459,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
             </span>
           )}
           {step.status === "error" && (
-            <span className="text-xs text-red-400">Failed</span>
+            <span className="text-xs text-zinc-400">Noted</span>
           )}
 
           {/* Log toggle visible once the step has started — critical for
@@ -479,7 +490,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
       )}
 
       {step.status === "error" && step.errorMsg && (
-        <p className="text-xs text-red-400">{step.errorMsg}</p>
+        <p className="text-xs text-zinc-400">{step.errorMsg}</p>
       )}
     </div>
   );

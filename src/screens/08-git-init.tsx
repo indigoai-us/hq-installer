@@ -12,6 +12,12 @@ import { WizardFooterSlot } from "@/components/WizardFooter";
 import { listen } from "@tauri-apps/api/event";
 import { exists } from "@tauri-apps/plugin-fs";
 import { getWizardState, setGitIdentity } from "@/lib/wizard-state";
+import {
+  getInstallerVersion,
+  recordStepStart,
+  recordStepOk,
+  recordStepFailure,
+} from "@/lib/install-manifest";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -137,6 +143,9 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
     for (const u of unlistenRefs.current) u?.();
     unlistenRefs.current = [];
 
+    const ver = await getInstallerVersion();
+    await recordStepStart(installPath, ver, "git-init").catch(() => {});
+
     // ── Step 0: git_init ────────────────────────────────────────────────────
     if (startIdx <= 0) {
       patchStep(0, { status: "running" });
@@ -154,6 +163,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
         patchStep(0, { status: "error", errorMsg: msg });
         setFailedStep(0);
         setRunning(false);
+        await recordStepFailure(installPath, ver, "git-init", msg).catch(() => {});
         return;
       }
     }
@@ -164,6 +174,7 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
       const ok = await runScript(1, `${installPath}/scripts/compute-checksums.sh`);
       if (!ok) {
         setRunning(false);
+        await recordStepFailure(installPath, ver, "git-init", "compute-checksums.sh failed").catch(() => {});
         return;
       }
     }
@@ -187,11 +198,13 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
         const ok = await runScript(2, scriptPath);
         if (!ok) {
           setRunning(false);
+          await recordStepFailure(installPath, ver, "git-init", "core-integrity.sh failed").catch(() => {});
           return;
         }
       }
     }
 
+    await recordStepOk(installPath, ver, "git-init").catch(() => {});
     setRunning(false);
   }
 
@@ -431,7 +444,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
             </span>
           )}
           {step.status === "error" && (
-            <span className="text-xs text-red-400">Failed</span>
+            <span className="text-xs text-zinc-400">Noted</span>
           )}
 
           {/* Log toggle is visible once the step has started (running/done/error),
@@ -463,7 +476,7 @@ function StepRow({ label, step, onToggleExpanded }: StepRowProps) {
       )}
 
       {step.status === "error" && step.errorMsg && (
-        <p className="text-xs text-red-400">{step.errorMsg}</p>
+        <p className="text-xs text-zinc-400">{step.errorMsg}</p>
       )}
     </div>
   );

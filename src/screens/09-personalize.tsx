@@ -27,6 +27,12 @@ import {
   setTeam,
   setIsPersonal,
 } from "@/lib/wizard-state";
+import {
+  getInstallerVersion,
+  recordStepStart,
+  recordStepOk,
+  recordStepFailure,
+} from "@/lib/install-manifest";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -164,6 +170,9 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
     setSubmitting(true);
     setErrorMsg(null);
 
+    const ver = await getInstallerVersion();
+    await recordStepStart(installPath, ver, "personalize").catch(() => {});
+
     try {
       // Merge cloud + manual companies for the writer. S3 reconciliation is
       // no longer the installer's job — the HQ-Sync menu bar app (installed
@@ -192,11 +201,13 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
         installPath,
       );
 
+      await recordStepOk(installPath, ver, "personalize").catch(() => {});
       setPersonalized(true);
       onNext?.();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMsg(msg || "Something went wrong. Please try again.");
+      await recordStepFailure(installPath, ver, "personalize", msg || "unknown error").catch(() => {});
     } finally {
       setSubmitting(false);
       setSubmitStage(null);
@@ -254,7 +265,7 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
         )}
 
         {!cloudLoading && cloudError && (
-          <p className="text-xs text-red-400">
+          <p className="text-xs text-zinc-400">
             Couldn't load cloud companies: {cloudError}
           </p>
         )}
@@ -347,7 +358,7 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
       {errorMsg && (
         <div
           role="alert"
-          className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-2"
+          className="text-sm text-zinc-400 bg-white/5 border border-white/10 rounded-xl px-4 py-2"
         >
           {errorMsg}
         </div>

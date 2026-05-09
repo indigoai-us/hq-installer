@@ -97,6 +97,15 @@ const DEPS: readonly DepDef[] = [
     dependsOn: ["node"],
   },
   {
+    id: "hq-cli",
+    label: "HQ CLI",
+    installCmd: "install_hq_cli",
+    installUrl: "https://www.npmjs.com/package/@indigoai-us/hq-cli",
+    binary: "hq",
+    dependsOn: ["node"],
+    subtitle: "Auth, deploy, and package management for HQ",
+  },
+  {
     id: "git",
     label: "Git",
     installCmd: "install_git",
@@ -487,7 +496,7 @@ function DepRow({
 
       {/* Error message */}
       {tool.status === "error" && tool.errorMsg && (
-        <p className="text-xs text-red-400">{tool.errorMsg}</p>
+        <p className="text-xs text-zinc-400">{tool.errorMsg}</p>
       )}
     </div>
   );

@@ -523,7 +523,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
             <span className="text-sm text-zinc-200">Template ready</span>
           )}
           {phase === "error" && (
-            <span className="text-sm text-red-400">Download failed</span>
+            <span className="text-sm text-zinc-400">Download incomplete</span>
           )}
           {phase === "idle" && (
             <span className="text-sm text-zinc-500 hq-text-shimmer">Starting…</span>
@@ -659,7 +659,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
 
       {/* Error message */}
       {phase === "error" && errorMsg && (
-        <p className="text-xs text-red-400">{errorMsg}</p>
+        <p className="text-xs text-zinc-400">{errorMsg}</p>
       )}
 
       {/* Inline error actions — these stay in-content since they're contextual */}

@@ -53,9 +53,9 @@ export function CustomizationForm({
       {errorMsg && (
         <div
           role="alert"
-          className="flex items-start gap-2 bg-red-950/40 border border-red-500/20 rounded-xl px-4 py-3"
+          className="flex items-start gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3"
         >
-          <p className="text-sm text-red-400">{errorMsg}</p>
+          <p className="text-sm text-zinc-400">{errorMsg}</p>
         </div>
       )}
 
