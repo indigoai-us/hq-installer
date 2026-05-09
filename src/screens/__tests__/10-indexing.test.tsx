@@ -41,6 +41,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-fs", () => ({
   writeTextFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  exists: vi.fn().mockResolvedValue(false),
+  readTextFile: vi.fn().mockResolvedValue("{}"),
   BaseDirectory: { Home: "Home" },
 }));
 
@@ -346,15 +348,24 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
 
-    await waitFor(() => expect(mockWriteTextFile).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(
+        mockWriteTextFile.mock.calls.some(([p]) =>
+          String(p).includes(".hq-embeddings-pending.json")
+        )
+      ).toBe(true)
+    );
 
-    // Primary path: first write goes to `{installPath}/.hq-embeddings-pending.json`
-    // with no baseDir option (absolute path).
-    const [firstPath, firstPayload, firstOpts] = mockWriteTextFile.mock.calls[0];
-    expect(firstPath).toBe("/Users/jane/hq/.hq-embeddings-pending.json");
-    expect(firstOpts).toBeUndefined();
+    // Find the embeddings-pending write (manifest writes also go through
+    // writeTextFile, so we filter by path rather than using call index).
+    const markerCall = mockWriteTextFile.mock.calls.find(([p]) =>
+      String(p).includes(".hq-embeddings-pending.json")
+    )!;
+    const [markerPath, markerPayload, markerOpts] = markerCall;
+    expect(markerPath).toBe("/Users/jane/hq/.hq-embeddings-pending.json");
+    expect(markerOpts).toBeUndefined();
 
-    const parsed = JSON.parse(firstPayload as string);
+    const parsed = JSON.parse(markerPayload as string);
     expect(parsed.reason).toBe("post-install");
     expect(typeof parsed.requestedAt).toBe("string");
     // requestedAt must be a valid ISO8601 timestamp.
@@ -375,20 +386,32 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
       })
     );
 
-    // First write (primary, absolute path) rejects; second write (fallback
-    // via BaseDirectory.Home) must succeed.
+    // The primary embeddings-pending write (absolute path) should reject so
+    // the fallback (baseDir: Home) fires. Manifest writes to
+    // install-manifest.json should succeed normally.
     mockWriteTextFile.mockReset();
-    mockWriteTextFile
-      .mockRejectedValueOnce(new Error("EACCES: permission denied"))
-      .mockResolvedValue(undefined);
+    mockWriteTextFile.mockImplementation(async (path: string | URL) => {
+      if (String(path).includes(".hq-embeddings-pending.json")) {
+        throw new Error("EACCES: permission denied");
+      }
+    });
 
     render(<QmdIndexing installPath="/Users/jane/hq" />);
 
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
 
+    // Wait for the fallback write (baseDir: "Home") to appear among all
+    // writeTextFile calls. Manifest writes also use writeTextFile but
+    // target the install-manifest.json path without baseDir.
     await waitFor(() =>
-      expect(mockWriteTextFile.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(
+        mockWriteTextFile.mock.calls.some(
+          ([p, , opts]) =>
+            String(p) === ".hq/embeddings-pending.json" &&
+            (opts as any)?.baseDir === "Home"
+        )
+      ).toBe(true)
     );
 
     // Ensure ~/.hq was created (recursive) before the fallback write.
@@ -396,10 +419,6 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
       baseDir: "Home",
       recursive: true,
     });
-
-    const [fallbackPath, , fallbackOpts] = mockWriteTextFile.mock.calls[1];
-    expect(fallbackPath).toBe(".hq/embeddings-pending.json");
-    expect(fallbackOpts).toEqual({ baseDir: "Home" });
   });
 
   it("skips the primary write entirely when installPath is not absolute", async () => {
@@ -420,13 +439,30 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
     completeProcess(handles[0]);
 
-    await waitFor(() => expect(mockWriteTextFile).toHaveBeenCalled());
+    // Wait for the fallback write to appear among all writeTextFile calls.
+    // Manifest writes also go through writeTextFile, so we can't assert on
+    // total call count — filter for the embeddings-pending marker instead.
+    await waitFor(() =>
+      expect(
+        mockWriteTextFile.mock.calls.some(([p]) =>
+          String(p) === ".hq/embeddings-pending.json"
+        )
+      ).toBe(true)
+    );
 
-    // Only one write, and it targets the ~/.hq fallback.
-    expect(mockWriteTextFile).toHaveBeenCalledTimes(1);
-    const [path, , opts] = mockWriteTextFile.mock.calls[0];
-    expect(path).toBe(".hq/embeddings-pending.json");
-    expect(opts).toEqual({ baseDir: "Home" });
+    // No primary (absolute-path) embeddings marker write should exist.
+    const primaryCalls = mockWriteTextFile.mock.calls.filter(([p]) =>
+      String(p).includes(".hq-embeddings-pending.json")
+    );
+    expect(primaryCalls).toHaveLength(0);
+
+    // The fallback must target ~/.hq via baseDir.
+    const fallbackCall = mockWriteTextFile.mock.calls.find(
+      ([p, , opts]) =>
+        String(p) === ".hq/embeddings-pending.json" &&
+        (opts as any)?.baseDir === "Home"
+    );
+    expect(fallbackCall).toBeDefined();
   });
 
   // ── Deprecated UI affordances removed (US-001) ────────────────────────────

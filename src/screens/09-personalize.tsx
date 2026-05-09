@@ -27,6 +27,12 @@ import {
   setTeam,
   setIsPersonal,
 } from "@/lib/wizard-state";
+import {
+  getInstallerVersion,
+  recordStepStart,
+  recordStepOk,
+  recordStepFailure,
+} from "@/lib/install-manifest";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -164,6 +170,9 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
     setSubmitting(true);
     setErrorMsg(null);
 
+    const ver = await getInstallerVersion();
+    await recordStepStart(installPath, ver, "personalize").catch(() => {});
+
     try {
       // Merge cloud + manual companies for the writer. S3 reconciliation is
       // no longer the installer's job — the HQ-Sync menu bar app (installed
@@ -192,11 +201,13 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
         installPath,
       );
 
+      await recordStepOk(installPath, ver, "personalize").catch(() => {});
       setPersonalized(true);
       onNext?.();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMsg(msg || "Something went wrong. Please try again.");
+      await recordStepFailure(installPath, ver, "personalize", msg || "unknown error").catch(() => {});
     } finally {
       setSubmitting(false);
       setSubmitStage(null);
