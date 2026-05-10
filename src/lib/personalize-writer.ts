@@ -4,6 +4,28 @@ import {
   ensureManifestEntries,
   type ManifestEntrySeed,
 } from "./manifest-writer";
+import {
+  OBSIDIAN_APP,
+  OBSIDIAN_APPEARANCE,
+  OBSIDIAN_CORE_PLUGINS,
+  OBSIDIAN_GRAPH,
+  OBSIDIAN_TYPES,
+  OBSIDIAN_WORKSPACE,
+} from "./obsidian-config";
+
+// ---------------------------------------------------------------------------
+// Obsidian vault files written into every scaffolded company. Kept as a const
+// at module scope so the per-company loop below doesn't rebuild the array on
+// every iteration. Files mirror companies/_template/.obsidian/ in HQ.
+// ---------------------------------------------------------------------------
+const OBSIDIAN_VAULT_FILES: ReadonlyArray<readonly [string, unknown]> = [
+  ["app.json", OBSIDIAN_APP],
+  ["graph.json", OBSIDIAN_GRAPH],
+  ["appearance.json", OBSIDIAN_APPEARANCE],
+  ["core-plugins.json", OBSIDIAN_CORE_PLUGINS],
+  ["types.json", OBSIDIAN_TYPES],
+  ["workspace.json", OBSIDIAN_WORKSPACE],
+];
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -230,6 +252,22 @@ export async function personalize(
         const subDir = `${coBase}/${sub}`;
         await mkdir(subDir, { recursive: true });
         await writeTextFile(`${subDir}/.gitkeep`, "");
+      }
+
+      // Shared Obsidian vault config — opens the company folder as a
+      // ready-to-use vault with graph view. Cloud-backed companies also
+      // receive these files via hq-sync (hq-onboarding writes them to S3
+      // during scaffold), so writing them here for both local-only and
+      // cloud companies is intentional: cloud-mode is a no-op overwrite
+      // when sync runs, local-mode is the only place .obsidian/ comes
+      // from.
+      const obsidianDir = `${coBase}/.obsidian`;
+      await mkdir(obsidianDir, { recursive: true });
+      for (const [filename, config] of OBSIDIAN_VAULT_FILES) {
+        await writeTextFile(
+          `${obsidianDir}/${filename}`,
+          JSON.stringify(config, null, 2),
+        );
       }
 
       // Minimal company.yaml — downstream tooling can enrich it later.

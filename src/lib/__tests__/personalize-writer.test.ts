@@ -13,11 +13,23 @@ const mockWriteTextFile = vi.fn<(path: string, data: string) => Promise<void>>(
 const mockWriteFile = vi.fn<(path: string, data: Uint8Array) => Promise<void>>(
   async () => undefined,
 );
+const mockExists = vi.fn<(path: string) => Promise<boolean>>(
+  async () => false,
+);
+const mockReadTextFile = vi.fn<(path: string) => Promise<string>>(
+  async () => "",
+);
+const mockRename = vi.fn<(from: string, to: string) => Promise<void>>(
+  async () => undefined,
+);
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
   mkdir: (path: string, opts?: { recursive?: boolean }) => mockMkdir(path, opts),
   writeTextFile: (path: string, data: string) => mockWriteTextFile(path, data),
   writeFile: (path: string, data: Uint8Array) => mockWriteFile(path, data),
+  exists: (path: string) => mockExists(path),
+  readTextFile: (path: string) => mockReadTextFile(path),
+  rename: (from: string, to: string) => mockRename(from, to),
 }));
 
 // ---------------------------------------------------------------------------
@@ -107,6 +119,13 @@ beforeEach(() => {
   mockMkdir.mockReset().mockResolvedValue(undefined);
   mockWriteTextFile.mockReset().mockResolvedValue(undefined);
   mockWriteFile.mockReset().mockResolvedValue(undefined);
+  // Default: manifest.yaml doesn't exist → ensureManifestEntries creates a
+  // fresh one. Tests that need to simulate an existing manifest can
+  // override per-call with mockExists.mockResolvedValueOnce(true) +
+  // mockReadTextFile.mockResolvedValueOnce("...").
+  mockExists.mockReset().mockResolvedValue(false);
+  mockReadTextFile.mockReset().mockResolvedValue("");
+  mockRename.mockReset().mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -479,6 +498,113 @@ describe("personalize", () => {
           starterProjectFiles: PERSONAL_ASSISTANT_FILES,
         }),
       ).rejects.toThrow("permission denied");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("user-supplied companies: Obsidian vault config", () => {
+    const OBSIDIAN_FILES = [
+      "app.json",
+      "graph.json",
+      "appearance.json",
+      "core-plugins.json",
+      "types.json",
+      "workspace.json",
+    ];
+
+    it("writes all 6 .obsidian config files for each scaffolded company", async () => {
+      const answers: PersonalizationAnswers = {
+        ...BASE_ANSWERS,
+        companies: [{ name: "Acme Co" }, { name: "Globex" }],
+      };
+
+      await personalize(answers, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+      });
+
+      for (const slug of ["acme-co", "globex"]) {
+        for (const filename of OBSIDIAN_FILES) {
+          const path = `${BASE_DIR}/companies/${slug}/.obsidian/${filename}`;
+          expect(getWrittenText(path)).toBeDefined();
+        }
+      }
+    });
+
+    it("graph.json includes ontology color groups", async () => {
+      const answers: PersonalizationAnswers = {
+        ...BASE_ANSWERS,
+        companies: [{ name: "Acme Co" }],
+      };
+
+      await personalize(answers, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+      });
+
+      const graphJson = getWrittenText(
+        `${BASE_DIR}/companies/acme-co/.obsidian/graph.json`,
+      );
+      expect(graphJson).toBeDefined();
+      const parsed = JSON.parse(graphJson!);
+      const queries = parsed.colorGroups.map(
+        (g: { query: string }) => g.query,
+      );
+      expect(queries).toContain("path:ontology/entities/person");
+      expect(queries).toContain("path:knowledge/");
+    });
+
+    it("creates .obsidian directory before writing files into it", async () => {
+      const answers: PersonalizationAnswers = {
+        ...BASE_ANSWERS,
+        companies: [{ name: "Acme Co" }],
+      };
+
+      await personalize(answers, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+      });
+
+      const mkdirCalls = mockMkdir.mock.calls.map((c) => c[0]);
+      expect(mkdirCalls).toContain(
+        `${BASE_DIR}/companies/acme-co/.obsidian`,
+      );
+    });
+
+    it("writes valid JSON to every .obsidian config file", async () => {
+      const answers: PersonalizationAnswers = {
+        ...BASE_ANSWERS,
+        companies: [{ name: "Acme Co" }],
+      };
+
+      await personalize(answers, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+      });
+
+      for (const filename of OBSIDIAN_FILES) {
+        const content = getWrittenText(
+          `${BASE_DIR}/companies/acme-co/.obsidian/${filename}`,
+        );
+        expect(() => JSON.parse(content!)).not.toThrow();
+      }
+    });
+
+    it("does not write .obsidian when no companies are supplied", async () => {
+      await personalize(BASE_ANSWERS, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
+      });
+
+      const writtenPaths = allWrittenPaths();
+      expect(writtenPaths.every((p) => !p.includes("/.obsidian/"))).toBe(
+        true,
+      );
     });
   });
 });
