@@ -126,6 +126,19 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
     );
   }
 
+  // Resolve a kernel script by name, preferring core/scripts/ (new layout)
+  // and falling back to scripts/ (legacy). Returns null when neither exists.
+  async function resolveScriptPath(
+    root: string,
+    name: string,
+  ): Promise<string | null> {
+    const candidates = [`${root}/core/scripts/${name}`, `${root}/scripts/${name}`];
+    for (const p of candidates) {
+      if (await exists(p).catch(() => false)) return p;
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // Run steps sequentially
   // ---------------------------------------------------------------------------
@@ -169,13 +182,26 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
     }
 
     // ── Step 1: compute-checksums.sh ────────────────────────────────────────
+    // Newer HQ templates (post-core-consolidation) ship kernel scripts under
+    // core/scripts/. Older templates kept them at scripts/. Probe the new
+    // location first, fall back to the old one, skip if neither is present.
     if (startIdx <= 1) {
-      patchStep(1, { status: "running" });
-      const ok = await runScript(1, `${installPath}/scripts/compute-checksums.sh`);
-      if (!ok) {
-        setRunning(false);
-        await recordStepFailure(installPath, ver, "git-init", "compute-checksums.sh failed").catch(() => {});
-        return;
+      const checksumPath = await resolveScriptPath(installPath, "compute-checksums.sh");
+      if (!checksumPath) {
+        patchStep(1, {
+          status: "done",
+          logLines: [
+            "Skipped — compute-checksums.sh not present in this template.",
+          ],
+        });
+      } else {
+        patchStep(1, { status: "running" });
+        const ok = await runScript(1, checksumPath);
+        if (!ok) {
+          setRunning(false);
+          await recordStepFailure(installPath, ver, "git-init", "compute-checksums.sh failed").catch(() => {});
+          return;
+        }
       }
     }
 
@@ -184,9 +210,8 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
     // core-integrity.sh. Skip the step (rather than fail) when the script
     // isn't present so installs against newer templates don't wedge here.
     if (startIdx <= 2) {
-      const scriptPath = `${installPath}/scripts/core-integrity.sh`;
-      const scriptExists = await exists(scriptPath).catch(() => false);
-      if (!scriptExists) {
+      const scriptPath = await resolveScriptPath(installPath, "core-integrity.sh");
+      if (!scriptPath) {
         patchStep(2, {
           status: "done",
           logLines: [
