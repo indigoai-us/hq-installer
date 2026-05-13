@@ -81,6 +81,7 @@ pub fn run() {
             commands::fs::home_dir,
             commands::launch::launch_claude_code,
             commands::launch::launch_claude_desktop,
+            commands::launch::open_claude_code_link,
             commands::launch::claude_desktop_installed,
             commands::install_menubar::install_menubar_app,
             commands::install_menubar::launch_menubar_app,
