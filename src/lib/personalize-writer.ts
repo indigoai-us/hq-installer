@@ -26,10 +26,6 @@ export interface PersonalizationAnswers {
   name: string;
   about?: string;
   goals?: string;
-  /** Starter project template — optional; when omitted no starter project
-   *  files are written. The redesigned Personalize screen no longer asks
-   *  for this, but the writer still supports it for callers that do. */
-  starterProject?: "personal-assistant" | "social-media" | "code-worker";
   customizations?: Record<string, string>;
   /** Optional list of companies the user wants scaffolded under companies/. */
   companies?: CompanySeed[];
@@ -49,8 +45,6 @@ export interface PersonalizeOptions {
   profileTemplate?: string;
   /** Injected Handlebars template string for voice-style.md (for tests) */
   voiceStyleTemplate?: string;
-  /** Injected starter project files: filename -> content (for tests) */
-  starterProjectFiles?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,53 +70,6 @@ async function loadTemplate(
   return readTextFile(resolved);
 }
 
-/**
- * Load starter project files: use the injected map if provided, otherwise
- * resolve bundled resource paths and read via @tauri-apps/plugin-fs.
- */
-async function loadStarterProjectFiles(
-  injected: Record<string, string> | undefined,
-  starterProject: string,
-): Promise<Record<string, string>> {
-  if (injected !== undefined) {
-    return injected;
-  }
-  // At runtime, starter-projects are bundled as Tauri resources.
-  const { resolveResource } = await import("@tauri-apps/api/path");
-  const { readDir, readTextFile: readText } = await import(
-    "@tauri-apps/plugin-fs"
-  );
-  const resourceBase = `templates/starter-projects/${starterProject}`;
-  const resolvedBase = await resolveResource(resourceBase);
-  const files: Record<string, string> = {};
-
-  async function walk(dir: string, prefix: string): Promise<void> {
-    const entries = await readDir(dir);
-    for (const entry of entries) {
-      const relativeName = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const fullPath = `${dir}/${entry.name}`;
-      if (entry.isDirectory) {
-        await walk(fullPath, relativeName);
-      } else {
-        files[relativeName] = await readText(fullPath);
-      }
-    }
-  }
-
-  await walk(resolvedBase, "");
-  return files;
-}
-
-/**
- * Derive the parent directory from a file path string.
- * e.g. "/tmp/foo/bar/baz.md" => "/tmp/foo/bar"
- */
-function parentDir(filePath: string): string | null {
-  const lastSlash = filePath.lastIndexOf("/");
-  if (lastSlash <= 0) return null;
-  return filePath.slice(0, lastSlash);
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -131,7 +78,6 @@ function parentDir(filePath: string): string | null {
  * Personalise an HQ installation directory by writing:
  *  - knowledge/{name}/profile.md
  *  - knowledge/{name}/voice-style.md
- *  - companies/personal/projects/{starterProject}/** (from starter project files)
  *  - companies/personal/settings/cognito.json  (empty JSON object)
  *  - companies/personal/settings/.gitkeep
  *  - companies/personal/workers/.gitkeep
@@ -141,7 +87,7 @@ export async function personalize(
   baseDir: string,
   options?: PersonalizeOptions,
 ): Promise<void> {
-  const { name, about, goals, starterProject, customizations, companies } = answers;
+  const { name, about, goals, customizations, companies } = answers;
 
   // -----------------------------------------------------------------------
   // 1. Load and render profile.md
@@ -172,27 +118,7 @@ export async function personalize(
   await writeTextFile(`${knowledgeDir}/voice-style.md`, voiceStyleContent);
 
   // -----------------------------------------------------------------------
-  // 4. Write starter project files (only if the caller asked for one)
-  // -----------------------------------------------------------------------
-  if (starterProject) {
-    const starterFiles = await loadStarterProjectFiles(
-      options?.starterProjectFiles,
-      starterProject,
-    );
-    const projectBase = `${baseDir}/companies/personal/projects/${starterProject}`;
-
-    for (const [filename, content] of Object.entries(starterFiles)) {
-      const destPath = `${projectBase}/${filename}`;
-      const parent = parentDir(destPath);
-      if (parent) {
-        await mkdir(parent, { recursive: true });
-      }
-      await writeTextFile(destPath, content);
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // 5. Scaffold companies/personal/settings/
+  // 4. Scaffold companies/personal/settings/
   // -----------------------------------------------------------------------
   const settingsDir = `${baseDir}/companies/personal/settings`;
   await mkdir(settingsDir, { recursive: true });
@@ -200,14 +126,14 @@ export async function personalize(
   await writeTextFile(`${settingsDir}/.gitkeep`, "");
 
   // -----------------------------------------------------------------------
-  // 6. Scaffold companies/personal/workers/
+  // 5. Scaffold companies/personal/workers/
   // -----------------------------------------------------------------------
   const workersDir = `${baseDir}/companies/personal/workers`;
   await mkdir(workersDir, { recursive: true });
   await writeTextFile(`${workersDir}/.gitkeep`, "");
 
   // -----------------------------------------------------------------------
-  // 7. Scaffold user-supplied companies (optional)
+  // 6. Scaffold user-supplied companies (optional)
   // -----------------------------------------------------------------------
   // Each company gets the standard HQ skeleton: knowledge/, settings/,
   // workers/, projects/ + a company.yaml capturing display name + website.
@@ -258,7 +184,7 @@ export async function personalize(
   }
 
   // -----------------------------------------------------------------------
-  // 8. Update companies/manifest.yaml
+  // 7. Update companies/manifest.yaml
   // -----------------------------------------------------------------------
   // Add an entry for every scaffolded company that doesn't already have
   // one. Idempotent — re-running personalize never clobbers existing

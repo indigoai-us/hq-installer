@@ -200,7 +200,7 @@ describe("fetchAndExtract", () => {
       { name: "core.yaml", content: "version: 10.2.0" },
       { name: ".claude/CLAUDE.md", content: "# HQ template" },
       { name: "README.md", content: "hq-core readme" },
-      { name: "starter-projects/personal-site.md", content: "starter" },
+      { name: "companies/sample/page.md", content: "starter" },
     ]);
 
     // First fetch call = releases list
@@ -235,7 +235,7 @@ describe("fetchAndExtract", () => {
     expect(writePaths).toContain("/tmp/target/core.yaml");
     expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
     expect(writePaths).toContain("/tmp/target/README.md");
-    expect(writePaths).toContain("/tmp/target/starter-projects/personal-site.md");
+    expect(writePaths).toContain("/tmp/target/companies/sample/page.md");
 
     // Correct content for core.yaml
     const coreCall = mockWriteFile.mock.calls.find(
@@ -468,7 +468,7 @@ describe("fetchAndExtract", () => {
       { name: "core.yaml", content: "kept" },
       { name: "nested/deep.txt", content: "also kept" },
       { name: "docs/architecture.md", content: "hq-core docs" },
-      { name: "starter-projects/personal-site.md", content: "starter" },
+      { name: "companies/sample/page.md", content: "starter" },
       { name: ".claude/CLAUDE.md", content: "claude config" },
       { name: "README.md", content: "hq-core readme" },
     ]);
@@ -489,7 +489,7 @@ describe("fetchAndExtract", () => {
     expect(writePaths).toContain("/tmp/target/core.yaml");
     expect(writePaths).toContain("/tmp/target/nested/deep.txt");
     expect(writePaths).toContain("/tmp/target/docs/architecture.md");
-    expect(writePaths).toContain("/tmp/target/starter-projects/personal-site.md");
+    expect(writePaths).toContain("/tmp/target/companies/sample/page.md");
     expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
     expect(writePaths).toContain("/tmp/target/README.md");
 

@@ -13,8 +13,6 @@
     "lint": "eslint src --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sync-templates": "tsx scripts/sync-templates.ts",
-    "postinstall": "tsx scripts/sync-templates.ts --optional",
     "prepare": "husky",
     "e2e": "playwright test"
   },
