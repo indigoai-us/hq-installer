@@ -374,7 +374,11 @@ describe("GitInit screen (08-git-init.tsx)", () => {
   it("skips core-integrity.sh when the script is missing from the template", async () => {
     const user = userEvent.setup();
 
-    mockExists.mockResolvedValue(false);
+    // compute-checksums.sh is present (resolved via core/scripts/ probing);
+    // core-integrity.sh is absent at both probed locations.
+    mockExists.mockImplementation((path) =>
+      Promise.resolve(String(path).includes("compute-checksums")),
+    );
 
     const handles: string[] = [];
     const invokeMock = vi.fn(
