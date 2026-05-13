@@ -484,7 +484,98 @@ fn npm_global_prefix_arg(app: &AppHandle, tool: &str) -> Result<String, String> 
         emit_preflight_line(app, &msg);
         return Err(msg);
     }
+    ensure_shell_path_configured(&home, app);
     Ok(prefix.to_string_lossy().into_owned())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shell profile PATH injection
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SHELL_PATH_MARKER: &str = "# Indigo HQ managed toolchain";
+
+/// Resolve which shell profile file to modify.
+///
+/// Modern macOS defaults to zsh (since Catalina 10.15), so `.zshrc` is the
+/// primary target. Falls back to `.bash_profile` for bash users or `.profile`
+/// for anything else. Exposed for testing.
+pub fn shell_profile_path_in(home: &std::path::Path) -> PathBuf {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let profile_name = if shell.ends_with("/zsh") {
+        ".zshrc"
+    } else if shell.ends_with("/bash") {
+        ".bash_profile"
+    } else {
+        ".profile"
+    };
+    home.join(profile_name)
+}
+
+/// Check whether the managed toolchain PATH block has already been written to
+/// a shell profile. Exposed for testing.
+pub fn is_shell_path_configured(profile_path: &std::path::Path) -> bool {
+    std::fs::read_to_string(profile_path)
+        .map(|contents| contents.contains(SHELL_PATH_MARKER))
+        .unwrap_or(false)
+}
+
+/// Build the block that gets appended to the shell profile. Exposed for
+/// testing so assertions don't depend on the home directory.
+pub fn shell_path_block() -> String {
+    format!(
+        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$PATH\"\n"
+    )
+}
+
+/// Ensure the managed toolchain bin directories are present in the user's
+/// shell profile so that `hq`, `qmd`, `claude`, and `node`/`npm` are
+/// discoverable from interactive terminal sessions.
+///
+/// This is the macOS equivalent of writing the install path to the Windows
+/// system PATH environment variable. On macOS, PATH is configured per-shell
+/// via profile scripts (`.zshrc`, `.bash_profile`, `.profile`).
+///
+/// Idempotent — checks for a marker comment before writing. Failures are
+/// non-fatal and logged via `emit_preflight_line`.
+fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
+    let profile_path = shell_profile_path_in(home);
+
+    if is_shell_path_configured(&profile_path) {
+        return;
+    }
+
+    let block = shell_path_block();
+
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile_path)
+    {
+        Ok(mut f) => {
+            use std::io::Write;
+            if let Err(e) = f.write_all(block.as_bytes()) {
+                emit_preflight_line(
+                    app,
+                    &format!("[path] failed to write to {}: {e}", profile_path.display()),
+                );
+            } else {
+                emit_preflight_line(
+                    app,
+                    &format!(
+                        "[path] added HQ toolchain to {} — restart your terminal or run: source {}",
+                        profile_path.display(),
+                        profile_path.display()
+                    ),
+                );
+            }
+        }
+        Err(e) => {
+            emit_preflight_line(
+                app,
+                &format!("[path] failed to open {}: {e}", profile_path.display()),
+            );
+        }
+    }
 }
 
 /// Internal implementation shared by `check_dep` (uses real PATH) and
