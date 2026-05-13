@@ -9,8 +9,8 @@ mod deps_tests {
     use hq_installer_lib::commands::deps::{
         cancel_install, check_dep_in, compute_path_counts, extended_search_path,
         extended_search_path_in, format_install_error, format_path_log, format_shell_probe_log,
-        is_deps_debug_enabled, managed_tool_paths_in, node_dist_arch_for, register_cancel_handle,
-        ShellProbeOutcome,
+        is_deps_debug_enabled, is_shell_path_configured, managed_tool_paths_in, node_dist_arch_for,
+        register_cancel_handle, shell_path_block, shell_profile_path_in, ShellProbeOutcome,
     };
     use serial_test::serial;
     use std::fs;
@@ -809,5 +809,111 @@ mod deps_tests {
         // version-manager setup polluting the log.
         let home = TempDir::new().unwrap();
         let _ = extended_search_path_in(Some(home.path()));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // Shell profile PATH injection
+    // ═════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    #[serial]
+    fn test_shell_profile_path_resolves_zshrc_for_zsh() {
+        struct EnvGuard(Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("SHELL", v),
+                    None => std::env::remove_var("SHELL"),
+                }
+            }
+        }
+        let _g = EnvGuard(std::env::var("SHELL").ok());
+
+        let home = TempDir::new().unwrap();
+        std::env::set_var("SHELL", "/bin/zsh");
+        assert!(
+            shell_profile_path_in(home.path()).ends_with(".zshrc"),
+            "zsh users should get .zshrc"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_shell_profile_path_resolves_bash_profile_for_bash() {
+        struct EnvGuard(Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("SHELL", v),
+                    None => std::env::remove_var("SHELL"),
+                }
+            }
+        }
+        let _g = EnvGuard(std::env::var("SHELL").ok());
+
+        let home = TempDir::new().unwrap();
+        std::env::set_var("SHELL", "/bin/bash");
+        assert!(
+            shell_profile_path_in(home.path()).ends_with(".bash_profile"),
+            "bash users should get .bash_profile"
+        );
+    }
+
+    #[test]
+    fn test_is_shell_path_configured_false_when_missing() {
+        let home = TempDir::new().unwrap();
+        let profile = home.path().join(".zshrc");
+        assert!(
+            !is_shell_path_configured(&profile),
+            "non-existent profile should return false"
+        );
+    }
+
+    #[test]
+    fn test_is_shell_path_configured_false_when_no_marker() {
+        let home = TempDir::new().unwrap();
+        let profile = home.path().join(".zshrc");
+        fs::write(&profile, "export PATH=/usr/bin:$PATH\n").unwrap();
+        assert!(
+            !is_shell_path_configured(&profile),
+            "profile without marker should return false"
+        );
+    }
+
+    #[test]
+    fn test_is_shell_path_configured_true_when_marker_present() {
+        let home = TempDir::new().unwrap();
+        let profile = home.path().join(".zshrc");
+        fs::write(&profile, shell_path_block()).unwrap();
+        assert!(
+            is_shell_path_configured(&profile),
+            "profile with marker should return true"
+        );
+    }
+
+    #[test]
+    fn test_shell_path_block_contains_both_managed_dirs() {
+        let block = shell_path_block();
+        assert!(
+            block.contains("toolchain/node/bin"),
+            "block should include managed node bin"
+        );
+        assert!(
+            block.contains("toolchain/npm-global/bin"),
+            "block should include managed npm-global bin"
+        );
+        assert!(
+            block.contains("export PATH="),
+            "block should be a PATH export"
+        );
+    }
+
+    #[test]
+    fn test_shell_path_block_uses_home_var_not_absolute() {
+        let block = shell_path_block();
+        assert!(
+            block.contains("$HOME/"),
+            "block should use $HOME for portability, not an absolute path"
+        );
     }
 }
