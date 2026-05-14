@@ -61,21 +61,21 @@ jobs:
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # PATH-prepend alone wasn't enough for the release flow: v0.4.0's
-      # build (run 25890757341) still hit `cargo metadata → unexpected
-      # argument 'metadata' found` from `rustup-init`. tauri-action is a
-      # JS Action that spawns `cargo` via Node `child_process`, and the
-      # Homebrew shim at /opt/homebrew/bin/cargo still wins inside that
-      # spawned environment even though `cargo --version` from a `run:`
-      # step finds the right binary.
+      # build (run 25890757341) hit `cargo metadata → unexpected argument
+      # 'metadata' found` from `rustup-init`. tauri-action is a JS Action
+      # that spawns `cargo` via Node `child_process`, so even with the
+      # right PATH ordering it can resolve to a shim cargo at a path we
+      # haven't enumerated. (PR #65 run 25892054324 reproduced this even
+      # though /opt/homebrew/bin/cargo and /usr/local/bin/cargo were both
+      # absent — the shim lives somewhere else on this image.)
       #
-      # Physically replace each known shim location so PATH ordering can't
-      # matter. Note: `command -v cargo` from within this step's shell
-      # would already resolve to the rustup-managed binary thanks to the
-      # previous PATH-prepend step (GITHUB_PATH propagates to subsequent
-      # steps' default PATH) — so we CANNOT use `command -v` to detect
-      # the shim. We have to check the shim paths explicitly. Catching
-      # this fix-of-the-fix: codex review on PR #65.
-      - name: Replace Homebrew cargo shim with rustup-managed cargo
+      # Walk EVERY `cargo` on PATH via `which -a` and replace any entry
+      # that isn't already the rustup-managed binary (or a symlink to it)
+      # with a symlink to it. After this step, every PATH-resolved cargo
+      # invocation lands at the rustup-managed binary regardless of which
+      # path the resolver picks. Identical step to ci.yml — keep the two
+      # in sync.
+      - name: Replace any cargo shim with rustup-managed cargo
         run: |
           set -euo pipefail
           rustup_cargo="$HOME/.cargo/bin/cargo"
@@ -84,36 +84,37 @@ jobs:
             exit 1
           fi
 
-          # Known Homebrew shim locations on macOS runners. Replace each
-          # one that exists with a symlink to the rustup-managed binary.
-          # Idempotent — re-symlinking an already-correct symlink is a
-          # no-op semantically.
+          # Diagnostics — useful if a future image moves cargo somewhere new.
+          echo "PATH=$PATH"
+          echo "All cargo on PATH:"
+          which -a cargo || true
+
           replaced=0
-          for shim in /opt/homebrew/bin/cargo /usr/local/bin/cargo; do
-            if [ -e "$shim" ] || [ -L "$shim" ]; then
-              sudo rm -f "$shim"
-              sudo ln -sf "$rustup_cargo" "$shim"
-              echo "Replaced shim: $shim → $rustup_cargo"
-              replaced=$((replaced + 1))
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            if [ "$c" = "$rustup_cargo" ]; then
+              continue
             fi
-          done
+            target="$(readlink "$c" 2>/dev/null || true)"
+            if [ "$target" = "$rustup_cargo" ]; then
+              continue
+            fi
+            echo "Replace shim: $c (was → '${target:-<regular file>}') → $rustup_cargo"
+            sudo rm -f "$c"
+            sudo ln -sf "$rustup_cargo" "$c"
+            replaced=$((replaced + 1))
+          done < <(which -a cargo 2>/dev/null || true)
+
           if [ "$replaced" = 0 ]; then
-            echo "No Homebrew cargo shims found at /opt/homebrew/bin or /usr/local/bin (older image, or future fix landed)."
+            echo "No non-rustup cargo entries on PATH (older image, or future fix landed)."
           fi
 
-          # Sanity: invoke `cargo metadata` THROUGH each shim path that
-          # exists. This mimics tauri-action's JS child_process which
-          # resolves "cargo" against the runner's full PATH and can land
-          # on /opt/homebrew/bin/cargo before $HOME/.cargo/bin/cargo. If
-          # any shim still routes to rustup-init this exits non-zero
-          # before tauri-action wastes minutes.
-          for shim in /opt/homebrew/bin/cargo /usr/local/bin/cargo; do
-            if [ -x "$shim" ]; then
-              echo "Verify: $shim metadata"
-              "$shim" --version
-              "$shim" metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
-            fi
-          done
+          # Sanity: invoke `cargo metadata` to mimic tauri-action's JS
+          # child_process. Any remaining shim fails here loud rather than
+          # 10 min into the Tauri build.
+          which cargo
+          cargo --version
+          cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
 
       - uses: Swatinem/rust-cache@v2
         with:
