@@ -65,6 +65,62 @@ jobs:
       # proxy directory restores the expected `cargo` lookup.
       - name: Put rustup-managed cargo first on PATH
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # PATH-prepend alone is not enough — the rogue cargo-shim that maps to
+      # rustup-init lives at an enumeration-resistant path on macos-latest
+      # (PR #65 run 25892054324 reproduced the original `cargo check →
+      # unexpected argument 'check' found` even though /opt/homebrew/bin/cargo
+      # and /usr/local/bin/cargo were both absent). Walk EVERY `cargo` on PATH
+      # via `which -a` and replace any entry that isn't already the rustup-
+      # managed binary (or a symlink to it) with a symlink to it. Identical
+      # step to release.yml — keep the two in sync.
+      - name: Replace any cargo shim with rustup-managed cargo
+        run: |
+          set -euo pipefail
+          rustup_cargo="$HOME/.cargo/bin/cargo"
+          if [ ! -x "$rustup_cargo" ]; then
+            echo "::error::rustup-managed cargo not found at $rustup_cargo — toolchain step failed?"
+            exit 1
+          fi
+
+          # Diagnostics — useful if a future image moves cargo somewhere new.
+          echo "PATH=$PATH"
+          echo "All cargo on PATH:"
+          which -a cargo || true
+
+          replaced=0
+          # `which -a` enumerates every cargo on PATH in resolution order.
+          # We rewrite every non-rustup entry to point at rustup-managed
+          # cargo so it doesn't matter which one the resolver picks.
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            # Already the real rustup-managed binary? Skip.
+            if [ "$c" = "$rustup_cargo" ]; then
+              continue
+            fi
+            # Already a symlink pointing at rustup-managed? Skip.
+            target="$(readlink "$c" 2>/dev/null || true)"
+            if [ "$target" = "$rustup_cargo" ]; then
+              continue
+            fi
+            echo "Replace shim: $c (was → '${target:-<regular file>}') → $rustup_cargo"
+            sudo rm -f "$c"
+            sudo ln -sf "$rustup_cargo" "$c"
+            replaced=$((replaced + 1))
+          done < <(which -a cargo 2>/dev/null || true)
+
+          if [ "$replaced" = 0 ]; then
+            echo "No non-rustup cargo entries on PATH (older image, or future fix landed)."
+          fi
+
+          # Sanity: every cargo on PATH should now route to rustup-managed.
+          # `cargo metadata` exercises the same dispatch tauri-action's
+          # child_process performs, so any remaining shim fails here loud
+          # rather than 10 min into the Tauri build.
+          which cargo
+          cargo --version
+          cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
