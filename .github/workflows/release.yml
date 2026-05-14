@@ -60,6 +60,45 @@ jobs:
       - name: Put rustup-managed cargo first on PATH
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # PATH-prepend alone wasn't enough for the release flow: v0.4.0's
+      # build (run 25890757341) still hit `cargo metadata → unexpected
+      # argument 'metadata' found` from `rustup-init`. tauri-action is a
+      # JS Action that spawns `cargo` via Node `child_process`, and the
+      # Homebrew shim at /opt/homebrew/bin/cargo still wins inside that
+      # spawned environment even though `cargo --version` from a `run:`
+      # step finds the right binary.
+      #
+      # Physically replace the shim so PATH ordering can't matter. After
+      # this step every cargo invocation — PATH-resolved, absolute, or
+      # spawned by a JS Action — points at the rustup-managed binary.
+      # Verify with `which cargo && cargo --version` so a failure here
+      # surfaces before tauri-action wastes minutes.
+      - name: Replace Homebrew cargo shim with rustup-managed cargo
+        run: |
+          set -euo pipefail
+          # Resolve current cargo to detect the shim. If it's already the
+          # rustup-managed binary (older image, future fix landed), no-op.
+          resolved="$(command -v cargo || true)"
+          rustup_cargo="$HOME/.cargo/bin/cargo"
+          if [ ! -x "$rustup_cargo" ]; then
+            echo "::error::rustup-managed cargo not found at $rustup_cargo — toolchain step failed?"
+            exit 1
+          fi
+          if [ -z "$resolved" ] || [ "$resolved" = "$rustup_cargo" ]; then
+            echo "cargo already resolves to rustup-managed binary ($resolved); no shim to replace."
+          else
+            echo "cargo currently resolves to $resolved — replacing with symlink to $rustup_cargo"
+            sudo rm -f "$resolved"
+            sudo ln -sf "$rustup_cargo" "$resolved"
+          fi
+          which cargo
+          cargo --version
+          # Sanity: the symptom of the original bug is rustup-init being
+          # invoked for any subcommand. Confirm `cargo metadata` actually
+          # routes to cargo (no need to parse output; non-zero exit means
+          # the binary is still wrong).
+          cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
