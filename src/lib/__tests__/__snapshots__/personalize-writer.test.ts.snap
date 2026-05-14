@@ -2,10 +2,10 @@
 
 exports[`personalize > golden snapshot: complete output file tree > sorted created-path list matches snapshot 1`] = `
 [
-  "companies/personal/settings/.gitkeep",
-  "companies/personal/settings/cognito.json",
-  "companies/personal/workers/.gitkeep",
-  "knowledge/alice/profile.md",
-  "knowledge/alice/voice-style.md",
+  "core/knowledge/alice/profile.md",
+  "core/knowledge/alice/voice-style.md",
+  "personal/settings/.gitkeep",
+  "personal/settings/cognito.json",
+  "personal/workers/.gitkeep",
 ]
 `;

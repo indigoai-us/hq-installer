@@ -273,13 +273,60 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // App-menu "Use Staging Channel" toggle — when on, the wizard pulls
+    // `indigoai-us/hq-core-staging` @ `main` instead of the latest stable
+    // hq-core release. Resolved at fetch time so a mid-wizard toggle takes
+    // effect on Retry without needing an app restart. Best-effort: any
+    // failure (command missing, IPC error) falls back to the stable channel.
+    let useStaging = false;
+    try {
+      useStaging = await invoke<boolean>("get_use_staging_source");
+    } catch {
+      useStaging = false;
+    }
+
+    // Staging repo is private — anonymous tarball requests 404. Pull a
+    // GitHub token from `gh auth token` via Rust. If gh is missing or
+    // unauthenticated, surface the error immediately instead of letting the
+    // wizard fail later with an opaque 404 from GitHub. Token is held only
+    // in this closure scope and passed into fetchAndExtract; never logged.
+    let stagingToken: string | undefined;
+    if (useStaging) {
+      try {
+        stagingToken = await invoke<string>("get_github_token");
+      } catch (tokenErr) {
+        const msg =
+          tokenErr instanceof Error ? tokenErr.message : String(tokenErr);
+        setPhase("error");
+        setErrorMsg(
+          `Staging channel needs a GitHub token. ${msg}`,
+        );
+        setLogLines([
+          "Resolving staging branch (hq-core-staging @ main)…",
+          `Couldn't read GitHub token: ${msg}`,
+        ]);
+        runningRef.current = false;
+        return;
+      }
+    }
+    const source = useStaging
+      ? {
+          repo: "indigoai-us/hq-core-staging",
+          ref: "main",
+          authToken: stagingToken,
+        }
+      : undefined;
+
     setPhase("fetching");
     setDownloaded(0);
     setTotal(null);
     setErrorMsg(null);
-    setLogLines(["Resolving latest release…"]);
+    const initialLog = useStaging
+      ? "Resolving staging branch (hq-core-staging @ main)…"
+      : "Resolving latest release…";
+    setLogLines([initialLog]);
     setPacks(initialPacks());
-    diskLogRef.current = ["Resolving latest release…"];
+    diskLogRef.current = [initialLog];
 
     const installerVersion = await getInstallerVersion();
     if (targetDir) {
@@ -302,8 +349,13 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         undefined,
         handleProgress,
         controller.signal,
+        source,
       );
-      appendLog(`Downloaded release ${version}.`);
+      appendLog(
+        useStaging
+          ? `Downloaded staging (${version}) from hq-core-staging.`
+          : `Downloaded release ${version}.`,
+      );
       appendLog("Template extracted successfully.");
       // Persist the resolved release version into the manifest so agents
       // self-healing a partial install know what template version landed.

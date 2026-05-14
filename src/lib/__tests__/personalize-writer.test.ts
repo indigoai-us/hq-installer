@@ -98,13 +98,13 @@ beforeEach(() => {
 describe("personalize", () => {
   // -------------------------------------------------------------------------
   describe("profile.md and voice-style.md", () => {
-    it("writes profile.md to knowledge/{name}/profile.md under baseDir", async () => {
+    it("writes profile.md to core/knowledge/{name}/profile.md under baseDir", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const expectedPath = `${BASE_DIR}/knowledge/alice/profile.md`;
+      const expectedPath = `${BASE_DIR}/core/knowledge/alice/profile.md`;
       expect(mockWriteTextFile).toHaveBeenCalledWith(
         expectedPath,
         expect.stringContaining("alice"),
@@ -117,20 +117,20 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const content = getWrittenText(`${BASE_DIR}/knowledge/alice/profile.md`);
+      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/profile.md`);
       expect(content).toBeDefined();
       expect(content).toContain("alice");
       expect(content).toContain("Software engineer and indie hacker");
       expect(content).toContain("Automate repetitive tasks and ship faster");
     });
 
-    it("writes voice-style.md to knowledge/{name}/voice-style.md under baseDir", async () => {
+    it("writes voice-style.md to core/knowledge/{name}/voice-style.md under baseDir", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const expectedPath = `${BASE_DIR}/knowledge/alice/voice-style.md`;
+      const expectedPath = `${BASE_DIR}/core/knowledge/alice/voice-style.md`;
       expect(mockWriteTextFile).toHaveBeenCalledWith(
         expectedPath,
         expect.any(String),
@@ -143,21 +143,21 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const content = getWrittenText(`${BASE_DIR}/knowledge/alice/voice-style.md`);
+      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/voice-style.md`);
       expect(content).toBeDefined();
       expect(content).toContain("alice");
       expect(content).toContain("concise and direct");
       expect(content).toContain("America/New_York");
     });
 
-    it("creates parent knowledge/{name} directory recursively", async () => {
+    it("creates parent core/knowledge/{name} directory recursively", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
       expect(mockMkdir).toHaveBeenCalledWith(
-        `${BASE_DIR}/knowledge/alice`,
+        `${BASE_DIR}/core/knowledge/alice`,
         { recursive: true },
       );
     });
@@ -175,20 +175,20 @@ describe("personalize", () => {
         }),
       ).resolves.toBeUndefined();
 
-      const content = getWrittenText(`${BASE_DIR}/knowledge/alice/voice-style.md`);
+      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/voice-style.md`);
       expect(content).toBeDefined();
     });
   });
 
   // -------------------------------------------------------------------------
   describe("settings scaffold", () => {
-    it("writes cognito.json as an empty JSON object to companies/personal/settings/", async () => {
+    it("writes cognito.json as an empty JSON object to personal/settings/", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const expectedPath = `${BASE_DIR}/companies/personal/settings/cognito.json`;
+      const expectedPath = `${BASE_DIR}/personal/settings/cognito.json`;
       expect(mockWriteTextFile).toHaveBeenCalledWith(
         expectedPath,
         expect.any(String),
@@ -201,7 +201,7 @@ describe("personalize", () => {
       expect(JSON.parse(content!)).toEqual({});
     });
 
-    it("writes .gitkeep to companies/personal/settings/", async () => {
+    it("writes .gitkeep to personal/settings/", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
@@ -210,24 +210,24 @@ describe("personalize", () => {
       const writtenPaths = allWrittenPaths();
       expect(
         writtenPaths.some(
-          (p) => p === `${BASE_DIR}/companies/personal/settings/.gitkeep`,
+          (p) => p === `${BASE_DIR}/personal/settings/.gitkeep`,
         ),
       ).toBe(true);
     });
 
-    it("creates companies/personal/settings/ directory recursively", async () => {
+    it("creates personal/settings/ directory recursively", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
       expect(mockMkdir).toHaveBeenCalledWith(
-        `${BASE_DIR}/companies/personal/settings`,
+        `${BASE_DIR}/personal/settings`,
         { recursive: true },
       );
     });
 
-    it("writes .gitkeep to companies/personal/workers/ directory", async () => {
+    it("writes .gitkeep to personal/workers/ directory", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
@@ -236,7 +236,7 @@ describe("personalize", () => {
       const writtenPaths = allWrittenPaths();
       expect(
         writtenPaths.some(
-          (p) => p === `${BASE_DIR}/companies/personal/workers/.gitkeep`,
+          (p) => p === `${BASE_DIR}/personal/workers/.gitkeep`,
         ),
       ).toBe(true);
     });
