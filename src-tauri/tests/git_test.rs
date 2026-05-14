@@ -116,8 +116,7 @@ mod git_tests {
                 cfg.set_str("user.email", "seed@example.com")
                     .expect("set user.email");
             }
-            let sig =
-                git2::Signature::now("Seed", "seed@example.com").expect("signature");
+            let sig = git2::Signature::now("Seed", "seed@example.com").expect("signature");
             let tree_oid = {
                 let tb = repo.treebuilder(None).expect("treebuilder");
                 tb.write().expect("write tree")
