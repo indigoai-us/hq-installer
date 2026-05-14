@@ -52,9 +52,14 @@ pub fn git_init_impl(path: &str, name: &str, email: &str) -> Result<String, Stri
 
     if dot_git.exists() {
         // Repo already initialised — return current HEAD SHA.
+        //
+        // Resolve HEAD dynamically rather than hardcoding refs/heads/main:
+        // pre-existing repos may be on master, trunk, or any custom branch.
+        // The previous hardcoded find_reference("refs/heads/main") failed
+        // with GIT_ERROR / NotFound (-3) and hard-blocked the installer.
         let repo = git2::Repository::open(path).map_err(git_err)?;
-        let head_ref = repo.find_reference("refs/heads/main").map_err(git_err)?;
-        let commit = head_ref.peel_to_commit().map_err(git_err)?;
+        let head = repo.head().map_err(git_err)?;
+        let commit = head.peel_to_commit().map_err(git_err)?;
         return Ok(commit.id().to_string());
     }
 
