@@ -57,6 +57,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # macos-15-arm64 image 20260511.0048.1 ships a Homebrew `cargo` shim
+      # that resolves to `rustup-init` and shadows ~/.cargo/bin/cargo on
+      # $PATH. dtolnay/rust-toolchain only appends $CARGO_HOME/bin to
+      # $GITHUB_PATH when it has to install rustup itself; rustup was already
+      # present here, so it skipped that. Prepending the rustup-managed
+      # proxy directory restores the expected `cargo` lookup.
+      - name: Put rustup-managed cargo first on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"

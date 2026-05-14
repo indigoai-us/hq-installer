@@ -53,6 +53,13 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # macos-15-arm64 image 20260511.0048.1 ships a Homebrew `cargo` shim
+      # that resolves to `rustup-init` and shadows ~/.cargo/bin/cargo. Prepend
+      # the rustup-managed proxy dir so tauri-action's cargo invocations
+      # resolve correctly. See ci.yml for the full diagnosis.
+      - name: Put rustup-managed cargo first on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
