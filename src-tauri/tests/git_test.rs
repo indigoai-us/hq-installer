@@ -101,26 +101,29 @@ mod git_tests {
 
         // Seed a repo on `master` with one commit, the way an older `git init`
         // (pre-2.28 default branch change) or a manual `git init -b master`
-        // would have left it.
-        let repo = git2::Repository::init_opts(
-            path,
-            git2::RepositoryInitOptions::new().initial_head("master"),
-        )
-        .expect("init repo on master");
-        {
-            let mut cfg = repo.config().expect("repo config");
-            cfg.set_str("user.name", "Seed").expect("set user.name");
-            cfg.set_str("user.email", "seed@example.com")
-                .expect("set user.email");
-        }
-        let sig = git2::Signature::now("Seed", "seed@example.com").expect("signature");
-        let tree_oid = {
-            let tb = repo.treebuilder(None).expect("treebuilder");
-            tb.write().expect("write tree")
-        };
-        let tree = repo.find_tree(tree_oid).expect("find tree");
-        let seed_commit_oid = repo
-            .commit(
+        // would have left it. Scope the seed phase so `tree` and friends drop
+        // before `repo` does — otherwise the borrow checker complains about
+        // moving `repo` while it is still borrowed.
+        let seed_commit_oid = {
+            let repo = git2::Repository::init_opts(
+                path,
+                git2::RepositoryInitOptions::new().initial_head("master"),
+            )
+            .expect("init repo on master");
+            {
+                let mut cfg = repo.config().expect("repo config");
+                cfg.set_str("user.name", "Seed").expect("set user.name");
+                cfg.set_str("user.email", "seed@example.com")
+                    .expect("set user.email");
+            }
+            let sig =
+                git2::Signature::now("Seed", "seed@example.com").expect("signature");
+            let tree_oid = {
+                let tb = repo.treebuilder(None).expect("treebuilder");
+                tb.write().expect("write tree")
+            };
+            let tree = repo.find_tree(tree_oid).expect("find tree");
+            repo.commit(
                 Some("refs/heads/master"),
                 &sig,
                 &sig,
@@ -128,9 +131,8 @@ mod git_tests {
                 &tree,
                 &[],
             )
-            .expect("seed commit");
-        // Drop the repo handle before calling git_init_impl, which re-opens.
-        drop(repo);
+            .expect("seed commit")
+        };
 
         let result = git_init_impl(path, "Alice", "alice@example.com");
         assert!(
