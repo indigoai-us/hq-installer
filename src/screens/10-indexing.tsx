@@ -365,7 +365,13 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
   // Derived
   // ---------------------------------------------------------------------------
 
-  const canContinue = steps[0].status === "done";
+  // Continue is offered once the run settles. The happy path is step 0 done;
+  // the "Continue anyway" path activates when a step failed and we're no
+  // longer mid-run, so a qmd-indexing failure can't strand the user.
+  // Failures are journaled via recordStepFailure so /setup can pick the
+  // work back up later.
+  const allDone = steps[0].status === "done";
+  const canContinue = allDone || (failedStep !== null && !running);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -422,7 +428,7 @@ export function QmdIndexing({ installPath, onNext }: QmdIndexingProps) {
             onClick={onNext}
             className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
           >
-            Continue
+            {allDone ? "Continue" : "Continue anyway"}
           </button>
         </WizardFooterSlot>
       )}

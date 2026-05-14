@@ -597,6 +597,70 @@ describe("GitInit screen (08-git-init.tsx)", () => {
     });
   });
 
+  // Regression: an installer customer was hard-blocked when git_init crashed
+  // (libgit2 NotFound on refs/heads/main against a pre-existing master repo).
+  // The structural side of the fix is that errors must never strand the user
+  // — Continue stays available with an "anyway" label so they can finish the
+  // wizard while the failure is journaled for /setup to remediate later.
+  it("shows 'Continue anyway' alongside Retry when git_init fails", async () => {
+    const user = userEvent.setup();
+
+    mockInvoke.mockImplementation(
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "git_probe_user") return DEFAULT_PROBE;
+        if (command === "git_init") throw new Error("git init failed");
+        return null;
+      })
+    );
+
+    render(<GitInit installPath="/tmp/hq" />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /run setup/i })).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /run setup/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /continue anyway/i })
+      ).not.toBeNull();
+    });
+
+    // Retry still shown — both paths must coexist.
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeNull();
+  });
+
+  it("'Continue anyway' calls onNext on failed git_init", async () => {
+    const user = userEvent.setup();
+    const onNext = vi.fn();
+
+    mockInvoke.mockImplementation(
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "git_probe_user") return DEFAULT_PROBE;
+        if (command === "git_init") throw new Error("git init failed");
+        return null;
+      })
+    );
+
+    render(<GitInit installPath="/tmp/hq" onNext={onNext} />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /run setup/i })).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /run setup/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /continue anyway/i })
+      ).not.toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /continue anyway/i })!);
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
   // ── 9. No purple/indigo class names ──────────────────────────────────────
 
   it("does NOT use 'purple' class names in the DOM", async () => {

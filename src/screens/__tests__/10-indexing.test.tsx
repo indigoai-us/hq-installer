@@ -328,6 +328,37 @@ describe("QmdIndexing screen (10-indexing.tsx)", () => {
     });
   });
 
+  // Companion to the 08-git-init "Continue anyway" regression — an indexing
+  // failure must not strand the user. Failures are journaled via
+  // recordStepFailure; /setup can pick the work back up later.
+  it("shows 'Continue anyway' alongside Retry when step 0 fails", async () => {
+    const handles: string[] = [];
+    mockInvoke.mockImplementation(
+      vi.fn(async (command: string): Promise<any> => {
+        if (command === "spawn_process") {
+          const h = `handle-${handles.length + 1}`;
+          handles.push(h);
+          return h;
+        }
+        return null;
+      })
+    );
+
+    render(<QmdIndexing installPath="/tmp/hq" />);
+
+    await waitFor(() => expect(handles.length).toBeGreaterThanOrEqual(1));
+    failProcess(handles[0]);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /continue anyway/i })
+      ).not.toBeNull();
+    });
+
+    // Retry stays available too.
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeNull();
+  });
+
   // ── Pending marker (US-001) ───────────────────────────────────────────────
 
   it("writes {installPath}/.hq-embeddings-pending.json on step 0 success", async () => {
