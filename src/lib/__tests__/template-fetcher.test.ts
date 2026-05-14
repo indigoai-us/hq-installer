@@ -25,6 +25,17 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   writeFile: (path: string, data: Uint8Array) => mockWriteFile(path, data),
 }));
 
+// template-fetcher invokes a Rust command (`create_symlink`) for tar entries
+// with typeflag '2' since Tauri's plugin-fs doesn't expose `symlink` from JS.
+// Capture invocations so tests can assert what was sent without booting Tauri.
+const mockInvoke = vi.fn<(cmd: string, args?: Record<string, unknown>) => Promise<unknown>>(
+  async () => undefined,
+);
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args?: Record<string, unknown>) => mockInvoke(cmd, args),
+}));
+
 // ---------------------------------------------------------------------------
 // Import module under test AFTER mocks are registered
 // ---------------------------------------------------------------------------
@@ -40,15 +51,29 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a minimal tar buffer with one file entry.
+ * Build a minimal tar buffer with file and/or symlink entries.
  * Layout: [512-byte header][padded data blocks]
+ *
+ * - Regular file: `content` set, `linkname` absent → typeflag '0', data
+ *   blocks follow the header.
+ * - Symlink: `linkname` set → typeflag '2', size=0, link target lives in
+ *   the header's `linkname` field at offset 157–256 (no data blocks).
  */
-function buildTarBuffer(entries: Array<{ name: string; content: string }>): Uint8Array {
+type TarEntryInput =
+  | { name: string; content: string; linkname?: undefined }
+  | { name: string; content?: undefined; linkname: string };
+
+function buildTarBuffer(entries: TarEntryInput[]): Uint8Array {
   const blocks: Uint8Array[] = [];
 
   const encoder = new TextEncoder();
 
-  const writeHeader = (name: string, size: number): Uint8Array => {
+  const writeHeader = (
+    name: string,
+    size: number,
+    typeflag: "0" | "2",
+    linkname?: string,
+  ): Uint8Array => {
     const header = new Uint8Array(512);
     const nameBytes = encoder.encode(name.slice(0, 100));
     header.set(nameBytes, 0);
@@ -62,7 +87,7 @@ function buildTarBuffer(entries: Array<{ name: string; content: string }>): Uint
     header.set(zeroOctal, 108);
     header.set(zeroOctal, 116);
 
-    // size (octal, 11 digits + null)
+    // size (octal, 11 digits + null) — 0 for symlinks (no data block)
     const sizeStr = size.toString(8).padStart(11, "0") + "\0";
     header.set(encoder.encode(sizeStr), 124);
 
@@ -70,8 +95,14 @@ function buildTarBuffer(entries: Array<{ name: string; content: string }>): Uint
     const mtime = Math.floor(Date.now() / 1000).toString(8).padStart(11, "0") + "\0";
     header.set(encoder.encode(mtime), 136);
 
-    // typeflag = regular file
-    header[156] = 0x30; // '0'
+    // typeflag — '0' regular file, '2' symbolic link
+    header[156] = typeflag.charCodeAt(0);
+
+    // linkname (offset 157, 100 bytes, null-padded) — only set for symlinks
+    if (linkname !== undefined) {
+      const linkBytes = encoder.encode(linkname.slice(0, 100));
+      header.set(linkBytes, 157);
+    }
 
     // magic "ustar"
     header.set(encoder.encode("ustar\0"), 257);
@@ -89,16 +120,20 @@ function buildTarBuffer(entries: Array<{ name: string; content: string }>): Uint
     return header;
   };
 
-  for (const { name, content } of entries) {
-    const data = encoder.encode(content);
-    const header = writeHeader(name, data.length);
-    blocks.push(header);
+  for (const entry of entries) {
+    if (entry.linkname !== undefined) {
+      // Symlink: size=0, no data block follows.
+      blocks.push(writeHeader(entry.name, 0, "2", entry.linkname));
+    } else {
+      const data = encoder.encode(entry.content);
+      blocks.push(writeHeader(entry.name, data.length, "0"));
 
-    // Pad data to 512-byte boundary
-    const paddedSize = Math.ceil(data.length / 512) * 512;
-    const paddedData = new Uint8Array(paddedSize);
-    paddedData.set(data, 0);
-    blocks.push(paddedData);
+      // Pad data to 512-byte boundary
+      const paddedSize = Math.ceil(data.length / 512) * 512;
+      const paddedData = new Uint8Array(paddedSize);
+      paddedData.set(data, 0);
+      blocks.push(paddedData);
+    }
   }
 
   // Two 512-byte zero EOF blocks
@@ -119,13 +154,12 @@ function buildTarBuffer(entries: Array<{ name: string; content: string }>): Uint
  * Build a .tar.gz with GitHub's top-level prefix dir.
  * Entry names like `indigoai-us-hq-abc123/path/to/file.ts`
  */
-function buildGitHubTarGz(
-  entries: Array<{ name: string; content: string }>,
-): Uint8Array {
-  const prefixed = entries.map((e) => ({
-    name: `indigoai-us-hq-abc123/${e.name}`,
-    content: e.content,
-  }));
+function buildGitHubTarGz(entries: TarEntryInput[]): Uint8Array {
+  const prefixed: TarEntryInput[] = entries.map((e) =>
+    e.linkname !== undefined
+      ? { name: `indigoai-us-hq-abc123/${e.name}`, linkname: e.linkname }
+      : { name: `indigoai-us-hq-abc123/${e.name}`, content: e.content },
+  );
   const tarBuf = buildTarBuffer(prefixed);
   return gzipSync(tarBuf);
 }
@@ -184,6 +218,7 @@ beforeEach(() => {
   mockFetch.mockReset();
   mockMkdir.mockReset().mockResolvedValue(undefined);
   mockWriteFile.mockReset().mockResolvedValue(undefined);
+  mockInvoke.mockReset().mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -551,6 +586,126 @@ describe("fetchAndExtract", () => {
       >;
       expect(headers.Authorization).toBeUndefined();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  it("symlinks: typeflag '2' entries create real symlinks via Rust create_symlink command", async () => {
+    // hq-core(-staging) ships git symlinks (mode 120000) like
+    // `AGENTS.md → .claude/CLAUDE.md`. In tar these arrive with typeflag '2'
+    // and the link target in the header's `linkname` field (offset 157-256),
+    // not in a data block. The old parser fell through to writeFile() with
+    // empty entry.data, producing zero-byte regular files. The fix routes
+    // typeflag '2' entries to the Rust `create_symlink` command (plugin-fs
+    // doesn't expose `symlink` from JS).
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "AGENTS.md", linkname: ".claude/CLAUDE.md" },
+      { name: ".codex/output-style.md", linkname: "../.claude/output-style.md" },
+      { name: "real-file.txt", content: "regular files still work" },
+    ]);
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/target");
+
+    // Two symlink entries → two `create_symlink` invocations with the
+    // resolved on-disk link path + the literal link target from the tar header.
+    const symlinkCalls = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "create_symlink",
+    );
+    expect(symlinkCalls).toHaveLength(2);
+
+    // AGENTS.md → .claude/CLAUDE.md
+    expect(symlinkCalls).toContainEqual([
+      "create_symlink",
+      {
+        target: ".claude/CLAUDE.md",
+        linkPath: "/tmp/target/AGENTS.md",
+      },
+    ]);
+
+    // .codex/output-style.md → ../.claude/output-style.md
+    expect(symlinkCalls).toContainEqual([
+      "create_symlink",
+      {
+        target: "../.claude/output-style.md",
+        linkPath: "/tmp/target/.codex/output-style.md",
+      },
+    ]);
+
+    // Regular files still go through writeFile (NOT through invoke).
+    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+    expect(writePaths).toContain("/tmp/target/real-file.txt");
+
+    // Critically: writeFile must NOT have been called for the symlink paths.
+    // Today's bug is that empty-data symlinks become zero-byte regular files.
+    expect(writePaths).not.toContain("/tmp/target/AGENTS.md");
+    expect(writePaths).not.toContain("/tmp/target/.codex/output-style.md");
+  });
+
+  // -------------------------------------------------------------------------
+  it("symlinks: path-traversal in linkname is preserved (host symlink-create command enforces safety)", async () => {
+    // The TS extractor's safeJoin only guards the *link path* itself, not
+    // what the link points to. A symlink whose target is "../../etc/passwd"
+    // is fine to create — POSIX symlinks can dangle or point anywhere — and
+    // we faithfully forward the target string. Real-world hardening (refusing
+    // to follow such links) is the responsibility of whatever code later
+    // reads through them.
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "weird.lnk", linkname: "../../etc/passwd" },
+    ]);
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/target");
+
+    const symlinkCalls = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "create_symlink",
+    );
+    expect(symlinkCalls).toEqual([
+      [
+        "create_symlink",
+        { target: "../../etc/passwd", linkPath: "/tmp/target/weird.lnk" },
+      ],
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  it("symlinks: link path with .. segments is rejected by safeJoin (no invocation)", async () => {
+    // The link *path* itself still goes through safeJoin — a malicious
+    // tarball entry named "../../escaping.lnk" would otherwise land outside
+    // targetDir. We expect zero symlink invocations for that entry.
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "../../escaping.lnk", linkname: "anywhere" },
+      { name: "safe.lnk", linkname: "ok" },
+    ]);
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/target");
+
+    const symlinkCalls = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "create_symlink",
+    );
+    expect(symlinkCalls).toHaveLength(1);
+    expect((symlinkCalls[0][1] as { linkPath: string }).linkPath).toBe(
+      "/tmp/target/safe.lnk",
+    );
   });
 
   // -------------------------------------------------------------------------

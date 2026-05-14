@@ -1,6 +1,7 @@
 import { gunzipSync } from "fflate";
 import { mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { fetch } from "@tauri-apps/plugin-http";
+import { invoke } from "@tauri-apps/api/core";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -94,7 +95,7 @@ interface ReleaseInfo {
 
 interface TarEntry {
   name: string;
-  /** typeflag: '0' or '' = regular file, '5' = directory */
+  /** typeflag: '0' or '' = regular file, '2' = symlink, '5' = directory */
   typeflag: string;
   size: number;
   data: Uint8Array;
@@ -105,6 +106,13 @@ interface TarEntry {
    * exit code 126 ("command invoked cannot execute") on macOS/Linux.
    */
   mode: number;
+  /**
+   * Symlink target — parsed from the tar header's linkname field at offset
+   * 157-256 (100 bytes, null-padded). Only populated for typeflag '2'
+   * entries (and theoretically '1' hardlinks, which the template doesn't
+   * ship). For regular files this stays an empty string.
+   */
+  linkname: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,12 +395,19 @@ function parseTar(buf: Uint8Array): TarEntry[] {
     const actualName = pendingLongName ?? baseName;
     pendingLongName = null;
 
+    // Symlink target lives in the header's `linkname` field (offset 157,
+    // 100 bytes, null-padded). Only meaningful for typeflag '1' (hardlink)
+    // and '2' (symlink); empty for regular files / directories / extended
+    // headers. We read it unconditionally — it's a cheap null-terminated
+    // string scan and keeps the per-entry record uniform.
+    const linkname = readString(headerStart + 157, 100);
+
     const dataBlocks = Math.ceil(size / 512) * 512;
     const data = buf.slice(pos, pos + size);
     pos += dataBlocks;
 
     if (actualName) {
-      entries.push({ name: actualName, typeflag, size, data, mode });
+      entries.push({ name: actualName, typeflag, size, data, mode, linkname });
     }
   }
 
@@ -474,11 +489,32 @@ async function extractTarball(
     if (!trimmed || trimmed === ".") continue;
 
     const isDir = entry.typeflag === "5" || entry.name.endsWith("/");
+    const isSymlink = entry.typeflag === "2";
     const destPath = safeJoin(targetDir, trimmed);
     if (!destPath) continue; // path traversal attempt — skip
 
     if (isDir) {
       await mkdir(destPath, { recursive: true });
+      continue;
+    }
+
+    if (isSymlink) {
+      // Symlinks have size=0 and no data block — the link target is in the
+      // tar header's `linkname` field (extracted by parseTar). Route to the
+      // Rust `create_symlink` command since Tauri's plugin-fs doesn't expose
+      // `symlink` from JS. We do NOT validate the target string here — POSIX
+      // symlinks can point at relative paths, absolute paths, or non-existent
+      // files, and the template legitimately uses all three (`AGENTS.md →
+      // .claude/CLAUDE.md`, `.codex/output-style.md → ../.claude/...`).
+      if (!entry.linkname) {
+        // Defensive: a typeflag-2 entry without a linkname is malformed.
+        // Skip rather than create a broken empty symlink.
+        continue;
+      }
+      await invoke("create_symlink", {
+        target: entry.linkname,
+        linkPath: destPath,
+      });
       continue;
     }
 

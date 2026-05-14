@@ -151,6 +151,7 @@ pub fn run() {
             commands::template::fetch_template,
             commands::fs::write_file,
             commands::fs::home_dir,
+            commands::fs::create_symlink,
             commands::launch::launch_claude_code,
             commands::launch::launch_claude_desktop,
             commands::launch::open_claude_code_link,
