@@ -460,6 +460,100 @@ describe("fetchAndExtract", () => {
   });
 
   // -------------------------------------------------------------------------
+  it("staging source: source override fetches /tarball/{ref} against override repo, returns ref as version", async () => {
+    // When the App-menu "Use Staging Channel" toggle is on, 07-template.tsx
+    // passes `source = { repo: 'indigoai-us/hq-core-staging', ref: 'main' }`.
+    // The fetcher must:
+    //   - skip the releases endpoint entirely (one fetch call, not two)
+    //   - hit /repos/<override repo>/tarball/<ref>
+    //   - return the ref as the version
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "core.yaml", content: "version: staging-main" },
+      { name: "README.md", content: "from staging" },
+    ]);
+
+    // Only one fetch call expected (no release lookup)
+    mockFetch.mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    const result = await fetchAndExtract(
+      "/tmp/target",
+      undefined,
+      undefined,
+      undefined,
+      { repo: "indigoai-us/hq-core-staging", ref: "main" },
+    );
+
+    expect(result.version).toBe("main");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const url = mockFetch.mock.calls[0][0] as string;
+    expect(url).toBe(
+      "https://api.github.com/repos/indigoai-us/hq-core-staging/tarball/main",
+    );
+
+    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+    expect(writePaths).toContain("/tmp/target/core.yaml");
+    expect(writePaths).toContain("/tmp/target/README.md");
+  });
+
+  // -------------------------------------------------------------------------
+  it("staging source with authToken: passes Authorization: Bearer <token> on tarball fetch", async () => {
+    // hq-core-staging is a private repo. Anonymous tarball requests return
+    // 404 (private repos don't leak existence). The fetcher must forward the
+    // caller-supplied token as `Authorization: Bearer <token>` so the wizard
+    // can use `gh auth token` and still resolve the tarball.
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "core.yaml", content: "auth ok" },
+    ]);
+    mockFetch.mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract(
+      "/tmp/target",
+      undefined,
+      undefined,
+      undefined,
+      {
+        repo: "indigoai-us/hq-core-staging",
+        ref: "main",
+        authToken: "ghp_TEST_TOKEN",
+      },
+    );
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const init = mockFetch.mock.calls[0][1] as RequestInit | undefined;
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer ghp_TEST_TOKEN");
+    // Accept header still set so GitHub returns the documented release shape.
+    expect(headers.Accept).toBe("application/vnd.github+json");
+  });
+
+  // -------------------------------------------------------------------------
+  it("public default: no authToken means no Authorization header (anonymous request)", async () => {
+    // Regression guard: today's anonymous flow against the public hq-core
+    // repo must keep working. Sending an empty bearer header could be
+    // rejected by GitHub as malformed, so absence-not-empty matters.
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "core.yaml", content: "anon" },
+    ]);
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/target");
+
+    for (const [, init] of mockFetch.mock.calls) {
+      const headers = ((init as RequestInit | undefined)?.headers ?? {}) as Record<
+        string,
+        string
+      >;
+      expect(headers.Authorization).toBeUndefined();
+    }
+  });
+
+  // -------------------------------------------------------------------------
   it("wrapper strip: GitHub tarball wrapper dir is stripped but contents kept", async () => {
     // Regression guard: the wrapper dir that GitHub prepends to tarballs
     // (e.g. `indigoai-us-hq-core-abc123/`) must never leak into the user's

@@ -76,11 +76,16 @@ async function loadTemplate(
 
 /**
  * Personalise an HQ installation directory by writing:
- *  - knowledge/{name}/profile.md
- *  - knowledge/{name}/voice-style.md
- *  - companies/personal/settings/cognito.json  (empty JSON object)
- *  - companies/personal/settings/.gitkeep
- *  - companies/personal/workers/.gitkeep
+ *  - core/knowledge/{name}/profile.md
+ *  - core/knowledge/{name}/voice-style.md
+ *  - personal/settings/cognito.json  (empty JSON object)
+ *  - personal/settings/.gitkeep
+ *  - personal/workers/.gitkeep
+ *
+ * HQ template layout (hq-core / hq-core-staging) places shared knowledge
+ * under `core/knowledge/` and the user's personal workspace at top-level
+ * `personal/` (NOT `companies/personal/`). Writing to the legacy paths
+ * leaves orphaned trees alongside the real ones the template ships.
  */
 export async function personalize(
   answers: PersonalizationAnswers,
@@ -110,25 +115,25 @@ export async function personalize(
   const voiceStyleContent = renderVoiceStyle({ name, customizations });
 
   // -----------------------------------------------------------------------
-  // 3. Write knowledge files
+  // 3. Write knowledge files under core/knowledge/{name}/
   // -----------------------------------------------------------------------
-  const knowledgeDir = `${baseDir}/knowledge/${name}`;
+  const knowledgeDir = `${baseDir}/core/knowledge/${name}`;
   await mkdir(knowledgeDir, { recursive: true });
   await writeTextFile(`${knowledgeDir}/profile.md`, profileContent);
   await writeTextFile(`${knowledgeDir}/voice-style.md`, voiceStyleContent);
 
   // -----------------------------------------------------------------------
-  // 4. Scaffold companies/personal/settings/
+  // 4. Scaffold personal/settings/ (top-level, NOT companies/personal/)
   // -----------------------------------------------------------------------
-  const settingsDir = `${baseDir}/companies/personal/settings`;
+  const settingsDir = `${baseDir}/personal/settings`;
   await mkdir(settingsDir, { recursive: true });
   await writeTextFile(`${settingsDir}/cognito.json`, JSON.stringify({}));
   await writeTextFile(`${settingsDir}/.gitkeep`, "");
 
   // -----------------------------------------------------------------------
-  // 5. Scaffold companies/personal/workers/
+  // 5. Scaffold personal/workers/
   // -----------------------------------------------------------------------
-  const workersDir = `${baseDir}/companies/personal/workers`;
+  const workersDir = `${baseDir}/personal/workers`;
   await mkdir(workersDir, { recursive: true });
   await writeTextFile(`${workersDir}/.gitkeep`, "");
 

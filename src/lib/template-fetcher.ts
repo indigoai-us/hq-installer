@@ -7,11 +7,57 @@ import { fetch } from "@tauri-apps/plugin-http";
 // ---------------------------------------------------------------------------
 
 const GITHUB_API = "https://api.github.com";
-const REPO = "indigoai-us/hq-core";
+const DEFAULT_REPO = "indigoai-us/hq-core";
 const GITHUB_HEADERS = { Accept: "application/vnd.github+json" };
+
+/**
+ * Build the header bag for a GitHub API/codeload request, adding the bearer
+ * token only when one is supplied. Done as a fresh object per-call so callers
+ * can't accidentally mutate the module-level `GITHUB_HEADERS` constant.
+ *
+ * NOTE: when `authToken` is empty/undefined we deliberately OMIT the
+ * `Authorization` key (rather than setting it to ""), because GitHub treats
+ * an empty bearer header as malformed and may 400 on it.
+ */
+function buildHeaders(authToken?: string): Record<string, string> {
+  const headers: Record<string, string> = { ...GITHUB_HEADERS };
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+  return headers;
+}
 
 /** Minimum ms between onProgress callbacks (≈60fps cadence) */
 const PROGRESS_THROTTLE_MS = 16;
+
+/**
+ * Override for the source the template is fetched from.
+ *
+ * Default callers leave this `undefined` and pick up `indigoai-us/hq-core`
+ * via the latest stable release (with branch-HEAD fallback). When the
+ * App-menu "Use Staging Channel" toggle is enabled, `07-template.tsx`
+ * passes `{ repo: "indigoai-us/hq-core-staging", ref: "main" }` so the
+ * fetcher pulls staging's `main` branch directly via `/tarball/main`,
+ * bypassing the release lookup entirely.
+ *
+ * When `ref` is set, the release/HEAD-fallback path is skipped and the
+ * returned `version` is the ref itself ("main"). When `ref` is omitted,
+ * the existing latest-release-then-HEAD dance runs against `repo`.
+ */
+export interface TemplateSource {
+  /** GitHub `owner/repo` slug. Default: `indigoai-us/hq-core`. */
+  repo?: string;
+  /** When set, force `/tarball/{ref}` against `repo` and skip release lookup. */
+  ref?: string;
+  /**
+   * Bearer token included as `Authorization: Bearer <token>` on every fetch.
+   * Required for private repos (e.g. `indigoai-us/hq-core-staging`), where
+   * GitHub returns 404 for anonymous tarball requests. The wizard reads it
+   * from `gh auth token` via the `get_github_token` Tauri command and never
+   * persists it.
+   */
+  authToken?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -67,11 +113,12 @@ interface TarEntry {
 
 async function fetchRelease(
   url: string,
+  authToken?: string,
   signal?: AbortSignal,
 ): Promise<ReleaseInfo> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: GITHUB_HEADERS, signal });
+    response = await fetch(url, { headers: buildHeaders(authToken), signal });
   } catch (err) {
     throw new TemplateFetchError(
       `Network error fetching release info: ${String(err)}`,
@@ -105,12 +152,14 @@ async function fetchRelease(
  * distinguishing "no releases" from "network/auth error".
  */
 async function getLatestRelease(
+  repo: string,
+  authToken?: string,
   signal?: AbortSignal,
 ): Promise<ReleaseInfo | null> {
-  const url = `${GITHUB_API}/repos/${REPO}/releases`;
+  const url = `${GITHUB_API}/repos/${repo}/releases`;
   let response: Response;
   try {
-    response = await fetch(url, { headers: GITHUB_HEADERS, signal });
+    response = await fetch(url, { headers: buildHeaders(authToken), signal });
   } catch (err) {
     throw new TemplateFetchError(
       `Network error fetching releases: ${String(err)}`,
@@ -140,16 +189,19 @@ async function getLatestRelease(
  * We use this when no release has been published yet, to mirror the
  * `create-hq` fallback path.
  */
-function branchTarballUrl(ref: string): string {
-  return `${GITHUB_API}/repos/${REPO}/tarball/${ref}`;
+function branchTarballUrl(repo: string, ref: string): string {
+  return `${GITHUB_API}/repos/${repo}/tarball/${ref}`;
 }
 
 async function getTagRelease(
+  repo: string,
   tag: string,
+  authToken?: string,
   signal?: AbortSignal,
 ): Promise<ReleaseInfo> {
   return fetchRelease(
-    `${GITHUB_API}/repos/${REPO}/releases/tags/${tag}`,
+    `${GITHUB_API}/repos/${repo}/releases/tags/${tag}`,
+    authToken,
     signal,
   );
 }
@@ -160,13 +212,14 @@ async function getTagRelease(
 
 async function downloadTarball(
   tarballUrl: string,
+  authToken?: string,
   onProgress?: (event: ProgressEvent) => void,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
   let response: Response;
   try {
     response = await fetch(tarballUrl, {
-      headers: GITHUB_HEADERS,
+      headers: buildHeaders(authToken),
       redirect: "follow",
       signal,
     });
@@ -452,9 +505,15 @@ async function extractTarball(
  *
  * Strategy (mirrors `packages/create-hq/src/fetch-template.ts`):
  *
- *   1. If `tag` is given → fetch the tagged release. No fallback: the caller
- *      asked for a specific version, so "release not found" is a real error.
- *   2. Else → try the latest stable release.
+ *   1. If `source.ref` is given → force `/tarball/{ref}` against `source.repo`
+ *      and skip the release lookup entirely. This is the path the "Use
+ *      Staging Channel" App-menu toggle takes (repo=hq-core-staging, ref=main).
+ *      `version` is the ref itself.
+ *   2. Else if `tag` is given → fetch the tagged release. No fallback: the
+ *      caller asked for a specific version, so "release not found" is a real
+ *      error.
+ *   3. Else → try the latest stable release of `source.repo` (default
+ *      `indigoai-us/hq-core`).
  *      - If one exists, use its `tarball_url`.
  *      - If the repo has no stable release yet, fall back to the branch
  *        snapshot endpoint (`/tarball/HEAD`). This is what `gh api
@@ -464,9 +523,10 @@ async function extractTarball(
  * Extraction strips only the GitHub tarball wrapper — see `mapEntryToTemplatePath`.
  *
  * @param targetDir - Absolute path where the template should be extracted
- * @param tag - Optional: pin to a specific release tag. Defaults to latest non-prerelease.
+ * @param tag - Optional: pin to a specific release tag. Ignored when `source.ref` is set.
  * @param onProgress - Optional callback receiving {bytes, total} progress events
  * @param signal - Optional AbortSignal for cancellation
+ * @param source - Optional override for `{ repo, ref }`. Defaults to `indigoai-us/hq-core` + release flow.
  * @returns { version: string } — the tag or ref that was fetched
  */
 export async function fetchAndExtract(
@@ -474,22 +534,31 @@ export async function fetchAndExtract(
   tag?: string,
   onProgress?: (event: ProgressEvent) => void,
   signal?: AbortSignal,
+  source?: TemplateSource,
 ): Promise<{ version: string }> {
   // Check for pre-aborted signal
   if (signal?.aborted) {
     throw new TemplateFetchError("Operation cancelled before it started", false);
   }
 
+  const repo = source?.repo ?? DEFAULT_REPO;
+  const authToken = source?.authToken;
+
   // 1. Resolve tarball URL + version.
   let version: string;
   let tarballUrl: string;
 
-  if (tag) {
-    const release = await getTagRelease(tag, signal);
+  if (source?.ref) {
+    // Forced ref — bypass releases entirely. Used by the staging toggle to
+    // pin to `main` HEAD of hq-core-staging without needing a published release.
+    version = source.ref;
+    tarballUrl = branchTarballUrl(repo, source.ref);
+  } else if (tag) {
+    const release = await getTagRelease(repo, tag, authToken, signal);
     version = release.tag_name;
     tarballUrl = release.tarball_url;
   } else {
-    const release = await getLatestRelease(signal);
+    const release = await getLatestRelease(repo, authToken, signal);
     if (release) {
       version = release.tag_name;
       tarballUrl = release.tarball_url;
@@ -498,12 +567,17 @@ export async function fetchAndExtract(
       // We don't know a version in this case; "HEAD" is honest about it
       // and mirrors what `create-hq` returns when it hits the same path.
       version = "HEAD";
-      tarballUrl = branchTarballUrl("HEAD");
+      tarballUrl = branchTarballUrl(repo, "HEAD");
     }
   }
 
   // 2. Download tarball with streaming progress
-  const compressedBytes = await downloadTarball(tarballUrl, onProgress, signal);
+  const compressedBytes = await downloadTarball(
+    tarballUrl,
+    authToken,
+    onProgress,
+    signal,
+  );
 
   // 3. Ensure target directory exists
   await mkdir(targetDir, { recursive: true });
