@@ -65,6 +65,41 @@ jobs:
       # proxy directory restores the expected `cargo` lookup.
       - name: Put rustup-managed cargo first on PATH
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # PATH-prepend alone is not enough on the current macos runner image —
+      # the Homebrew shim at /opt/homebrew/bin/cargo keeps winning for some
+      # step invocations (PR #65 run 25891917328: `cargo check → unexpected
+      # argument 'check' found` from rustup-init). Physically replace each
+      # known shim path with a symlink to the rustup-managed binary so PATH
+      # ordering doesn't matter. Identical step to release.yml — keep the
+      # two in sync. See release.yml for the longer rationale.
+      - name: Replace Homebrew cargo shim with rustup-managed cargo
+        run: |
+          set -euo pipefail
+          rustup_cargo="$HOME/.cargo/bin/cargo"
+          if [ ! -x "$rustup_cargo" ]; then
+            echo "::error::rustup-managed cargo not found at $rustup_cargo — toolchain step failed?"
+            exit 1
+          fi
+          replaced=0
+          for shim in /opt/homebrew/bin/cargo /usr/local/bin/cargo; do
+            if [ -e "$shim" ] || [ -L "$shim" ]; then
+              sudo rm -f "$shim"
+              sudo ln -sf "$rustup_cargo" "$shim"
+              echo "Replaced shim: $shim → $rustup_cargo"
+              replaced=$((replaced + 1))
+            fi
+          done
+          if [ "$replaced" = 0 ]; then
+            echo "No Homebrew cargo shims found at /opt/homebrew/bin or /usr/local/bin."
+          fi
+          for shim in /opt/homebrew/bin/cargo /usr/local/bin/cargo; do
+            if [ -x "$shim" ]; then
+              "$shim" --version
+              "$shim" metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
+            fi
+          done
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
