@@ -422,14 +422,20 @@ export function GitInit({ installPath, onNext }: GitInitProps) {
 
       </div>
 
-      {allDone && (
+      {/* Continue is always offered once the run settles — `allDone` for the
+          happy path, "Continue anyway" once a step has failed and we're no
+          longer mid-run. Failures are already journaled via
+          `recordStepFailure` so /setup can pick the work back up later;
+          stranding the user in front of a Retry-only screen is worse than
+          letting them proceed with a noted gap. */}
+      {(allDone || (failedStep !== null && !running)) && (
         <WizardFooterSlot>
           <button
             type="button"
             onClick={onNext}
             className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
           >
-            Continue
+            {allDone ? "Continue" : "Continue anyway"}
           </button>
         </WizardFooterSlot>
       )}
