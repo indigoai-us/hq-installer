@@ -4,6 +4,7 @@
 
 import { fetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
+import { CLIENT_HEADERS } from "./client-info";
 
 const TELEMETRY_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/success";
 
@@ -42,7 +43,7 @@ function getVaultApiUrl(): string {
 export async function pingSuccess(version?: string): Promise<void> {
   await fetch(TELEMETRY_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
     body: JSON.stringify({ version: version ?? "unknown", ts: Date.now() }),
   });
 }
@@ -73,7 +74,7 @@ export async function pingFailure(payload: FailurePayload): Promise<void> {
   try {
     await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
       body: JSON.stringify({
         ...payload,
         version: payload.version ?? "unknown",
@@ -105,6 +106,7 @@ export async function postOptIn({
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
+    ...CLIENT_HEADERS,
   };
   const body = JSON.stringify({ enabled });
 
