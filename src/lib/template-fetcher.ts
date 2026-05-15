@@ -2,6 +2,7 @@ import { gunzipSync } from "fflate";
 import { mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { fetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
+import { CLIENT_HEADERS } from "./client-info";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -16,12 +17,16 @@ const GITHUB_HEADERS = { Accept: "application/vnd.github+json" };
  * token only when one is supplied. Done as a fresh object per-call so callers
  * can't accidentally mutate the module-level `GITHUB_HEADERS` constant.
  *
+ * GitHub requires a `User-Agent` for anonymous API access — `CLIENT_HEADERS`
+ * supplies that plus our internal `x-hq-client-*` attribution stamp. Unknown
+ * headers are ignored by GitHub, so sending the latter is harmless.
+ *
  * NOTE: when `authToken` is empty/undefined we deliberately OMIT the
  * `Authorization` key (rather than setting it to ""), because GitHub treats
  * an empty bearer header as malformed and may 400 on it.
  */
 function buildHeaders(authToken?: string): Record<string, string> {
-  const headers: Record<string, string> = { ...GITHUB_HEADERS };
+  const headers: Record<string, string> = { ...GITHUB_HEADERS, ...CLIENT_HEADERS };
   if (authToken) {
     headers.Authorization = `Bearer ${authToken}`;
   }
