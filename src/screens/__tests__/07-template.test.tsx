@@ -383,10 +383,10 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     expect(spawnCalls).toHaveLength(4);
 
     const expectedPacks = [
-      "@indigoai-us/hq-pack-design-quality",
-      "@indigoai-us/hq-pack-design-styles",
-      "@indigoai-us/hq-pack-gemini",
-      "@indigoai-us/hq-pack-gstack",
+      "github:indigoai-us/hq-packages#packages/hq-pack-design-quality",
+      "github:indigoai-us/hq-packages#packages/hq-pack-design-styles",
+      "github:indigoai-us/hq-packages#packages/hq-pack-gemini",
+      "github:indigoai-us/hq-packages#packages/hq-pack-gstack",
     ];
     for (let i = 0; i < expectedPacks.length; i++) {
       const payload = spawnCalls[i][1] as { args: { cmd: string; args: string[]; cwd: string } };

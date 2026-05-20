@@ -49,11 +49,19 @@ import { pingFailure } from "@/lib/telemetry";
  *  `latest` hid the 404 once already. */
 const HQ_CLI_PIN = "@indigoai-us/hq-cli@5.5.2";
 
+// Pack sources resolved via `hq install`'s github: transport
+// (`pack-install.ts:expandGithubShorthand` → clone +
+// `parseGitFragment` → subdirectory extract). The 4 hq-pack-* packs
+// previously lived in the now-archived `indigoai-us/hq` monorepo and
+// were referenced as npm specs (`@indigoai-us/hq-pack-*`), but they
+// have not yet been published to npm. Sourcing from the
+// `indigoai-us/hq-packages` git repo unblocks installs today; swap to
+// `@indigoai-us/hq-pack-*` npm specs once those packages publish.
 const HQ_PACKAGES = [
-  "@indigoai-us/hq-pack-design-quality",
-  "@indigoai-us/hq-pack-design-styles",
-  "@indigoai-us/hq-pack-gemini",
-  "@indigoai-us/hq-pack-gstack",
+  "github:indigoai-us/hq-packages#packages/hq-pack-design-quality",
+  "github:indigoai-us/hq-packages#packages/hq-pack-design-styles",
+  "github:indigoai-us/hq-packages#packages/hq-pack-gemini",
+  "github:indigoai-us/hq-packages#packages/hq-pack-gstack",
 ] as const;
 
 const PACK_LOG_DIR = ".hq-install-log";
