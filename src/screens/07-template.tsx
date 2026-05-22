@@ -8,17 +8,18 @@
 //   bypasses CORS), gunzips + parses tar in-memory, and writes each entry
 //   with `@tauri-apps/plugin-fs`.
 //
-// Phase 2 — HQ packs:
-//   After the template lands we install the 4 host-side HQ packs
-//   (`HQ_PACKAGES`) via `npx --package=@indigoai-us/hq-cli hq install <pkg>`,
-//   running one pack at a time with `cwd = installPath`. Stdout/stderr is
-//   streamed into the visible log panel AND flushed to
-//   `{installPath}/.hq-install-log/packs.log` on exit so post-mortem is
-//   possible. Previously this ran silently in the git-init step — pack
-//   failures (notably the hq-onboarding 404 that gated install in v0.1.20)
-//   were invisible to the user. Pack errors are non-fatal: Continue stays
-//   enabled with a warning so the user can retry individual packs with
-//   `hq install <pkg>` later.
+// Phase 2 — HQ packs (opt-in):
+//   After the template lands the screen pauses on a pack-choice step with an
+//   "Install recommended HQ packages" checkbox (default ON). When confirmed
+//   with the box checked we install the host-side HQ packs (`HQ_PACKAGES`)
+//   via `npx --package=@indigoai-us/hq-cli hq install <pkg>`, running one
+//   pack at a time with `cwd = installPath`. Unchecking skips Phase 2 — the
+//   packs are recorded as `skipped` in the install manifest and the user can
+//   add them later with `hq install <pkg>`. Stdout/stderr is streamed into
+//   the visible log panel AND flushed to `{installPath}/.hq-install-log/
+//   packs.log` on exit so post-mortem is possible. Pack errors are
+//   non-fatal: Continue stays enabled with a warning so the user can retry
+//   individual packs later.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -66,6 +67,7 @@ const PACK_LOG_FILE = "packs.log";
 type Phase =
   | "idle"
   | "fetching"
+  | "awaiting-pack-choice"
   | "installing-packs"
   | "installing-node"
   | "retrying-packs"
@@ -112,6 +114,9 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [packs, setPacks] = useState<PackState[]>(initialPacks);
+  // Opt-in for the recommended-pack install (Phase 2). Default ON so a user
+  // who just clicks Continue keeps the historical batteries-included behavior.
+  const [installPacksOptIn, setInstallPacksOptIn] = useState(true);
 
   // Prevent double-starts in strict mode, and allow in-flight cancellation.
   const runningRef = useRef(false);
@@ -371,13 +376,67 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       return;
     }
 
-    // Phase 2 — packs
+    // Phase 1 done. Phase 2 (recommended-pack install) is opt-in — pause on
+    // the pack-choice screen. handleConfirmPackChoice runs or skips Phase 2
+    // from the user's checkbox (default ON, so just clicking Continue keeps
+    // the historical batteries-included behavior).
+    await flushDiskLog();
+    setPhase("awaiting-pack-choice");
+    runningRef.current = false;
+    // flushDiskLog and installPacks close over state setters and refs that
+    // don't change across renders — safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetDir]);
+
+  useEffect(() => {
+    startRun();
+    return () => {
+      abortRef.current?.abort();
+      for (const u of unlistenRefs.current) u?.();
+      unlistenRefs.current = [];
+      runningRef.current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Footer "Continue" handler for the awaiting-pack-choice phase. Honors the
+   *  `installPacksOptIn` checkbox: run the Phase-2 pack install, or skip it
+   *  and advance — recording the packs as user-skipped in the manifest. */
+  async function handleConfirmPackChoice() {
+    const installerVersion = await getInstallerVersion();
+
+    if (!installPacksOptIn) {
+      // Opted out — record every pack as skipped so the install manifest is
+      // an honest record, mark the templates step ok (the template itself
+      // landed fine), flush the log, then advance to the next wizard step.
+      appendLog("Recommended HQ packages skipped (user choice).");
+      if (targetDir) {
+        try {
+          const skipped: Record<string, { status: "skipped" }> = {};
+          for (const name of HQ_PACKAGES) skipped[name] = { status: "skipped" };
+          await recordPacks(targetDir, installerVersion, skipped);
+          await updateManifest(targetDir, installerVersion, (m) => {
+            m.steps["templates"] = {
+              ...(m.steps["templates"] ?? {}),
+              status: "ok",
+              completedAt: new Date().toISOString(),
+            };
+          });
+        } catch {
+          /* manifest writes are best-effort */
+        }
+      }
+      await flushDiskLog();
+      onNext?.();
+      return;
+    }
+
+    // Opted in — run Phase 2 (the pack install).
+    runningRef.current = true;
     setPhase("installing-packs");
     const packsOutcome = await installPacks();
     setPhase(packsOutcome);
     await flushDiskLog();
-    // Final manifest write — mark templates step ok if everything landed,
-    // or note that warnings exist so an agent can target failed packs.
     if (targetDir) {
       try {
         await updateManifest(targetDir, installerVersion, (m) => {
@@ -395,27 +454,8 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         /* non-fatal */
       }
     }
-    // Per-pack non-zero-exit failures still ping individually below (real
-    // pack bugs / registry issues). The previous rolled-up ping here was
-    // dominantly fired by the "no Node yet" cascade — every pack spawn
-    // errors at once — and added duplicate noise. Pack outcomes are
-    // recorded in the manifest for support debugging.
     runningRef.current = false;
-    // flushDiskLog and installPacks close over state setters and refs that
-    // don't change across renders — safe to omit from deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetDir]);
-
-  useEffect(() => {
-    startRun();
-    return () => {
-      abortRef.current?.abort();
-      for (const u of unlistenRefs.current) u?.();
-      unlistenRefs.current = [];
-      runningRef.current = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }
 
   function handleRetry() {
     runningRef.current = false;
@@ -560,12 +600,36 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         )}
       </div>
 
-      {/* Pack install phase */}
-      {(phase === "installing-packs" || finalDone || recoveryInProgress) && (
+      {/* Pack install phase + opt-in choice */}
+      {(phase === "awaiting-pack-choice" ||
+        phase === "installing-packs" ||
+        finalDone ||
+        recoveryInProgress) && (
         <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
           <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
             HQ packages
           </p>
+          {phase === "awaiting-pack-choice" && (
+            <label className="flex items-start gap-3 py-1 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={installPacksOptIn}
+                onChange={(e) => setInstallPacksOptIn(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-white"
+                aria-label="Install recommended HQ packages"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-sm text-zinc-200">
+                  Install recommended HQ packages
+                </span>
+                <span className="text-xs text-zinc-500">
+                  Design styles, Gemini &amp; gstack workers. Optional — skip
+                  now and add them later with{" "}
+                  <span className="font-mono">hq install</span>.
+                </span>
+              </span>
+            </label>
+          )}
           {packs.map((pack) => (
             <div
               key={pack.name}
@@ -683,6 +747,18 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
             View log
           </button>
         </div>
+      )}
+
+      {phase === "awaiting-pack-choice" && (
+        <WizardFooterSlot>
+          <button
+            type="button"
+            onClick={handleConfirmPackChoice}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+          >
+            Continue
+          </button>
+        </WizardFooterSlot>
       )}
 
       {finalDone && (

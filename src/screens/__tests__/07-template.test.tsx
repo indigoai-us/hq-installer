@@ -211,7 +211,60 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     });
   });
 
-  it("clicking Continue calls onNext", async () => {
+  it("shows the recommended-packages opt-in checkbox, checked by default, once the template resolves", async () => {
+    render(<TemplateFetch targetDir="/tmp/hq" onNext={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(mockFetchAndExtract).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      latestCall().resolve({ version: "v1.2.3" });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("checkbox")).not.toBeNull();
+    });
+    expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(
+      true,
+    );
+  });
+
+  it("clicking Continue with packages checked, then again when done, calls onNext", async () => {
+    const onNext = vi.fn();
+    const user = userEvent.setup();
+    render(<TemplateFetch targetDir="/tmp/hq" onNext={onNext} />);
+
+    await waitFor(() => {
+      expect(mockFetchAndExtract).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      latestCall().resolve({ version: "v1.2.3" });
+    });
+
+    // First Continue (awaiting-pack-choice): box checked by default → installs.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /continue/i }),
+      ).not.toBeNull();
+    });
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+
+    // After the 4 mocked packs exit, the final Continue advances the wizard.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /continue/i }),
+      ).not.toBeNull();
+    });
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the pack install and advances when the opt-in box is unchecked", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const mockInvoke = vi.mocked(invoke);
     const onNext = vi.fn();
     const user = userEvent.setup();
     render(<TemplateFetch targetDir="/tmp/hq" onNext={onNext} />);
@@ -225,18 +278,17 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
     });
 
     await waitFor(() => {
-      expect(
-        screen.queryByRole("button", { name: /continue/i }) ||
-        screen.queryByRole("button", { name: /next/i })
-      ).not.toBeNull();
+      expect(screen.queryByRole("checkbox")).not.toBeNull();
     });
-
-    const btn =
-      screen.queryByRole("button", { name: /continue/i }) ||
-      screen.queryByRole("button", { name: /next/i });
-    await user.click(btn!);
+    // Uncheck → Continue should skip Phase 2 entirely and advance.
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: /continue/i }));
 
     expect(onNext).toHaveBeenCalledTimes(1);
+    const spawnCalls = mockInvoke.mock.calls.filter(
+      ([cmd]) => cmd === "spawn_process",
+    );
+    expect(spawnCalls).toHaveLength(0);
   });
 
   // ── 4. On error, Retry + View log buttons appear ─────────────────────────
@@ -353,13 +405,15 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
 
   // ── 9. Pack install phase spawns `hq install` for each HQ pack ────────────
   // Regression guard for v0.1.20 → v0.1.21: pack install used to run silently
-  // in the git-init step, which hid an hq-onboarding 404 from the user. This
-  // test asserts the TemplateFetch screen drives the 4-pack install via
-  // `spawn_process` — not silently, and not elsewhere in the wizard.
+  // in the git-init step, which hid an hq-onboarding 404 from the user. Pack
+  // install is now opt-in (default ON) — the user confirms it from the
+  // pack-choice screen — but it must still run via `spawn_process` from this
+  // screen, not silently elsewhere in the wizard.
 
-  it("spawns `hq install` for each of the 4 HQ packs after template resolves", async () => {
+  it("spawns `hq install` for each of the 4 HQ packs when the opt-in box stays checked", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const mockInvoke = vi.mocked(invoke);
+    const user = userEvent.setup();
     render(<TemplateFetch targetDir="/tmp/hq" onNext={vi.fn()} />);
 
     await waitFor(() => {
@@ -370,11 +424,20 @@ describe("TemplateFetch screen (07-template.tsx)", () => {
       latestCall().resolve({ version: "v1.2.3" });
     });
 
-    // Continue only appears after all 4 packs exit. If the pack loop silently
-    // drops a failure (the v0.1.20 bug), Continue won't appear either.
+    // Template resolved → pack-choice screen. Box checked by default; the
+    // Continue click kicks off the 4-pack install.
     await waitFor(() => {
-      const btn = screen.queryByRole("button", { name: /continue/i });
-      expect(btn).not.toBeNull();
+      expect(
+        screen.queryByRole("button", { name: /continue/i }),
+      ).not.toBeNull();
+    });
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+
+    await waitFor(() => {
+      const calls = mockInvoke.mock.calls.filter(
+        ([cmd]) => cmd === "spawn_process",
+      );
+      expect(calls).toHaveLength(4);
     });
 
     const spawnCalls = mockInvoke.mock.calls.filter(
