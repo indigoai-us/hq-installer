@@ -8,17 +8,19 @@
 //   bypasses CORS), gunzips + parses tar in-memory, and writes each entry
 //   with `@tauri-apps/plugin-fs`.
 //
-// Phase 2 — HQ packs:
-//   After the template lands we install the 4 host-side HQ packs
-//   (`HQ_PACKAGES`) via `npx --package=@indigoai-us/hq-cli hq install <pkg>`,
-//   running one pack at a time with `cwd = installPath`. Stdout/stderr is
-//   streamed into the visible log panel AND flushed to
-//   `{installPath}/.hq-install-log/packs.log` on exit so post-mortem is
-//   possible. Previously this ran silently in the git-init step — pack
-//   failures (notably the hq-onboarding 404 that gated install in v0.1.20)
-//   were invisible to the user. Pack errors are non-fatal: Continue stays
-//   enabled with a warning so the user can retry individual packs with
-//   `hq install <pkg>` later.
+// Phase 2 — HQ packs (opt-in, user-selected):
+//   After the template lands the screen pauses on a pack-choice step. It
+//   enumerates every pack in `indigoai-us/hq-packages` (see
+//   `@/lib/pack-registry`) and renders one checkbox per pack — packs that
+//   core.yaml marks `recommended` start checked. The user picks any subset;
+//   Continue installs exactly the checked packs via
+//   `npx --package=@indigoai-us/hq-cli hq install <source>`, one at a time
+//   with `cwd = installPath`. Unchecked packs are recorded as `skipped` in
+//   the install manifest and can be added later with `hq install`. If the
+//   catalog can't be reached we fall back to the four core add-on packs.
+//   Stdout/stderr is streamed into the visible log panel AND flushed to
+//   `{installPath}/.hq-install-log/packs.log` on exit. Pack errors are
+//   non-fatal: Continue stays enabled with a warning so the user can retry.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -30,6 +32,11 @@ import {
   TemplateFetchError,
   type ProgressEvent as TemplateProgressEvent,
 } from "@/lib/template-fetcher";
+import {
+  fetchAvailablePacks,
+  readRecommendedPackIds,
+  FALLBACK_PACKS,
+} from "@/lib/pack-registry";
 import {
   getInstallerVersion,
   recordStepStart,
@@ -49,21 +56,6 @@ import { pingFailure } from "@/lib/telemetry";
  *  `latest` hid the 404 once already. */
 const HQ_CLI_PIN = "@indigoai-us/hq-cli@5.5.2";
 
-// Pack sources resolved via `hq install`'s github: transport
-// (`pack-install.ts:expandGithubShorthand` → clone +
-// `parseGitFragment` → subdirectory extract). The 4 hq-pack-* packs
-// previously lived in the now-archived `indigoai-us/hq` monorepo and
-// were referenced as npm specs (`@indigoai-us/hq-pack-*`), but they
-// have not yet been published to npm. Sourcing from the
-// `indigoai-us/hq-packages` git repo unblocks installs today; swap to
-// `@indigoai-us/hq-pack-*` npm specs once those packages publish.
-const HQ_PACKAGES = [
-  "github:indigoai-us/hq-packages#packages/hq-pack-design-quality",
-  "github:indigoai-us/hq-packages#packages/hq-pack-design-styles",
-  "github:indigoai-us/hq-packages#packages/hq-pack-gemini",
-  "github:indigoai-us/hq-packages#packages/hq-pack-gstack",
-] as const;
-
 const PACK_LOG_DIR = ".hq-install-log";
 const PACK_LOG_FILE = "packs.log";
 
@@ -74,6 +66,7 @@ const PACK_LOG_FILE = "packs.log";
 type Phase =
   | "idle"
   | "fetching"
+  | "awaiting-pack-choice"
   | "installing-packs"
   | "installing-node"
   | "retrying-packs"
@@ -91,13 +84,16 @@ const NODE_MISSING_PATTERN = /command not found on PATH: (npx|node)/i;
 type PackStatus = "pending" | "running" | "done" | "error";
 
 interface PackState {
-  name: string;
+  /** `hq-pack-*` directory name — stable key, manifest id, log label. */
+  id: string;
+  /** Human description from the pack's package.yaml. */
+  description: string;
+  /** Source spec passed to `hq install`. */
+  source: string;
+  /** Whether the user wants this pack installed. */
+  selected: boolean;
   status: PackStatus;
   errorMsg: string | null;
-}
-
-function initialPacks(): PackState[] {
-  return HQ_PACKAGES.map((name) => ({ name, status: "pending", errorMsg: null }));
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +115,12 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
   const [total, setTotal] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
-  const [packs, setPacks] = useState<PackState[]>(initialPacks);
+  // Available packs — populated by loadAvailablePacks() from the catalog once
+  // the template lands. Each carries its own `selected` flag (the checkbox).
+  const [packs, setPacks] = useState<PackState[]>([]);
+  // Pack-catalog fetch state, surfaced on the awaiting-pack-choice screen.
+  const [registryLoading, setRegistryLoading] = useState(false);
+  const [registryError, setRegistryError] = useState<string | null>(null);
 
   // Prevent double-starts in strict mode, and allow in-flight cancellation.
   const runningRef = useRef(false);
@@ -155,18 +156,53 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
   }
 
   // -------------------------------------------------------------------------
-  // Phase 2: install HQ packs
+  // Phase 2: discover + install HQ packs
   // -------------------------------------------------------------------------
 
   function patchPack(idx: number, patch: Partial<PackState>) {
     setPacks((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   }
 
+  /** Enumerate the pack catalog and seed `packs` with the user's default
+   *  selection — packs core.yaml marks recommended start checked. Falls back
+   *  to the four core add-on packs if the catalog can't be reached. */
+  async function loadAvailablePacks(): Promise<void> {
+    setRegistryLoading(true);
+    setRegistryError(null);
+
+    // Default to the bundled fallback list; replace it with the live catalog
+    // when the fetch succeeds with a non-empty result.
+    let available = FALLBACK_PACKS;
+    try {
+      const fetched = await fetchAvailablePacks(abortRef.current?.signal);
+      if (fetched.length > 0) available = fetched;
+    } catch (err) {
+      if (abortRef.current?.signal.aborted) return;
+      setRegistryError(err instanceof Error ? err.message : String(err));
+    }
+
+    // Pre-check recommended packs. If core.yaml yields no recommendations we
+    // can't tell which are staples, so pre-check everything and let the user
+    // pare it down — the checkboxes make the choice explicit either way.
+    const recommended = await readRecommendedPackIds(targetDir);
+    setPacks(
+      available.map((p) => ({
+        id: p.dir,
+        description: p.description,
+        source: p.source,
+        selected: recommended.size > 0 ? recommended.has(p.dir) : true,
+        status: "pending" as const,
+        errorMsg: null,
+      })),
+    );
+    setRegistryLoading(false);
+  }
+
   /** Best-effort pack-status write to {targetDir}/.hq/install-manifest.json.
    *  Failures are swallowed — the diskLog flush + UI state remain the user-
    *  visible record. The manifest is the agent-readable record. */
   async function writePackStatus(
-    name: string,
+    id: string,
     status: "running" | "ok" | "failed",
     error?: string,
   ): Promise<void> {
@@ -174,28 +210,28 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     try {
       const installerVersion = await getInstallerVersion();
       await recordPacks(targetDir, installerVersion, {
-        [name]: { status, error },
+        [id]: { status, error },
       });
     } catch {
       /* ignore */
     }
   }
 
-  /** Spawn `npx ... hq install <pkg>` with cwd = targetDir and stream
+  /** Spawn `npx ... hq install <source>` with cwd = targetDir and stream
    *  stdout/stderr into the visible log. Resolves true on exit 0. */
-  async function installOnePack(idx: number, pkg: string): Promise<boolean> {
+  async function installOnePack(idx: number, pack: PackState): Promise<boolean> {
     patchPack(idx, { status: "running" });
-    appendLog(`→ Installing ${pkg}`);
+    appendLog(`→ Installing ${pack.id}`);
     // Snapshot pack as `running` in the install manifest so an interrupted
     // install reads as "in progress" for any agent self-healing pass.
-    void writePackStatus(pkg, "running");
+    void writePackStatus(pack.id, "running");
 
     let handle: string;
     try {
       handle = await invoke<string>("spawn_process", {
         args: {
           cmd: "npx",
-          args: ["-y", `--package=${HQ_CLI_PIN}`, "hq", "install", pkg],
+          args: ["-y", `--package=${HQ_CLI_PIN}`, "hq", "install", pack.source],
           cwd: targetDir,
         },
       });
@@ -203,7 +239,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       const msg = err instanceof Error ? err.message : String(err);
       patchPack(idx, { status: "error", errorMsg: msg });
       appendLog(`[spawn error] ${msg}`);
-      void writePackStatus(pkg, "failed", msg);
+      void writePackStatus(pack.id, "failed", msg);
       // Spawn failures here are dominantly "npx not on PATH" — i.e. the user
       // skipped or didn't complete the deps screen Node install. Recoverable
       // in-wizard via the "Install Node + Retry" button. Failure is recorded
@@ -233,17 +269,17 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
           const payload = event.payload as { code: number | null; success: boolean };
           if (payload.success) {
             patchPack(idx, { status: "done" });
-            void writePackStatus(pkg, "ok");
+            void writePackStatus(pack.id, "ok");
             resolve(true);
           } else {
             const msg = `exit ${payload.code ?? -1}`;
             patchPack(idx, { status: "error", errorMsg: msg });
-            appendLog(`✗ ${pkg} failed (${msg})`);
-            void writePackStatus(pkg, "failed", msg);
+            appendLog(`✗ ${pack.id} failed (${msg})`);
+            void writePackStatus(pack.id, "failed", msg);
             void pingFailure({
-              stage: `pack-install:${pkg}`,
+              stage: `pack-install:${pack.id}`,
               message: `pack install ${msg}`,
-              detail: { pkg, kind: "non-zero-exit", code: payload.code },
+              detail: { pkg: pack.id, kind: "non-zero-exit", code: payload.code },
             });
             resolve(false);
           }
@@ -260,10 +296,13 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     });
   }
 
+  /** Install every pack the user left checked, in catalog order. */
   async function installPacks(): Promise<"done" | "done-with-warnings"> {
     let anyFailed = false;
-    for (let i = 0; i < HQ_PACKAGES.length; i++) {
-      const ok = await installOnePack(i, HQ_PACKAGES[i]);
+    const snapshot = packs;
+    for (let i = 0; i < snapshot.length; i++) {
+      if (!snapshot[i].selected) continue;
+      const ok = await installOnePack(i, snapshot[i]);
       if (!ok) anyFailed = true;
     }
     return anyFailed ? "done-with-warnings" : "done";
@@ -333,7 +372,7 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       ? "Resolving staging branch (hq-core-staging @ main)…"
       : "Resolving latest release…";
     setLogLines([initialLog]);
-    setPacks(initialPacks());
+    setPacks([]);
     diskLogRef.current = [initialLog];
 
     const installerVersion = await getInstallerVersion();
@@ -431,13 +470,77 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
       return;
     }
 
-    // Phase 2 — packs
+    // Phase 1 done. Phase 2 (pack install) is opt-in + user-selected — pause
+    // on the pack-choice screen and enumerate the catalog. installPacks runs
+    // from handleConfirmPackChoice once the user picks.
+    await flushDiskLog();
+    setPhase("awaiting-pack-choice");
+    runningRef.current = false;
+    void loadAvailablePacks();
+    // flushDiskLog / loadAvailablePacks / installPacks close over state
+    // setters and refs that don't change across renders — safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetDir]);
+
+  useEffect(() => {
+    startRun();
+    return () => {
+      abortRef.current?.abort();
+      for (const u of unlistenRefs.current) u?.();
+      unlistenRefs.current = [];
+      runningRef.current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Footer "Continue" handler for the awaiting-pack-choice phase. Installs
+   *  the packs the user left checked; skips straight to the next wizard step
+   *  if none are checked. Unchecked packs are recorded as `skipped` so the
+   *  install manifest is an honest record either way. */
+  async function handleConfirmPackChoice() {
+    const installerVersion = await getInstallerVersion();
+    const selected = packs.filter((p) => p.selected);
+    const unselected = packs.filter((p) => !p.selected);
+
+    // Record unselected packs as skipped — honest manifest on every path.
+    if (targetDir && unselected.length > 0) {
+      try {
+        const skipped: Record<string, { status: "skipped" }> = {};
+        for (const p of unselected) skipped[p.id] = { status: "skipped" };
+        await recordPacks(targetDir, installerVersion, skipped);
+      } catch {
+        /* manifest writes are best-effort */
+      }
+    }
+
+    if (selected.length === 0) {
+      // Nothing selected — mark the templates step ok (the template itself
+      // landed fine), flush the log, then advance to the next wizard step.
+      appendLog("No HQ packages selected — skipping pack install.");
+      if (targetDir) {
+        try {
+          await updateManifest(targetDir, installerVersion, (m) => {
+            m.steps["templates"] = {
+              ...(m.steps["templates"] ?? {}),
+              status: "ok",
+              completedAt: new Date().toISOString(),
+            };
+          });
+        } catch {
+          /* non-fatal */
+        }
+      }
+      await flushDiskLog();
+      onNext?.();
+      return;
+    }
+
+    // Install the selected packs.
+    runningRef.current = true;
     setPhase("installing-packs");
     const packsOutcome = await installPacks();
     setPhase(packsOutcome);
     await flushDiskLog();
-    // Final manifest write — mark templates step ok if everything landed,
-    // or note that warnings exist so an agent can target failed packs.
     if (targetDir) {
       try {
         await updateManifest(targetDir, installerVersion, (m) => {
@@ -455,27 +558,8 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         /* non-fatal */
       }
     }
-    // Per-pack non-zero-exit failures still ping individually below (real
-    // pack bugs / registry issues). The previous rolled-up ping here was
-    // dominantly fired by the "no Node yet" cascade — every pack spawn
-    // errors at once — and added duplicate noise. Pack outcomes are
-    // recorded in the manifest for support debugging.
     runningRef.current = false;
-    // flushDiskLog and installPacks close over state setters and refs that
-    // don't change across renders — safe to omit from deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetDir]);
-
-  useEffect(() => {
-    startRun();
-    return () => {
-      abortRef.current?.abort();
-      for (const u of unlistenRefs.current) u?.();
-      unlistenRefs.current = [];
-      runningRef.current = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }
 
   function handleRetry() {
     runningRef.current = false;
@@ -494,11 +578,11 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
     // state. `installOnePack` calls `patchPack` which uses functional setState,
     // so the underlying state is safe; we just need a stable iteration order.
     const snapshot = packs;
-    for (let i = 0; i < HQ_PACKAGES.length; i++) {
+    for (let i = 0; i < snapshot.length; i++) {
       if (snapshot[i].status === "error") {
-        // Reset so the row re-shows "Installing…" rather than "Skipped".
+        // Reset so the row re-shows "Installing…" rather than "Failed".
         patchPack(i, { status: "pending", errorMsg: null });
-        const ok = await installOnePack(i, HQ_PACKAGES[i]);
+        const ok = await installOnePack(i, snapshot[i]);
         if (!ok) anyFailed = true;
       }
     }
@@ -620,38 +704,96 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
         )}
       </div>
 
-      {/* Pack install phase */}
-      {(phase === "installing-packs" || finalDone || recoveryInProgress) && (
+      {/* Pack selection + install */}
+      {(phase === "awaiting-pack-choice" ||
+        phase === "installing-packs" ||
+        finalDone ||
+        recoveryInProgress) && (
         <div className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
           <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
             HQ packages
           </p>
-          {packs.map((pack) => (
-            <div
-              key={pack.name}
-              className="flex items-center justify-between gap-3"
-              data-pack={pack.name}
-              data-pack-status={pack.status}
-            >
-              <span className="text-sm font-mono text-zinc-300 truncate">
-                {pack.name}
-              </span>
-              <span className="text-xs shrink-0">
-                {pack.status === "pending" && (
-                  <span className="text-zinc-600">Waiting</span>
-                )}
-                {pack.status === "running" && (
-                  <span className="text-zinc-400 hq-text-shimmer">Installing…</span>
-                )}
-                {pack.status === "done" && (
-                  <span className="text-green-400">Done</span>
-                )}
-                {pack.status === "error" && (
-                  <span className="text-amber-400">Skipped</span>
-                )}
-              </span>
-            </div>
-          ))}
+
+          {/* awaiting-pack-choice — the catalog checklist */}
+          {phase === "awaiting-pack-choice" && (
+            <>
+              <p className="text-xs text-zinc-500">
+                Optional add-ons. Pick the ones you want — any of these can be
+                installed later with{" "}
+                <span className="font-mono">hq install</span>.
+              </p>
+              {registryLoading && (
+                <p className="text-sm text-zinc-400 hq-text-shimmer">
+                  Loading available packages…
+                </p>
+              )}
+              {!registryLoading && registryError && (
+                <p className="text-xs text-amber-400">
+                  Couldn't load the full package catalog ({registryError}) —
+                  showing the core add-ons.
+                </p>
+              )}
+              {!registryLoading &&
+                packs.map((pack, idx) => (
+                  <label
+                    key={pack.id}
+                    className="flex items-start gap-3 py-1 cursor-pointer select-none"
+                    data-pack={pack.id}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={pack.selected}
+                      onChange={(e) =>
+                        patchPack(idx, { selected: e.target.checked })
+                      }
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-white"
+                      aria-label={pack.id}
+                    />
+                    <span className="flex flex-col gap-0.5">
+                      <span className="text-sm font-mono text-zinc-200">
+                        {pack.id}
+                      </span>
+                      {pack.description && (
+                        <span className="text-xs text-zinc-500">
+                          {pack.description}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+            </>
+          )}
+
+          {/* install / done phases — status rows for the selected packs */}
+          {phase !== "awaiting-pack-choice" &&
+            packs
+              .filter((pack) => pack.selected)
+              .map((pack) => (
+                <div
+                  key={pack.id}
+                  className="flex items-center justify-between gap-3"
+                  data-pack={pack.id}
+                  data-pack-status={pack.status}
+                >
+                  <span className="text-sm font-mono text-zinc-300 truncate">
+                    {pack.id}
+                  </span>
+                  <span className="text-xs shrink-0">
+                    {pack.status === "pending" && (
+                      <span className="text-zinc-600">Waiting</span>
+                    )}
+                    {pack.status === "running" && (
+                      <span className="text-zinc-400 hq-text-shimmer">Installing…</span>
+                    )}
+                    {pack.status === "done" && (
+                      <span className="text-green-400">Done</span>
+                    )}
+                    {pack.status === "error" && (
+                      <span className="text-amber-400">Failed</span>
+                    )}
+                  </span>
+                </div>
+              ))}
           {phase === "done-with-warnings" && failedPacks.length > 0 && (
             <div className="flex flex-col gap-2 mt-1">
               <p className="text-xs text-amber-400">
@@ -743,6 +885,19 @@ export function TemplateFetch({ targetDir, onNext }: TemplateFetchProps) {
             View log
           </button>
         </div>
+      )}
+
+      {phase === "awaiting-pack-choice" && (
+        <WizardFooterSlot>
+          <button
+            type="button"
+            onClick={handleConfirmPackChoice}
+            disabled={registryLoading}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Continue
+          </button>
+        </WizardFooterSlot>
       )}
 
       {finalDone && (
