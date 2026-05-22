@@ -150,7 +150,7 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(btn).not.toBeNull();
   });
 
-  it("clicking 'Launch Claude Desktop' calls invoke('launch_claude_desktop')", async () => {
+  it("clicking 'Launch Claude Desktop' opens claude://code/new with /setup and folder", async () => {
     const user = userEvent.setup();
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
     const btn = await screen.findByRole("button", {
@@ -158,8 +158,26 @@ describe("Summary screen (11-summary.tsx)", () => {
     });
     await user.click(btn);
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("launch_claude_desktop");
+      expect(mockInvoke).toHaveBeenCalledWith("open_claude_code_link", {
+        url: "claude://code/new?q=%2Fsetup&folder=%2FUsers%2Ftestuser%2FHQ",
+      });
     });
+  });
+
+  it("does NOT invoke launch_claude_desktop anymore (deep link replaces it)", async () => {
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /launch claude desktop/i,
+    });
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "open_claude_code_link",
+        expect.anything(),
+      );
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith("launch_claude_desktop");
   });
 
   it("renders Claude Desktop instructions including the install path", () => {

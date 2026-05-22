@@ -1,7 +1,7 @@
 {
   "name": "hq-installer",
   "private": true,
-  "version": "0.3.5",
+  "version": "0.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,8 +13,6 @@
     "lint": "eslint src --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sync-templates": "tsx scripts/sync-templates.ts",
-    "postinstall": "tsx scripts/sync-templates.ts --optional",
     "prepare": "husky",
     "e2e": "playwright test"
   },

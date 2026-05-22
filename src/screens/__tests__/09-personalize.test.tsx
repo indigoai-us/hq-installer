@@ -17,8 +17,8 @@ import { Personalize } from "../09-personalize.js";
 //     then onNext(). S3 reconciliation is no longer the installer's job — the
 //     HQ-Sync menu bar app (Step 9) owns continuous sync post-install.
 //
-// The earlier 3-step form (Identity / StarterProject / Customization) was
-// replaced; tests here cover the new surface.
+// The earlier multi-step form was replaced with this single screen; tests
+// here cover the new surface.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -366,21 +366,6 @@ describe("Personalize screen (09-personalize.tsx) — redesigned single-step for
       expect(mockSetPersonalized).toHaveBeenCalledWith(true);
     });
 
-    it("does NOT omit starterProject — it isn't required anymore", async () => {
-      const user = userEvent.setup();
-      render(<Personalize installPath="/tmp/hq" onNext={vi.fn()} />);
-
-      await waitFor(() => {
-        const input = findNameInput();
-        expect(input?.value).toBe("Jane Doe");
-      });
-
-      await user.click(findContinueButton()!);
-
-      await waitFor(() => expect(mockPersonalize).toHaveBeenCalledTimes(1));
-      const [answers] = mockPersonalize.mock.calls[0];
-      expect(answers.starterProject).toBeUndefined();
-    });
   });
 
   // ── 5. Wizard-state seeding on mount ──────────────────────────────────────

@@ -65,23 +65,6 @@ const VOICE_STYLE_TEMPLATE = `# Voice & Style: {{name}}
 {{/each}}
 `;
 
-/** Sample minimal starter project files for injection */
-const PERSONAL_ASSISTANT_FILES: Record<string, string> = {
-  "README.md": "# Personal Assistant Starter",
-  "workers/assistant.yaml": "name: assistant\ntype: personal-assistant\n",
-  "projects/daily-standup/prd.json": '{"name":"daily-standup"}',
-};
-
-const SOCIAL_MEDIA_FILES: Record<string, string> = {
-  "README.md": "# Social Media Starter",
-  "workers/social.yaml": "name: social\ntype: social-media\n",
-};
-
-const CODE_WORKER_FILES: Record<string, string> = {
-  "README.md": "# Code Worker Starter",
-  "workers/coder.yaml": "name: coder\ntype: code-worker\n",
-};
-
 // ---------------------------------------------------------------------------
 // Base answers fixture
 // ---------------------------------------------------------------------------
@@ -90,7 +73,6 @@ const BASE_ANSWERS: PersonalizationAnswers = {
   name: "alice",
   about: "Software engineer and indie hacker",
   goals: "Automate repetitive tasks and ship faster",
-  starterProject: "personal-assistant",
   customizations: {
     tone: "concise and direct",
     timezone: "America/New_York",
@@ -116,14 +98,13 @@ beforeEach(() => {
 describe("personalize", () => {
   // -------------------------------------------------------------------------
   describe("profile.md and voice-style.md", () => {
-    it("writes profile.md to knowledge/{name}/profile.md under baseDir", async () => {
+    it("writes profile.md to core/knowledge/{name}/profile.md under baseDir", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
-      const expectedPath = `${BASE_DIR}/knowledge/alice/profile.md`;
+      const expectedPath = `${BASE_DIR}/core/knowledge/alice/profile.md`;
       expect(mockWriteTextFile).toHaveBeenCalledWith(
         expectedPath,
         expect.stringContaining("alice"),
@@ -134,24 +115,22 @@ describe("personalize", () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
-      const content = getWrittenText(`${BASE_DIR}/knowledge/alice/profile.md`);
+      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/profile.md`);
       expect(content).toBeDefined();
       expect(content).toContain("alice");
       expect(content).toContain("Software engineer and indie hacker");
       expect(content).toContain("Automate repetitive tasks and ship faster");
     });
 
-    it("writes voice-style.md to knowledge/{name}/voice-style.md under baseDir", async () => {
+    it("writes voice-style.md to core/knowledge/{name}/voice-style.md under baseDir", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
-      const expectedPath = `${BASE_DIR}/knowledge/alice/voice-style.md`;
+      const expectedPath = `${BASE_DIR}/core/knowledge/alice/voice-style.md`;
       expect(mockWriteTextFile).toHaveBeenCalledWith(
         expectedPath,
         expect.any(String),
@@ -162,25 +141,23 @@ describe("personalize", () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
-      const content = getWrittenText(`${BASE_DIR}/knowledge/alice/voice-style.md`);
+      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/voice-style.md`);
       expect(content).toBeDefined();
       expect(content).toContain("alice");
       expect(content).toContain("concise and direct");
       expect(content).toContain("America/New_York");
     });
 
-    it("creates parent knowledge/{name} directory recursively", async () => {
+    it("creates parent core/knowledge/{name} directory recursively", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       expect(mockMkdir).toHaveBeenCalledWith(
-        `${BASE_DIR}/knowledge/alice`,
+        `${BASE_DIR}/core/knowledge/alice`,
         { recursive: true },
       );
     });
@@ -195,111 +172,23 @@ describe("personalize", () => {
         personalize(answersNoCustom, BASE_DIR, {
           profileTemplate: PROFILE_TEMPLATE,
           voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
         }),
       ).resolves.toBeUndefined();
 
-      const content = getWrittenText(`${BASE_DIR}/knowledge/alice/voice-style.md`);
+      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/voice-style.md`);
       expect(content).toBeDefined();
     });
   });
 
   // -------------------------------------------------------------------------
-  describe("starter project copying", () => {
-    it("copies personal-assistant files to companies/personal/projects/personal-assistant/", async () => {
-      await personalize(BASE_ANSWERS, BASE_DIR, {
-        profileTemplate: PROFILE_TEMPLATE,
-        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
-      });
-
-      const expectedBase = `${BASE_DIR}/companies/personal/projects/personal-assistant`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
-        `${expectedBase}/README.md`,
-        "# Personal Assistant Starter",
-      );
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
-        `${expectedBase}/workers/assistant.yaml`,
-        expect.stringContaining("assistant"),
-      );
-    });
-
-    it("copies social-media files to companies/personal/projects/social-media/", async () => {
-      const answers: PersonalizationAnswers = {
-        ...BASE_ANSWERS,
-        starterProject: "social-media",
-      };
-
-      await personalize(answers, BASE_DIR, {
-        profileTemplate: PROFILE_TEMPLATE,
-        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: SOCIAL_MEDIA_FILES,
-      });
-
-      const expectedBase = `${BASE_DIR}/companies/personal/projects/social-media`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
-        `${expectedBase}/README.md`,
-        "# Social Media Starter",
-      );
-    });
-
-    it("copies code-worker files to companies/personal/projects/code-worker/", async () => {
-      const answers: PersonalizationAnswers = {
-        ...BASE_ANSWERS,
-        starterProject: "code-worker",
-      };
-
-      await personalize(answers, BASE_DIR, {
-        profileTemplate: PROFILE_TEMPLATE,
-        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: CODE_WORKER_FILES,
-      });
-
-      const expectedBase = `${BASE_DIR}/companies/personal/projects/code-worker`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
-        `${expectedBase}/README.md`,
-        "# Code Worker Starter",
-      );
-    });
-
-    it("creates parent project directories recursively before writing files", async () => {
-      await personalize(BASE_ANSWERS, BASE_DIR, {
-        profileTemplate: PROFILE_TEMPLATE,
-        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
-      });
-
-      const projectBase = `${BASE_DIR}/companies/personal/projects/personal-assistant`;
-      // Expect mkdir for the project base or a subdirectory within it
-      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
-      expect(
-        mkdirPaths.some((p) => p.startsWith(projectBase)),
-      ).toBe(true);
-    });
-
-    it("does not write files from other starter projects when personal-assistant is selected", async () => {
-      await personalize(BASE_ANSWERS, BASE_DIR, {
-        profileTemplate: PROFILE_TEMPLATE,
-        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
-      });
-
-      const writtenPaths = allWrittenPaths();
-      expect(writtenPaths.some((p) => p.includes("social-media"))).toBe(false);
-      expect(writtenPaths.some((p) => p.includes("code-worker"))).toBe(false);
-    });
-  });
-
-  // -------------------------------------------------------------------------
   describe("settings scaffold", () => {
-    it("writes cognito.json as an empty JSON object to companies/personal/settings/", async () => {
+    it("writes cognito.json as an empty JSON object to personal/settings/", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
-      const expectedPath = `${BASE_DIR}/companies/personal/settings/cognito.json`;
+      const expectedPath = `${BASE_DIR}/personal/settings/cognito.json`;
       expect(mockWriteTextFile).toHaveBeenCalledWith(
         expectedPath,
         expect.any(String),
@@ -312,45 +201,42 @@ describe("personalize", () => {
       expect(JSON.parse(content!)).toEqual({});
     });
 
-    it("writes .gitkeep to companies/personal/settings/", async () => {
+    it("writes .gitkeep to personal/settings/", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       const writtenPaths = allWrittenPaths();
       expect(
         writtenPaths.some(
-          (p) => p === `${BASE_DIR}/companies/personal/settings/.gitkeep`,
+          (p) => p === `${BASE_DIR}/personal/settings/.gitkeep`,
         ),
       ).toBe(true);
     });
 
-    it("creates companies/personal/settings/ directory recursively", async () => {
+    it("creates personal/settings/ directory recursively", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       expect(mockMkdir).toHaveBeenCalledWith(
-        `${BASE_DIR}/companies/personal/settings`,
+        `${BASE_DIR}/personal/settings`,
         { recursive: true },
       );
     });
 
-    it("writes .gitkeep to companies/personal/workers/ directory", async () => {
+    it("writes .gitkeep to personal/workers/ directory", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       const writtenPaths = allWrittenPaths();
       expect(
         writtenPaths.some(
-          (p) => p === `${BASE_DIR}/companies/personal/workers/.gitkeep`,
+          (p) => p === `${BASE_DIR}/personal/workers/.gitkeep`,
         ),
       ).toBe(true);
     });
@@ -358,11 +244,10 @@ describe("personalize", () => {
 
   // -------------------------------------------------------------------------
   describe("golden snapshot: complete output file tree", () => {
-    it("personal-assistant: sorted created-path list matches snapshot", async () => {
+    it("sorted created-path list matches snapshot", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       const writtenPaths = allWrittenPaths();
@@ -375,49 +260,10 @@ describe("personalize", () => {
       expect(relativePaths).toMatchSnapshot();
     });
 
-    it("social-media: sorted created-path list matches snapshot", async () => {
-      const answers: PersonalizationAnswers = {
-        ...BASE_ANSWERS,
-        starterProject: "social-media",
-      };
-
-      await personalize(answers, BASE_DIR, {
-        profileTemplate: PROFILE_TEMPLATE,
-        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: SOCIAL_MEDIA_FILES,
-      });
-
-      const relativePaths = allWrittenPaths()
-        .map((p) => p.replace(`${BASE_DIR}/`, ""))
-        .sort();
-
-      expect(relativePaths).toMatchSnapshot();
-    });
-
-    it("code-worker: sorted created-path list matches snapshot", async () => {
-      const answers: PersonalizationAnswers = {
-        ...BASE_ANSWERS,
-        starterProject: "code-worker",
-      };
-
-      await personalize(answers, BASE_DIR, {
-        profileTemplate: PROFILE_TEMPLATE,
-        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: CODE_WORKER_FILES,
-      });
-
-      const relativePaths = allWrittenPaths()
-        .map((p) => p.replace(`${BASE_DIR}/`, ""))
-        .sort();
-
-      expect(relativePaths).toMatchSnapshot();
-    });
-
     it("every written path is under baseDir (no path traversal)", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       const writtenPaths = allWrittenPaths();
@@ -438,7 +284,6 @@ describe("personalize", () => {
       await personalize(answers, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       const writtenPaths = allWrittenPaths();
@@ -451,7 +296,6 @@ describe("personalize", () => {
       const result = await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-        starterProjectFiles: PERSONAL_ASSISTANT_FILES,
       });
 
       expect(result).toBeUndefined();
@@ -464,7 +308,6 @@ describe("personalize", () => {
         personalize(BASE_ANSWERS, BASE_DIR, {
           profileTemplate: PROFILE_TEMPLATE,
           voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
         }),
       ).rejects.toThrow("disk full");
     });
@@ -476,7 +319,6 @@ describe("personalize", () => {
         personalize(BASE_ANSWERS, BASE_DIR, {
           profileTemplate: PROFILE_TEMPLATE,
           voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
-          starterProjectFiles: PERSONAL_ASSISTANT_FILES,
         }),
       ).rejects.toThrow("permission denied");
     });

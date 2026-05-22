@@ -9,6 +9,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { fetch } from "@tauri-apps/plugin-http";
 import { TauriHttpHandler } from "./tauri-http-handler";
+import { CLIENT_HEADERS } from "./client-info";
 
 interface StsVendResponse {
   credentials: {
@@ -109,6 +110,7 @@ export async function vendStsCredentials(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
+      ...CLIENT_HEADERS,
     },
     body: JSON.stringify({
       companyUid,

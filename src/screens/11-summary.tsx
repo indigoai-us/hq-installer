@@ -86,7 +86,14 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
     setLaunchError(null);
     setLaunchingDesktop(true);
     try {
-      await invoke("launch_claude_desktop");
+      // Deep-link straight into a new Claude Code session pointed at the
+      // freshly-installed HQ folder, with `/setup` prefilled so the user
+      // lands in the onboarding flow instead of an empty prompt. Claude
+      // Desktop is the registered handler for `claude://` on macOS.
+      const params = new URLSearchParams({ q: "/setup" });
+      if (wizardState.installPath) params.set("folder", wizardState.installPath);
+      const url = `claude://code/new?${params.toString()}`;
+      await invoke("open_claude_code_link", { url });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setLaunchError(`Couldn't open Claude Desktop: ${msg}`);

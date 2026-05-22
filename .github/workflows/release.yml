@@ -37,20 +37,6 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
-      # Starter-project templates live in the public hq repo. sync-templates.ts
-      # (run via postinstall) copies hq-core's root-level starter-projects/
-      # into this repo's templates/starter-projects/ so tauri.conf.json's resource bundler picks
-      # them up. Without this checkout, postinstall's --optional path silently
-      # skips the copy and the .app ships without starter-projects, crashing on
-      # first wizard use with "No such file or directory" at
-      # hq-installer.app/Contents/Resources/templates/starter-projects/<slug>.
-      - name: Checkout hq-core (starter-project templates source)
-        uses: actions/checkout@v4
-        with:
-          repository: indigoai-us/hq-core
-          path: hq-source
-          fetch-depth: 0
-
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -60,26 +46,75 @@ jobs:
           node-version: 22
           cache: "pnpm"
 
-      - name: Install dependencies (syncs starter-project templates via postinstall)
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        env:
-          HQ_REPO_PATH: ${{ github.workspace }}/hq-source
-
-      # Defensive guard: fail loudly if starter-projects didn't land in the
-      # bundle source tree. Prevents another silent broken .app if the source
-      # repo layout changes under us.
-      - name: Verify starter-project templates are present
-        run: |
-          for slug in code-worker personal-assistant social-media; do
-            if [ ! -d "templates/starter-projects/$slug" ]; then
-              echo "::error::templates/starter-projects/$slug missing — Tauri bundle would ship broken"
-              exit 1
-            fi
-          done
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      # macos-15-arm64 image 20260511.0048.1 ships a Homebrew `cargo` shim
+      # that resolves to `rustup-init` and shadows ~/.cargo/bin/cargo. Prepend
+      # the rustup-managed proxy dir so tauri-action's cargo invocations
+      # resolve correctly. See ci.yml for the full diagnosis.
+      - name: Put rustup-managed cargo first on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # PATH-prepend alone wasn't enough for the release flow: v0.4.0's
+      # build (run 25890757341) hit `cargo metadata → unexpected argument
+      # 'metadata' found` from `rustup-init`. tauri-action is a JS Action
+      # that spawns `cargo` via Node `child_process`, so even with the
+      # right PATH ordering it can resolve to a shim cargo at a path we
+      # haven't enumerated. (PR #65 run 25892054324 reproduced this even
+      # though /opt/homebrew/bin/cargo and /usr/local/bin/cargo were both
+      # absent — the shim lives somewhere else on this image.)
+      #
+      # Walk EVERY `cargo` on PATH via `which -a` and replace any entry
+      # that isn't already the rustup-managed binary (or a symlink to it)
+      # with a symlink to it. After this step, every PATH-resolved cargo
+      # invocation lands at the rustup-managed binary regardless of which
+      # path the resolver picks. Identical step to ci.yml — keep the two
+      # in sync.
+      - name: Replace any cargo shim with rustup-managed cargo
+        run: |
+          set -euo pipefail
+          rustup_cargo="$HOME/.cargo/bin/cargo"
+          if [ ! -x "$rustup_cargo" ]; then
+            echo "::error::rustup-managed cargo not found at $rustup_cargo — toolchain step failed?"
+            exit 1
+          fi
+
+          # Diagnostics — useful if a future image moves cargo somewhere new.
+          echo "PATH=$PATH"
+          echo "All cargo on PATH:"
+          which -a cargo || true
+
+          replaced=0
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            if [ "$c" = "$rustup_cargo" ]; then
+              continue
+            fi
+            target="$(readlink "$c" 2>/dev/null || true)"
+            if [ "$target" = "$rustup_cargo" ]; then
+              continue
+            fi
+            echo "Replace shim: $c (was → '${target:-<regular file>}') → $rustup_cargo"
+            sudo rm -f "$c"
+            sudo ln -sf "$rustup_cargo" "$c"
+            replaced=$((replaced + 1))
+          done < <(which -a cargo 2>/dev/null || true)
+
+          if [ "$replaced" = 0 ]; then
+            echo "No non-rustup cargo entries on PATH (older image, or future fix landed)."
+          fi
+
+          # Sanity: invoke `cargo metadata` to mimic tauri-action's JS
+          # child_process. Any remaining shim fails here loud rather than
+          # 10 min into the Tauri build.
+          which cargo
+          cargo --version
+          cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
 
       - uses: Swatinem/rust-cache@v2
         with:

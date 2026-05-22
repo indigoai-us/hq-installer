@@ -78,6 +78,41 @@ pub fn claude_desktop_installed() -> bool {
     false
 }
 
+/// Forward a `claude://…` deep link to macOS `open`.
+///
+/// Mirrors hq-sync's `open_claude_code_link`. The renderer can't call
+/// `@tauri-apps/plugin-shell` `open()` for non-http(s) schemes without
+/// widening `shell:allow-open` to the world; this command keeps the
+/// surface tight by only forwarding `claude://` URLs. Claude Desktop is
+/// registered as the system handler for the scheme, so `open <url>` is
+/// all macOS needs to deep-link into a new Claude Code session.
+#[tauri::command]
+pub fn open_claude_code_link(url: String) -> Result<(), String> {
+    if !url.starts_with("claude://") {
+        return Err(format!("refusing to open non-claude scheme: {}", url));
+    }
+
+    let output = Command::new("open")
+        .arg(&url)
+        .output()
+        .map_err(|e| format!("Failed to run open: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "open exited {}: {}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
 /// Launch the Claude Desktop macOS app via `open -a Claude`.
 ///
 /// We can't deep-link into a specific folder — Claude Desktop has no
