@@ -1,0 +1,208 @@
+name: Auto-Release on Merge to Main
+
+# Cuts a new release tag every time a user-facing change lands on main.
+#
+# How it works:
+#  1. On every push to main, look at the head commit message.
+#  2. Skip if the commit is the bot's own version bump, a docs/CI/chore-only
+#     change, or has [skip release] in it.
+#  3. Otherwise bump the patch (or minor/major per conventional-commits),
+#     update the 4 version files (package.json, src-tauri/Cargo.toml,
+#     src-tauri/Cargo.lock, src-tauri/tauri.conf.json), commit, tag, and
+#     trigger release.yml via workflow_dispatch.
+#
+# Why workflow_dispatch instead of letting the tag push trigger release.yml:
+# GitHub does not retrigger workflows when the default GITHUB_TOKEN pushes
+# a tag (loop-prevention). The simplest workaround is to dispatch
+# release.yml ourselves once the tag exists. release.yml already accepts
+# `inputs.tag` and treats it identically to a tag-push.
+#
+# Opt-out: put `[skip release]` anywhere in the merge commit message.
+# Bump override: prefix with `feat!:` / `BREAKING CHANGE:` for major,
+# `feat:` / `feat(`  for minor. Everything else is patch.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Bump, tag, dispatch release
+    runs-on: ubuntu-latest
+    if: github.event.head_commit.author.email != '41898282+github-actions[bot]@users.noreply.github.com'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Default GITHUB_TOKEN cannot retrigger workflows on the tag push,
+          # but it CAN push commits + tags themselves. We dispatch release.yml
+          # explicitly afterward via `gh workflow run`, so this is fine.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gate — skip if commit is non-releasable
+        id: gate
+        run: |
+          set -euo pipefail
+          # head_commit.message is multi-line; take first line for prefix matching.
+          full_msg=$(git log -1 --pretty=%B)
+          first_line=$(printf '%s' "$full_msg" | head -1)
+          echo "Commit subject: $first_line"
+
+          # Explicit opt-out — search whole body, not just first line.
+          if printf '%s' "$full_msg" | grep -qE '\[skip[ -]release\]'; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "reason=skip-release flag present" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Bot's own commits (defensive — workflow `if` already guards on author).
+          case "$first_line" in
+            "chore(release):"*) echo "should_release=false" >> "$GITHUB_OUTPUT"; echo "reason=bot release commit" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+
+          # Non-user-facing prefixes — release.yml's universal binary build
+          # takes ~12 minutes and notarizes via Apple, so skip pure
+          # tooling/docs/CI noise to save CI minutes and avoid releasing
+          # an identical binary.
+          case "$first_line" in
+            docs:*|"docs("*|ci:*|"ci("*|chore:*|"chore("*|test:*|"test("*|style:*|"style("*|refactor:*|"refactor("*)
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "reason=non-user-facing commit type ($first_line)" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          # Detect bump level per conventional-commits.
+          # Order matters: major before minor before patch.
+          if printf '%s' "$full_msg" | grep -qE '^BREAKING CHANGE:'; then
+            bump=major
+          elif printf '%s' "$first_line" | grep -qE '^[a-z]+(\([^)]+\))?!:'; then
+            bump=major
+          elif printf '%s' "$first_line" | grep -qE '^feat(\([^)]+\))?:'; then
+            bump=minor
+          else
+            bump=patch
+          fi
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+          echo "Detected bump: $bump"
+
+      - name: Compute next version
+        id: ver
+        if: steps.gate.outputs.should_release == 'true'
+        run: |
+          set -euo pipefail
+          current=$(jq -r .version package.json)
+          IFS=. read -r maj min pat <<< "$current"
+          case "${{ steps.gate.outputs.bump }}" in
+            major) next="$((maj + 1)).0.0" ;;
+            minor) next="$maj.$((min + 1)).0" ;;
+            patch) next="$maj.$min.$((pat + 1))" ;;
+          esac
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Bump: $current → $next"
+
+      - name: Bump version files
+        if: steps.gate.outputs.should_release == 'true'
+        run: |
+          set -euo pipefail
+          cur="${{ steps.ver.outputs.current }}"
+          new="${{ steps.ver.outputs.next }}"
+
+          # package.json
+          jq --arg v "$new" '.version=$v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+          # tauri.conf.json
+          jq --arg v "$new" '.version=$v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+
+          # Cargo.toml — only the [package] block at the top of the file
+          # has version. The file uses `name = "hq-installer"` followed
+          # immediately by `version = "X.Y.Z"`; sed scoped to that pair
+          # avoids touching any dep that happens to share the version.
+          python3 - <<PY
+          import pathlib, re, sys
+          p = pathlib.Path("src-tauri/Cargo.toml")
+          text = p.read_text()
+          # Replace ONLY the version on the line directly following the
+          # hq-installer name declaration.
+          pattern = re.compile(r'(name = "hq-installer"\nversion = ")[^"]+(")')
+          new_text, n = pattern.subn(r'\g<1>${{ steps.ver.outputs.next }}\g<2>', text, count=1)
+          if n != 1:
+              print("ERROR: did not find hq-installer version in Cargo.toml", file=sys.stderr)
+              sys.exit(1)
+          p.write_text(new_text)
+          PY
+
+          # Cargo.lock — same pattern (single [[package]] entry for
+          # hq-installer at the workspace root). Use python again to
+          # match the exact `name = "hq-installer"` + next-line version.
+          python3 - <<PY
+          import pathlib, re, sys
+          p = pathlib.Path("src-tauri/Cargo.lock")
+          text = p.read_text()
+          pattern = re.compile(r'(name = "hq-installer"\nversion = ")[^"]+(")')
+          new_text, n = pattern.subn(r'\g<1>${{ steps.ver.outputs.next }}\g<2>', text, count=1)
+          if n != 1:
+              print("ERROR: did not find hq-installer version in Cargo.lock", file=sys.stderr)
+              sys.exit(1)
+          p.write_text(new_text)
+          PY
+
+          # Sanity: all 4 files agree.
+          for f in package.json src-tauri/tauri.conf.json; do
+            grep -q "\"$new\"" "$f" || { echo "ERROR: $f not bumped"; exit 1; }
+          done
+          grep -q "^version = \"$new\"" src-tauri/Cargo.toml || { echo "ERROR: Cargo.toml not bumped"; exit 1; }
+          grep -A1 'name = "hq-installer"' src-tauri/Cargo.lock | grep -q "version = \"$new\"" || { echo "ERROR: Cargo.lock not bumped"; exit 1; }
+
+      - name: Commit, tag, push
+        if: steps.gate.outputs.should_release == 'true'
+        run: |
+          set -euo pipefail
+          new="${{ steps.ver.outputs.next }}"
+
+          # Use the github-actions[bot] identity so the workflow `if` guard
+          # above filters out this commit on the next push (no infinite loop).
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git commit -m "chore(release): bump installer to $new"
+          git tag -a "v$new" -m "HQ Installer v$new"
+
+          git push origin main
+          git push origin "v$new"
+
+      - name: Dispatch release.yml
+        if: steps.gate.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          new="${{ steps.ver.outputs.next }}"
+          # workflow_dispatch + inputs.tag is how release.yml accepts a
+          # tagged version that was pushed by GITHUB_TOKEN (which does not
+          # auto-trigger downstream workflows). release.yml's checkout uses
+          # `ref: ${{ inputs.tag || github.ref }}`, so the build runs
+          # against the same commit the tag points to.
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref "v$new" \
+            --field tag="v$new"
+          echo "Dispatched release.yml for v$new"
+
+      - name: Report skip reason
+        if: steps.gate.outputs.should_release != 'true'
+        run: |
+          echo "::notice::Skipped release: ${{ steps.gate.outputs.reason }}"
