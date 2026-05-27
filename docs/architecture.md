@@ -150,7 +150,7 @@ Two workflows compose the release path:
 
 **`.github/workflows/auto-release.yml`** triggers on every push to `main` and decides whether to cut a release:
 
-1. Skip if the commit is the bot's own version bump (author-email match), contains `[skip release]` in the body, or starts with a non-user-facing prefix (`docs:`, `ci:`, `chore:`, `test:`, `style:`, `refactor:`).
+1. Skip if the commit is the bot's own version bump (author-email match), carries a `Skip-Release: true` git-trailer line (anchored whole-line match — free-text "skip release" prose in the PR body does not trigger it, immune to squash-merge body inlining), or starts with a non-user-facing prefix (`docs:`, `ci:`, `chore:`, `test:`, `style:`, `refactor:`).
 2. Conventional-commit-driven bump: `feat!:` / `BREAKING CHANGE:` → major; `feat:` / `feat(...):` → minor; otherwise patch.
 3. Update the four version-pinned files (`package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`), commit as `github-actions[bot]`, tag `v$VER`, and push.
 4. Dispatch `release.yml` explicitly via `gh workflow run --field tag=v$VER`. (GitHub does not retrigger workflows when the default `GITHUB_TOKEN` pushes a tag; an explicit dispatch sidesteps this without a custom PAT.)
