@@ -146,7 +146,16 @@ Both layers share the same DSN, set via `VITE_SENTRY_DSN` (frontend) / `SENTRY_D
 
 ## Release Pipeline
 
-`.github/workflows/release.yml` triggers on version tags (`v*`):
+Two workflows compose the release path:
+
+**`.github/workflows/auto-release.yml`** triggers on every push to `main` and decides whether to cut a release:
+
+1. Skip if the commit is the bot's own version bump (author-email match), contains `[skip release]` in the body, or starts with a non-user-facing prefix (`docs:`, `ci:`, `chore:`, `test:`, `style:`, `refactor:`).
+2. Conventional-commit-driven bump: `feat!:` / `BREAKING CHANGE:` → major; `feat:` / `feat(...):` → minor; otherwise patch.
+3. Update the four version-pinned files (`package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`), commit as `github-actions[bot]`, tag `v$VER`, and push.
+4. Dispatch `release.yml` explicitly via `gh workflow run --field tag=v$VER`. (GitHub does not retrigger workflows when the default `GITHUB_TOKEN` pushes a tag; an explicit dispatch sidesteps this without a custom PAT.)
+
+**`.github/workflows/release.yml`** is dispatched by `auto-release.yml` (or invoked manually on a pushed `v*` tag) and does the heavy lift:
 
 1. Build universal macOS binary (`x86_64` + `arm64`) via `tauri build --target universal-apple-darwin`
 2. Code-sign `.app` with Apple Developer ID certificate
@@ -155,7 +164,7 @@ Both layers share the same DSN, set via `VITE_SENTRY_DSN` (frontend) / `SENTRY_D
 5. Create GitHub release with signed `.zip` attached
 6. Upload auto-update manifest to S3, generate presigned URL
 
-Distribution format is a zipped, notarized `.app` rather than a `.dmg` so the user experience is "download → Safari auto-extracts → double-click the app" with no mount-and-drag-to-Applications step.
+Distribution format is a zipped, notarized `.app` rather than a `.dmg` so the user experience is "download → Safari auto-extracts → double-click the app" with no mount-and-drag-to-Applications step. `install.getindigo.ai` reads `/releases/latest` dynamically, so a newly published tag auto-propagates to the public download page.
 
 Required GitHub Actions secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_ID_PASSWORD`, `APPLE_TEAM_ID`. Certificate sourced from `companies/indigo/settings/`.
 
