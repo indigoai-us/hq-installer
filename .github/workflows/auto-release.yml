@@ -17,7 +17,11 @@ name: Auto-Release on Merge to Main
 # release.yml ourselves once the tag exists. release.yml already accepts
 # `inputs.tag` and treats it identically to a tag-push.
 #
-# Opt-out: put `[skip release]` anywhere in the merge commit message.
+# Opt-out: add a git-trailer line `Skip-Release: true` to the merge
+# commit message (whole line, anchored — same shape as `Co-Authored-By:`
+# or `Signed-off-by:`). Free-text mentions of "skip release" in the PR
+# body do NOT trigger the skip, so the flag can be safely documented in
+# prose without false-positives via squash-merge body inlining.
 # Bump override: prefix with `feat!:` / `BREAKING CHANGE:` for major,
 # `feat:` / `feat(`  for minor. Everything else is patch.
 
@@ -56,10 +60,15 @@ jobs:
           first_line=$(printf '%s' "$full_msg" | head -1)
           echo "Commit subject: $first_line"
 
-          # Explicit opt-out — search whole body, not just first line.
-          if printf '%s' "$full_msg" | grep -qE '\[skip[ -]release\]'; then
+          # Explicit opt-out — anchored git-trailer match on a whole line.
+          # Free-text mentions of "[skip release]" in PR-body prose used to
+          # false-positive here (squash-merge inlines the PR body into the
+          # commit body). The trailer form `Skip-Release: true` is immune:
+          # the PR body lands above the trailer block, so documentation
+          # prose cannot impersonate the actual flag.
+          if printf '%s' "$full_msg" | grep -qiE '^[[:space:]]*Skip-Release:[[:space:]]*true[[:space:]]*$'; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "reason=skip-release flag present" >> "$GITHUB_OUTPUT"
+            echo "reason=Skip-Release trailer present" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
