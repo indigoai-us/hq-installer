@@ -87,6 +87,16 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       <section class="download-card" aria-labelledby="download-heading">
         <h2 id="download-heading">Download HQ Installer</h2>
 
+        <!--
+          Access-funnel handoff banner (hq-access-funnel, in-proj-072). Hidden
+          by default; revealed client-side when the page is reached via the
+          post-grant handoff with a `company` param. See lib/onboarding-context.ts.
+        -->
+        <div id="onboarding-banner" class="onboarding-banner" role="status" hidden>
+          Setting up HQ for <span id="onboarding-banner-company"></span> — download
+          below and we&apos;ll pick up where your demo left off.
+        </div>
+
         {release ? (
           <div class="release-meta">
             <span class="tag">{release.tag}</span>
@@ -793,6 +803,68 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
           transition: none;
         }
       }
+
+      /* Access-funnel handoff banner (hq-access-funnel). Hidden until the
+         capture script reveals it for a funnel arrival. */
+      .onboarding-banner {
+        margin: 0 0 1.25rem;
+        padding: 0.75rem 1rem;
+        border: 1px solid color-mix(in srgb, var(--accent, #7c5cff) 40%, transparent);
+        border-radius: 0.5rem;
+        background: color-mix(in srgb, var(--accent, #7c5cff) 12%, transparent);
+        color: var(--fg, #e7e7ea);
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 0.875rem;
+        line-height: 1.5;
+      }
+      .onboarding-banner[hidden] {
+        display: none;
+      }
+      #onboarding-banner-company {
+        font-weight: 600;
+      }
     </style>
+
+    <!--
+      Access-funnel onboarding capture (hq-access-funnel, in-proj-072). Bundled
+      (not is:inline) so it can import the pure parser. When the page is reached
+      via the post-grant handoff (?company=…&companySlug=…&email=…&track=onboarding),
+      it reveals the banner and persists the context to localStorage. A native
+      .dmg/.zip cannot carry these params, so this captures + persists only — the
+      desktop app bridging the context post-auth is a separate item (see
+      docs/access-funnel-onboarding-context.md).
+    -->
+    <script>
+      import {
+        parseOnboardingContext,
+        hasOnboardingContext,
+        contextLabel,
+        ONBOARDING_CONTEXT_STORAGE_KEY,
+      } from "../lib/onboarding-context.ts";
+
+      try {
+        const context = parseOnboardingContext(window.location.search);
+        if (hasOnboardingContext(context)) {
+          // Persist so a return visit / future app integration can resume it.
+          try {
+            window.localStorage.setItem(
+              ONBOARDING_CONTEXT_STORAGE_KEY,
+              JSON.stringify({ ...context, capturedAt: new Date().toISOString() }),
+            );
+          } catch {
+            /* private mode / storage disabled — banner still shows */
+          }
+          const banner = document.getElementById("onboarding-banner");
+          const companyEl = document.getElementById("onboarding-banner-company");
+          const label = contextLabel(context);
+          if (banner && companyEl && label) {
+            companyEl.textContent = label;
+            banner.hidden = false;
+          }
+        }
+      } catch {
+        /* never let onboarding capture break the download page */
+      }
+    </script>
   </body>
 </html>
