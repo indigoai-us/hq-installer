@@ -61,6 +61,35 @@ export interface Release {
 const REPO = "indigoai-us/hq-installer";
 const LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 
+/** Pinned Windows download. */
+export interface WindowsDownload {
+  /** Direct GitHub release asset URL (a fixed, versioned release). */
+  url: string;
+  /** Asset size in bytes — formatted client-side via `formatBytes`. */
+  sizeBytes: number;
+  /** Human label for the build, e.g. `v0.4.1`. */
+  version: string;
+}
+
+/**
+ * Pinned Windows build.
+ *
+ * macOS downloads are resolved dynamically from the *latest* GitHub release
+ * (see `fetchLatestRelease`). Windows ships on its own cadence and is not
+ * guaranteed to be attached to whatever release happens to be "latest", so we
+ * pin a fixed release-asset URL here instead. Shipping a new Windows build is a
+ * three-line edit: upload the asset to a release, then update `url`,
+ * `sizeBytes`, and `version` to match.
+ *
+ * Current: v0.4.1 portable x64 (Windows 11). Unsigned — SmartScreen warns on
+ * first run ("More info" -> "Run anyway").
+ */
+export const WINDOWS_DOWNLOAD: WindowsDownload = {
+  url: "https://github.com/indigoai-us/hq-installer/releases/download/v0.4.1/HQ-Installer-Windows-Portable-x64-v0.4.1.zip",
+  sizeBytes: 6724223,
+  version: "v0.4.1",
+};
+
 /**
  * Fetch the latest release. Returns `null` on any error (404, network,
  * rate-limit, malformed response) — never throws.

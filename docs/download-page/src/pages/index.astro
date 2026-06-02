@@ -1,5 +1,5 @@
 ---
-import { fetchLatestRelease, formatBytes, formatDate } from "../lib/release.ts";
+import { fetchLatestRelease, formatBytes, formatDate, WINDOWS_DOWNLOAD } from "../lib/release.ts";
 
 // Runs on every ISR revalidation (hourly). Rendered HTML is cached by
 // Vercel — fresh visitors get a cache hit until the TTL expires.
@@ -27,6 +27,13 @@ const universalSubtitle = universalFormat === "zip"
       ? "Universal · Notarized .app.tar.gz (advanced)"
       : "Universal · Apple Silicon + Intel";
 const releaseDate = release ? formatDate(release.publishedAt) : null;
+
+// Windows — pinned to a fixed release asset (see WINDOWS_DOWNLOAD). Not tied
+// to the macOS "latest" fetch, so it always renders regardless of which
+// release is current.
+const windowsUrl = WINDOWS_DOWNLOAD.url;
+const windowsSize = formatBytes(WINDOWS_DOWNLOAD.sizeBytes);
+const windowsVersion = WINDOWS_DOWNLOAD.version;
 ---
 
 <!doctype html>
@@ -160,13 +167,42 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
 
         <p class="also">
           Also available for:
-          <span class="soon">Windows (soon)</span> ·
           <span class="soon">Linux (soon)</span>
         </p>
 
         <p class="security-note">
           Signed with Indigo's Apple Developer ID and notarized by Apple.
           No Gatekeeper warnings.
+        </p>
+      </section>
+
+      <section class="download-card" aria-labelledby="windows-heading">
+        <h2 id="windows-heading">Download for Windows</h2>
+
+        <div class="release-meta">
+          <span class="tag">{windowsVersion}</span>
+          <span class="published">Portable · Windows 11 x64</span>
+        </div>
+
+        <div class="buttons">
+          <a
+            id="btn-windows"
+            class="btn btn-primary"
+            href={windowsUrl}
+            data-arch="windows"
+            data-state="ready"
+          >
+            <span class="btn-arch">Download for Windows</span>
+            <span class="btn-os">Windows 11 · x64 · portable .zip</span>
+            <span class="btn-size">{windowsSize}</span>
+          </a>
+        </div>
+
+        <p class="security-note">
+          Portable build — unzip the folder (keep its contents together) and
+          double-click <code class="inline-code">HQ Installer.exe</code>. No
+          install needed. Not yet code-signed, so Windows SmartScreen may warn:
+          click <strong>More info</strong> → <strong>Run anyway</strong>.
         </p>
       </section>
 
@@ -237,8 +273,11 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
           const btnA = document.getElementById("btn-aarch64");
           const btnX = document.getElementById("btn-x64");
           const btnU = document.getElementById("btn-universal");
+          const btnW = document.getElementById("btn-windows");
 
           if (isMac) {
+            // Windows card recedes when this isn't a Windows visitor.
+            btnW && btnW.classList.add("btn-dim");
             if (btnU) {
               // Universal build — one button, always featured on Mac.
               btnU.classList.add("btn-featured");
@@ -253,15 +292,18 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
               hint && (hint.textContent = "Detected: macOS on Intel — use the Intel Mac button.");
             }
           } else if (isWindows) {
-            hint && (hint.textContent = "Detected: Windows. Native installer coming soon — for now, try npx create-hq.");
+            // Windows build is ready — feature it and dim the macOS buttons.
+            btnW && btnW.classList.add("btn-featured");
+            hint && (hint.textContent = "Detected: Windows — grab the Windows build in the section below.");
             btnA && btnA.classList.add("btn-dim");
             btnX && btnX.classList.add("btn-dim");
             btnU && btnU.classList.add("btn-dim");
           } else if (isLinux) {
-            hint && (hint.textContent = "Detected: Linux. Native installer coming soon — for now, try npx create-hq.");
+            hint && (hint.textContent = "Detected: Linux. Native build coming soon — for now, try npx create-hq.");
             btnA && btnA.classList.add("btn-dim");
             btnX && btnX.classList.add("btn-dim");
             btnU && btnU.classList.add("btn-dim");
+            btnW && btnW.classList.add("btn-dim");
           }
         } catch {
           // Silently no-op on any runtime error — the static HTML still
@@ -668,6 +710,22 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         font-size: 12px;
         color: var(--warm-yellow-80);
         line-height: 1.55;
+      }
+
+      .security-note .inline-code {
+        font-family: var(--font-display);
+        font-size: 11px;
+        color: var(--spectrum-cyan);
+        background: var(--bg-navy-900);
+        border: 1px solid var(--warm-brown-60);
+        border-radius: 2px;
+        padding: 1px 5px;
+        white-space: nowrap;
+      }
+
+      .security-note strong {
+        color: rgba(255, 255, 255, 0.92);
+        font-weight: 600;
       }
 
       /* ── Dev path ───────────────────────────────────── */
