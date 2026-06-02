@@ -93,7 +93,7 @@ const windowsVersion = WINDOWS_DOWNLOAD.version;
         </p>
       </header>
 
-      <section class="download-card" aria-labelledby="download-heading">
+      <section class="download-card" id="card-mac" aria-labelledby="download-heading">
         <h2 id="download-heading">Download HQ Installer</h2>
 
         <!--
@@ -163,8 +163,6 @@ const windowsVersion = WINDOWS_DOWNLOAD.version;
           )}
         </div>
 
-        <p class="os-hint" id="os-hint" aria-live="polite"></p>
-
         <p class="also">
           Also available for:
           <span class="soon">Linux (soon)</span>
@@ -176,7 +174,7 @@ const windowsVersion = WINDOWS_DOWNLOAD.version;
         </p>
       </section>
 
-      <section class="download-card" aria-labelledby="windows-heading">
+      <section class="download-card" id="card-windows" aria-labelledby="windows-heading">
         <h2 id="windows-heading">Download for Windows</h2>
 
         <div class="release-meta">
@@ -200,9 +198,9 @@ const windowsVersion = WINDOWS_DOWNLOAD.version;
 
         <p class="security-note">
           Portable build — unzip the folder (keep its contents together) and
-          double-click <code class="inline-code">HQ Installer.exe</code>. No
-          install needed. Not yet code-signed, so Windows SmartScreen may warn:
-          click <strong>More info</strong> → <strong>Run anyway</strong>.
+          double-click <code class="inline-code">HQ Installer.exe</code>. Not yet
+          code-signed, so Windows SmartScreen may warn: click
+          <strong>More info</strong> → <strong>Run anyway</strong>.
         </p>
       </section>
 
@@ -233,9 +231,9 @@ const windowsVersion = WINDOWS_DOWNLOAD.version;
 
     <script is:inline>
       // OS detection — client-side only. Runs after HTML is cached, so
-      // ISR doesn't need to re-render per-visitor. We enhance the
-      // already-rendered download buttons with an emphasized state +
-      // an inline hint above the buttons.
+      // ISR doesn't need to re-render per-visitor. We reorder the
+      // already-rendered download cards so the visitor's platform is on
+      // top, and feature its primary button.
       (function () {
         try {
           const ua = navigator.userAgent || "";
@@ -269,42 +267,30 @@ const windowsVersion = WINDOWS_DOWNLOAD.version;
             return true;
           })();
 
-          const hint = document.getElementById("os-hint");
+          const cardMac = document.getElementById("card-mac");
+          const cardWindows = document.getElementById("card-windows");
           const btnA = document.getElementById("btn-aarch64");
           const btnX = document.getElementById("btn-x64");
           const btnU = document.getElementById("btn-universal");
           const btnW = document.getElementById("btn-windows");
 
-          if (isMac) {
-            // Windows card recedes when this isn't a Windows visitor.
-            btnW && btnW.classList.add("btn-dim");
+          if (isWindows) {
+            // Surface the Windows installer first, and feature its button.
+            if (cardWindows && cardMac && cardMac.parentNode) {
+              cardMac.parentNode.insertBefore(cardWindows, cardMac);
+            }
+            btnW && btnW.classList.add("btn-featured");
+          } else if (isMac) {
+            // macOS card is already first — just feature the right button.
             if (btnU) {
-              // Universal build — one button, always featured on Mac.
               btnU.classList.add("btn-featured");
-              hint && (hint.textContent = isAppleSilicon
-                ? "Detected: macOS on Apple Silicon — this universal build runs natively."
-                : "Detected: macOS on Intel — this universal build runs natively.");
             } else if (isAppleSilicon) {
               btnA && btnA.classList.add("btn-featured");
-              hint && (hint.textContent = "Detected: macOS on Apple Silicon — the top button is the one you want.");
             } else {
               btnX && btnX.classList.add("btn-featured");
-              hint && (hint.textContent = "Detected: macOS on Intel — use the Intel Mac button.");
             }
-          } else if (isWindows) {
-            // Windows build is ready — feature it and dim the macOS buttons.
-            btnW && btnW.classList.add("btn-featured");
-            hint && (hint.textContent = "Detected: Windows — grab the Windows build in the section below.");
-            btnA && btnA.classList.add("btn-dim");
-            btnX && btnX.classList.add("btn-dim");
-            btnU && btnU.classList.add("btn-dim");
-          } else if (isLinux) {
-            hint && (hint.textContent = "Detected: Linux. Native build coming soon — for now, try npx create-hq.");
-            btnA && btnA.classList.add("btn-dim");
-            btnX && btnX.classList.add("btn-dim");
-            btnU && btnU.classList.add("btn-dim");
-            btnW && btnW.classList.add("btn-dim");
           }
+          // Linux / unknown: keep the default order, nothing featured.
         } catch {
           // Silently no-op on any runtime error — the static HTML still
           // works fine without JS.
@@ -683,12 +669,6 @@ const windowsVersion = WINDOWS_DOWNLOAD.version;
         letter-spacing: 0.02em;
       }
 
-      .os-hint {
-        margin: 18px 0 0;
-        font-size: 12px;
-        color: var(--warm-yellow-80);
-        min-height: 18px;
-      }
 
       .also {
         margin: 24px 0 8px;
