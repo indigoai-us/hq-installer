@@ -149,7 +149,6 @@ pub fn run() {
             commands::git::git_probe_user,
             commands::process::spawn_process,
             commands::process::cancel_process,
-            commands::template::fetch_template,
             commands::fs::write_file,
             commands::fs::home_dir,
             commands::fs::create_symlink,
