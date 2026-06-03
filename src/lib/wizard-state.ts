@@ -22,8 +22,8 @@ export interface WizardState {
   gitName: string | null;
   gitEmail: string | null;
   /** True once Personalize has successfully written profile.md, voice-style.md,
-   *  the starter project, and any user-supplied companies. Gates the global
-   *  Next button so users can't bypass the screen. */
+   *  the starter project, and any user-supplied companies. Set by the Setup
+   *  orchestrator's personalize stage; consumed by Summary. */
   personalized: boolean;
 }
 
@@ -95,8 +95,8 @@ export function setGitIdentity(name: string, email: string): void {
   notify();
 }
 
-/** Mark Screen 07 (Personalize) as successfully completed. Read by
- *  getStepValidity(7, …) to unlock the global Next button. */
+/** Mark personalize as successfully completed. Set by the Setup
+ *  orchestrator's personalize stage (see screens/setup-progress.tsx). */
 export function setPersonalized(value: boolean): void {
   state.personalized = value;
   notify();
