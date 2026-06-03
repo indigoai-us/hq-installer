@@ -1,32 +1,14 @@
-// 09-personalize.tsx — US-017
-// Personalization screen: single-step form.
-//
-// Also the de-facto "company detection" point now that the old Step 3
-// (company-detect) has been removed: on mount, calls listUserCompanies()
-// and seeds wizard-state.team from the first cloud company. When the user
-// has no cloud companies, flips wizard-state.isPersonal so Summary renders
-// the "Personal HQ" label.
-//
-//  - Asks for the user's full name (prefilled from the Google idToken).
-//  - Auto-lists every HQ-Cloud company the signed-in Cognito user belongs to
-//    as a read-only "Connected" section. Continuous S3 reconciliation is
-//    handled by the HQ-Sync menu bar app (Step 9) — not the installer.
-//  - Keeps the manual "add companies" list for brand-new local companies.
+// 09-personalize.tsx — US-003
+// Silent personalization step: runs automatically on mount from the Google
+// idToken — no name form, no company-add UI. Cloud company auto-detection
+// still runs and seeds wizard-state.team / isPersonal.
 
 import { useEffect, useState } from "react";
-import { WizardFooterSlot } from "@/components/WizardFooter";
 import { personalize } from "@/lib/personalize-writer";
 import type { CompanySeed } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
-import {
-  listUserCompanies,
-  type UserCompanyEntry,
-} from "@/lib/vault-handoff";
-import {
-  setPersonalized,
-  setTeam,
-  setIsPersonal,
-} from "@/lib/wizard-state";
+import { listUserCompanies } from "@/lib/vault-handoff";
+import { setPersonalized, setTeam, setIsPersonal } from "@/lib/wizard-state";
 import {
   getInstallerVersion,
   recordStepStart,
@@ -44,67 +26,33 @@ export interface PersonalizeProps {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// Strip characters that are unsafe in filesystem paths so the name can be
-// used as a directory under knowledge/.
-function sanitizeName(raw: string): string {
-  return raw
-    .trim()
-    .replace(/[/\\:*?"<>|.]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export function Personalize({ installPath, onNext }: PersonalizeProps) {
-  const [name, setName] = useState("");
-  const [nameTouched, setNameTouched] = useState(false);
-
-  // Cloud companies the signed-in user is a member of (read-only list).
-  const [cloudCompanies, setCloudCompanies] = useState<UserCompanyEntry[]>([]);
-  const [cloudLoading, setCloudLoading] = useState(true);
-  const [cloudError, setCloudError] = useState<string | null>(null);
-
-  // Manual (brand-new) companies the user wants scaffolded.
-  const [companies, setCompanies] = useState<CompanySeed[]>([]);
-
-  const [submitting, setSubmitting] = useState(false);
-  const [submitStage, setSubmitStage] = useState<string | null>(null);
+  const [stage, setStage] = useState<string>("Setting up your profile…");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // -------------------------------------------------------------------------
-  // Mount: prefill name from Google idToken + list cloud companies
-  // -------------------------------------------------------------------------
 
   useEffect(() => {
     let cancelled = false;
 
-    async function prefill() {
+    async function run() {
       try {
         const user = await getCurrentUser();
         if (cancelled) return;
 
-        // Prefer full name from idToken; fall back to given+family, then empty.
-        if (user) {
-          const fromClaims =
-            user.name ??
-            [user.givenName, user.familyName].filter(Boolean).join(" ").trim();
-          if (fromClaims && !nameTouched) {
-            setName(fromClaims);
-          }
+        // Derive full name from the Google idToken; fall back to given+family.
+        const name = user
+          ? (user.name ??
+              [user.givenName, user.familyName].filter(Boolean).join(" ").trim())
+          : "";
 
+        // Detect cloud companies and seed wizard state.
+        const companies: CompanySeed[] = [];
+        if (user) {
           try {
             const entries = await listUserCompanies(user.tokens.accessToken);
             if (cancelled) return;
-            setCloudCompanies(entries);
-            // Seed the wizard `team` slot from the first cloud company (old
-            // Step 3's job) so Summary has something to display; or flip
-            // isPersonal when the user genuinely has no cloud companies.
             if (entries.length > 0) {
               const first = entries[0];
               setTeam({
@@ -116,270 +64,87 @@ export function Personalize({ installPath, onNext }: PersonalizeProps) {
                 bucketName: first.bucketName,
                 role: first.role,
               });
+              for (const c of entries) {
+                companies.push({
+                  name: c.companyName,
+                  cloud: true,
+                  cloudCompanyUid: c.companyUid,
+                });
+              }
             } else {
               setIsPersonal(true);
             }
-          } catch (err) {
-            if (cancelled) return;
-            setCloudError(
-              err instanceof Error ? err.message : "Failed to load companies",
-            );
+          } catch {
+            // Non-fatal: company detection failure does not block install.
           }
         }
-      } finally {
-        if (!cancelled) setCloudLoading(false);
+
+        const ver = await getInstallerVersion();
+        await recordStepStart(installPath, ver, "personalize").catch(() => {});
+
+        setStage("Writing profile…");
+        await personalize(
+          { name, companies: companies.length > 0 ? companies : undefined },
+          installPath,
+        );
+
+        if (cancelled) return;
+        await recordStepOk(installPath, ver, "personalize").catch(() => {});
+        setPersonalized(true);
+        onNext?.();
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        const ver = await getInstallerVersion().catch(() => "unknown");
+        await recordStepFailure(
+          installPath,
+          ver,
+          "personalize",
+          msg || "unknown error",
+        ).catch(() => {});
+        setErrorMsg(msg || "Something went wrong. Please try again.");
       }
     }
 
-    prefill();
+    run();
     return () => {
       cancelled = true;
     };
-    // nameTouched deliberately excluded — we only want to prefill once on
-    // mount. After the user types in the field, their input wins.
+    // Intentionally no deps — this is a one-shot mount effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Manual company row helpers
-  // -------------------------------------------------------------------------
-
-  function addCompanyRow() {
-    setCompanies((prev) => [...prev, { name: "", website: "" }]);
-  }
-  function updateCompanyRow(index: number, patch: Partial<CompanySeed>) {
-    setCompanies((prev) =>
-      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-    );
-  }
-  function removeCompanyRow(index: number) {
-    setCompanies((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  // -------------------------------------------------------------------------
-  // Submit
-  // -------------------------------------------------------------------------
-
-  async function handleSubmit() {
-    const safeName = sanitizeName(name);
-    if (!safeName) {
-      setErrorMsg("Please enter your name.");
-      return;
-    }
-
-    setSubmitting(true);
-    setErrorMsg(null);
-
-    const ver = await getInstallerVersion();
-    await recordStepStart(installPath, ver, "personalize").catch(() => {});
-
-    try {
-      // Merge cloud + manual companies for the writer. S3 reconciliation is
-      // no longer the installer's job — the HQ-Sync menu bar app (installed
-      // in Step 9) handles continuous sync post-install. We just scaffold
-      // the local companies/{slug}/ directories with their yaml files here.
-      const cloudSeeds: CompanySeed[] = cloudCompanies.map((c) => ({
-        name: c.companyName,
-        cloud: true,
-        cloudCompanyUid: c.companyUid,
-      }));
-      const manualSeeds: CompanySeed[] = companies
-        .map((c) => ({
-          name: c.name.trim(),
-          website: c.website?.trim() ? c.website.trim() : undefined,
-        }))
-        .filter((c) => c.name.length > 0);
-
-      const merged = [...cloudSeeds, ...manualSeeds];
-
-      setSubmitStage("Writing profile…");
-      await personalize(
-        {
-          name: safeName,
-          companies: merged.length > 0 ? merged : undefined,
-        },
-        installPath,
-      );
-
-      await recordStepOk(installPath, ver, "personalize").catch(() => {});
-      setPersonalized(true);
-      onNext?.();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg || "Something went wrong. Please try again.");
-      await recordStepFailure(installPath, ver, "personalize", msg || "unknown error").catch(() => {});
-    } finally {
-      setSubmitting(false);
-      setSubmitStage(null);
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Render
-  // -------------------------------------------------------------------------
-
-  const nameValid = sanitizeName(name).length > 0;
-
-  return (
-    <div className="flex flex-col gap-6 max-w-lg">
-      {/* Header */}
-      <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-medium text-white">Personalize your HQ</h1>
-        <p className="text-sm font-light text-zinc-400">
-          A couple of details so HQ knows who it's working for.
-        </p>
-      </div>
-
-      {/* Full name */}
-      <div className="flex flex-col gap-2">
-        <label htmlFor="pz-name" className="text-sm font-medium text-white">
-          Full name
-        </label>
-        <input
-          id="pz-name"
-          type="text"
-          value={name}
-          onChange={(e) => {
-            setName(e.target.value);
-            setNameTouched(true);
-          }}
-          placeholder="Jane Doe"
-          className="bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-        />
-      </div>
-
-      {/* Connected cloud companies */}
-      <div className="flex flex-col gap-2">
-        <label className="text-sm font-medium text-white">
-          Connected companies
-        </label>
-        <p className="text-xs text-zinc-500">
-          HQ-Cloud companies linked to your account. Each gets its own folder
-          under companies/ and is synced automatically.
-        </p>
-
-        {cloudLoading && (
-          <p className="text-xs text-zinc-500 hq-text-shimmer">
-            Loading your companies…
+  if (errorMsg) {
+    return (
+      <div className="flex flex-col gap-6 max-w-lg">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-2xl font-medium text-white">Setup failed</h1>
+          <p className="text-sm font-light text-zinc-400">
+            Personalization could not complete.
           </p>
-        )}
-
-        {!cloudLoading && cloudError && (
-          <p className="text-xs text-zinc-400">
-            Couldn't load cloud companies: {cloudError}
-          </p>
-        )}
-
-        {!cloudLoading && !cloudError && cloudCompanies.length === 0 && (
-          <p className="text-xs text-zinc-500">
-            No connected companies. You can add new ones below.
-          </p>
-        )}
-
-        {cloudCompanies.length > 0 && (
-          <div className="flex flex-col gap-2">
-            {cloudCompanies.map((co) => (
-              <div
-                key={co.companyUid}
-                className="flex items-center justify-between gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-2"
-              >
-                <div className="flex flex-col">
-                  <span className="text-sm text-white">{co.companyName}</span>
-                  <span className="text-xs text-zinc-500">
-                    {co.companySlug} · {co.role}
-                  </span>
-                </div>
-                <span className="text-xs text-green-400 px-2 py-0.5 rounded-full bg-green-400/10 border border-green-400/20">
-                  Connected
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Manual companies */}
-      <div className="flex flex-col gap-2">
-        <label className="text-sm font-medium text-white">
-          Additional companies{" "}
-          <span className="text-zinc-500 font-normal">(optional)</span>
-        </label>
-        <p className="text-xs text-zinc-500">
-          Brand-new companies to scaffold locally. Website is optional.
-        </p>
-
-        {companies.length > 0 && (
-          <div className="flex flex-col gap-2">
-            {companies.map((row, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                <input
-                  type="text"
-                  aria-label={`Company ${i + 1} name`}
-                  placeholder="Company name"
-                  value={row.name}
-                  onChange={(e) =>
-                    updateCompanyRow(i, { name: e.target.value })
-                  }
-                  className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-                />
-                <input
-                  type="url"
-                  aria-label={`Company ${i + 1} website`}
-                  placeholder="https://example.com"
-                  value={row.website ?? ""}
-                  onChange={(e) =>
-                    updateCompanyRow(i, { website: e.target.value })
-                  }
-                  className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/25"
-                />
-                <button
-                  type="button"
-                  aria-label={`Remove company ${i + 1}`}
-                  onClick={() => removeCompanyRow(i)}
-                  className="w-8 h-8 rounded-full text-zinc-500 hover:text-white hover:bg-white/10 transition-colors flex items-center justify-center text-lg"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={addCompanyRow}
-          className="self-start text-xs text-zinc-400 hover:text-white transition-colors px-3 py-1.5 rounded-full border border-white/10 hover:border-white/25"
-        >
-          + Add company
-        </button>
-      </div>
-
-      {/* Error */}
-      {errorMsg && (
+        </div>
         <div
           role="alert"
           className="text-sm text-zinc-400 bg-white/5 border border-white/10 rounded-xl px-4 py-2"
         >
           {errorMsg}
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {submitting && submitStage && (
-        <span className="text-xs text-zinc-400 hq-text-shimmer">
-          {submitStage}
-        </span>
-      )}
-
-      <WizardFooterSlot>
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={submitting || !nameValid}
-          className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {submitting ? "Setting up…" : "Continue"}
-        </button>
-      </WizardFooterSlot>
+  return (
+    <div className="flex flex-col gap-6 max-w-lg">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-medium text-white">
+          Personalizing your HQ
+        </h1>
+        <p className="text-sm font-light text-zinc-400">{stage}</p>
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+        <span className="text-sm text-zinc-400 hq-text-shimmer">{stage}</span>
+      </div>
     </div>
   );
 }
