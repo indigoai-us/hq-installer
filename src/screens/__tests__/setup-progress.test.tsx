@@ -6,12 +6,15 @@ import { SetupProgress } from "../setup-progress.js";
 // ---------------------------------------------------------------------------
 // SetupProgress orchestrator tests — US-004
 //
-// The screen runs six stages behind a single progress bar with no
-// intermediate input:
-//   deps → git-init → s3-sync → personalize → indexing → menubar
+// The screen runs five stages behind a single progress bar + one status
+// line, with no intermediate input:
+//   deps → git-init → personalize → indexing → menubar
+// (Cloud file sync was removed — HQ Sync owns it; company detection folded
+//  into the personalize stage.)
 //
 // Asserted behavior:
 //   - Exactly one progress bar is rendered (role="progressbar").
+//   - A single status line describes the current activity (no per-stage rows).
 //   - No Next / Continue / Skip controls appear; only Retry on failure.
 //   - A failed stage does NOT discard prior completed stages.
 //   - install-manifest records each stage outcome.
@@ -70,11 +73,6 @@ vi.mock("@/lib/deps-install", () => ({
   runDepsInstall: vi.fn(),
 }));
 
-vi.mock("@/lib/s3-sync", () => ({
-  syncFromS3: vi.fn().mockResolvedValue({ fileCount: 0, totalBytes: 0 }),
-  vendStsCredentials: vi.fn(),
-}));
-
 vi.mock("@/lib/personalize-writer", () => ({
   personalize: vi.fn().mockResolvedValue(undefined),
 }));
@@ -118,7 +116,6 @@ import { runDepsInstall } from "@/lib/deps-install";
 import { personalize } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
 import { listUserCompanies } from "@/lib/vault-handoff";
-import { vendStsCredentials, syncFromS3 } from "@/lib/s3-sync";
 import {
   setGitIdentity,
   setIsPersonal,
@@ -136,8 +133,6 @@ const mockRunDepsInstall = vi.mocked(runDepsInstall);
 const mockPersonalize = vi.mocked(personalize);
 const mockGetCurrentUser = vi.mocked(getCurrentUser);
 const mockListUserCompanies = vi.mocked(listUserCompanies);
-const mockVendStsCredentials = vi.mocked(vendStsCredentials);
-const mockSyncFromS3 = vi.mocked(syncFromS3);
 const mockRecordStepStart = vi.mocked(recordStepStart);
 const mockRecordStepOk = vi.mocked(recordStepOk);
 const mockRecordStepFailure = vi.mocked(recordStepFailure);
@@ -215,14 +210,6 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     setDepsAllOk();
     mockGetCurrentUser.mockResolvedValue(USER);
     mockListUserCompanies.mockResolvedValue([]);
-    mockVendStsCredentials.mockResolvedValue({
-      accessKeyId: "AK",
-      secretAccessKey: "SK",
-      sessionToken: "ST",
-      bucketName: "bucket",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    mockSyncFromS3.mockResolvedValue({ fileCount: 0, totalBytes: 0 });
     mockPersonalize.mockResolvedValue(undefined);
     mockInvoke.mockImplementation(buildInvokeMock());
   });
@@ -263,6 +250,21 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     it("auto-starts on mount — runDepsInstall is invoked", async () => {
       render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
       await waitFor(() => expect(mockRunDepsInstall).toHaveBeenCalled());
+    });
+
+    it("renders a single status line instead of per-stage rows", () => {
+      render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
+      expect(screen.getByTestId("status-line")).toBeTruthy();
+      // The old per-stage rows had a "Details" disclosure — it's gone now.
+      expect(screen.queryByRole("button", { name: /details/i })).toBeNull();
+    });
+
+    it("never shows a 'Syncing your HQ' step (s3 sync removed — HQ Sync owns it)", async () => {
+      render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
+      await waitFor(() => expect(mockRunDepsInstall).toHaveBeenCalled());
+      expect((document.body.textContent ?? "").toLowerCase()).not.toMatch(
+        /syncing your hq/,
+      );
     });
   });
 
@@ -445,7 +447,6 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       expect(startedStages).toEqual([
         "deps",
         "git-init",
-        "s3-sync",
         "personalize",
         "indexing",
         "menubar",
