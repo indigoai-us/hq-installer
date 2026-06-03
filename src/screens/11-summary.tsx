@@ -151,7 +151,8 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-medium text-white">HQ is ready</h1>
         <p className="text-sm font-light text-zinc-400">
-          Your personal operating system has been installed, synced, and indexed.
+          Your workspace is installed and synced — open it in Claude Desktop to
+          get started.
         </p>
       </div>
 
