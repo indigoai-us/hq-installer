@@ -23,16 +23,18 @@ function makeState(overrides: Partial<WizardState> = {}): WizardState {
 }
 
 // ---------------------------------------------------------------------------
-// wizard-router unit tests
+// wizard-router unit tests — US-005 5-step contract
 //
-// 2026-04-29 reorder: install (dir + templates) now runs at steps 2-3, before
-// Cognito at step 4. AUTH_GATED_STEPS = [5] — Prerequisites is the first
-// post-auth step, so the gate semantics are preserved at the new index.
+//   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito/Google) →
+//   4 Setup (unified post-login progress) → 5 Done
+//
+// AUTH_GATED_STEPS = [4] — Setup is the first post-auth step, so the gate
+// blocks backwards crossing from step 4 into the pre-auth screens.
 // ---------------------------------------------------------------------------
 
 describe("WIZARD_STEPS constant", () => {
-  it("defines exactly 10 steps", () => {
-    expect(WIZARD_STEPS).toHaveLength(10);
+  it("defines exactly 5 steps", () => {
+    expect(WIZARD_STEPS).toHaveLength(5);
   });
 
   it("each step has an index, id, and label", () => {
@@ -44,23 +46,31 @@ describe("WIZARD_STEPS constant", () => {
     }
   });
 
-  it("step indices run 1..10 without gaps", () => {
+  it("step indices run 1..5 without gaps", () => {
     const indices = WIZARD_STEPS.map((s) => s.index);
-    expect(indices).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(indices).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it("places install (dir) before sign-in", () => {
+  it("exposes the 5-step contract ids: welcome, install, signin, setup, done", () => {
+    const ids = WIZARD_STEPS.map((s) => s.id);
+    expect(ids).toEqual(["welcome", "install", "signin", "setup", "done"]);
+  });
+
+  it("places install before signin, and signin before setup", () => {
     const install = WIZARD_STEPS.find((s) => s.id === "install");
-    const auth = WIZARD_STEPS.find((s) => s.id === "cognito-auth");
+    const signin = WIZARD_STEPS.find((s) => s.id === "signin");
+    const setup = WIZARD_STEPS.find((s) => s.id === "setup");
     expect(install).toBeDefined();
-    expect(auth).toBeDefined();
-    expect(install!.index).toBeLessThan(auth!.index);
+    expect(signin).toBeDefined();
+    expect(setup).toBeDefined();
+    expect(install!.index).toBeLessThan(signin!.index);
+    expect(signin!.index).toBeLessThan(setup!.index);
   });
 });
 
 describe("AUTH_GATED_STEPS constant", () => {
-  it("includes step index 6 (Workspace — first post-auth screen)", () => {
-    expect(AUTH_GATED_STEPS).toContain(6);
+  it("includes step index 4 (Setup — first post-signin screen)", () => {
+    expect(AUTH_GATED_STEPS).toContain(4);
   });
 });
 
@@ -91,33 +101,33 @@ describe("createWizardRouter", () => {
       expect(router.currentStep).toBe(2);
     });
 
-    it("advances through all 10 steps when next() is called 9 times from step 1", () => {
+    it("advances through all 5 steps when next() is called 4 times from step 1", () => {
       const router = createWizardRouter();
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < 4; i++) {
         router.next();
       }
-      expect(router.currentStep).toBe(10);
+      expect(router.currentStep).toBe(5);
     });
 
-    it("stays at step 10 when next() is called at the last step (no overflow)", () => {
+    it("stays at step 5 when next() is called at the last step (no overflow)", () => {
       const router = createWizardRouter();
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < 4; i++) {
         router.next();
       }
-      // Already at 10 — one more next() should not overflow
+      // Already at 5 — one more next() should not overflow
       router.next();
-      expect(router.currentStep).toBe(10);
+      expect(router.currentStep).toBe(5);
     });
 
-    it("canGoNext is false at step 10", () => {
+    it("canGoNext is false at step 5", () => {
       const router = createWizardRouter();
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < 4; i++) {
         router.next();
       }
       expect(router.canGoNext).toBe(false);
     });
 
-    it("canGoNext is true below step 10", () => {
+    it("canGoNext is true below step 5", () => {
       const router = createWizardRouter();
       router.next(); // step 2
       expect(router.canGoNext).toBe(true);
@@ -145,38 +155,38 @@ describe("createWizardRouter", () => {
       expect(router.canGoBack).toBe(true);
     });
 
-    it("canGoBack is true when at step 7 (post-auth, but not on the auth-gated step itself)", () => {
+    it("canGoBack is true when at step 5 (past the auth gate but not on it)", () => {
       const router = createWizardRouter();
-      router.goTo(7);
+      router.goTo(5);
       expect(router.canGoBack).toBe(true);
     });
   });
 
   // -------------------------------------------------------------------------
-  describe("auth-gated step 6 — back navigation blocked", () => {
-    it("back() from step 6 is a no-op (blocked by auth gate)", () => {
+  describe("auth-gated step 4 — back navigation blocked", () => {
+    it("back() from step 4 is a no-op (blocked by auth gate)", () => {
       const router = createWizardRouter();
-      router.goTo(6);
+      router.goTo(4);
       router.back(); // should be blocked
-      expect(router.currentStep).toBe(6);
+      expect(router.currentStep).toBe(4);
     });
 
-    it("canGoBack is false when at step 6 (auth-gated)", () => {
+    it("canGoBack is false when at step 4 (auth-gated)", () => {
       const router = createWizardRouter();
-      router.goTo(6);
+      router.goTo(4);
       expect(router.canGoBack).toBe(false);
     });
 
-    it("canGoNext is true at step 6 (can still proceed forward from auth step)", () => {
+    it("canGoNext is true at step 4 (can still proceed forward from auth step)", () => {
       const router = createWizardRouter();
-      router.goTo(6);
+      router.goTo(4);
       expect(router.canGoNext).toBe(true);
     });
   });
 
   // -------------------------------------------------------------------------
   describe("getStepValidity — per-step advance gates", () => {
-    it("step 2 (DirectoryPicker) is invalid when installPath is null", () => {
+    it("step 2 (Install) is invalid when installPath is null", () => {
       expect(getStepValidity(2, makeState({ installPath: null }))).toBe(false);
     });
 
@@ -188,30 +198,22 @@ describe("createWizardRouter", () => {
       expect(getStepValidity(2, makeState({ installPath: "/tmp/hq" }))).toBe(true);
     });
 
-    // ── Step 7 (Personalize) — the bypass bug this whole block exists to prevent.
-    //
-    // Symptom before fix: global Next button was always enabled, letting the
-    // user walk past the Personalize screen without ever clicking Submit.
-    // Result: no profile.md, no voice-style.md, no companies/{slug}/ scaffolded.
-    it("step 7 (Personalize) is invalid by default (personalized=false)", () => {
-      expect(getStepValidity(7, makeState())).toBe(false);
-    });
-
-    it("step 7 is valid once personalize() has succeeded (personalized=true)", () => {
-      expect(getStepValidity(7, makeState({ personalized: true }))).toBe(true);
-    });
-
-    // ── Step 9 (HQ Sync / InstallMenubarStep) — component drives its own
-    // Continue/Skip buttons, so the global Next is always disabled.
-    it("step 9 (HQ Sync) is always invalid — internal controls only", () => {
-      expect(getStepValidity(9, makeState())).toBe(false);
-      expect(getStepValidity(9, makeState({ personalized: true }))).toBe(false);
+    // ── Step 4 (Setup) — the unified orchestrator drives its own progress
+    // and calls onNext automatically (US-004 contract). The global Next
+    // button must stay disabled the entire time the screen is visible.
+    it("step 4 (Setup) is always invalid — orchestrator auto-advances", () => {
+      expect(getStepValidity(4, makeState())).toBe(false);
+      expect(getStepValidity(4, makeState({ personalized: true }))).toBe(false);
+      expect(
+        getStepValidity(4, makeState({ installPath: "/tmp/hq", personalized: true })),
+      ).toBe(false);
     });
 
     it("returns true by default for steps without an explicit gate", () => {
-      // Sample from the unguarded step set so any future guard additions that
-      // forget to update this test light up rather than silently passing.
-      const unguarded = [1, 3, 4, 5, 6, 8, 10];
+      // Steps with no gate: Welcome (1), Sign In (3), Done (5).
+      // Sampling from this set lights up any future guard additions that
+      // forget to update this test.
+      const unguarded = [1, 3, 5];
       for (const step of unguarded) {
         expect(getStepValidity(step, makeState())).toBe(true);
       }
@@ -220,21 +222,21 @@ describe("createWizardRouter", () => {
 
   // -------------------------------------------------------------------------
   describe("E2E acceptance scenario", () => {
-    it("given shell mounted at step 1, calling next() 9 times reaches step 10 without throwing", () => {
+    it("given shell mounted at step 1, calling next() 4 times reaches step 5 without throwing", () => {
       const router = createWizardRouter();
       expect(() => {
-        for (let i = 0; i < 9; i++) {
+        for (let i = 0; i < 4; i++) {
           router.next();
         }
       }).not.toThrow();
-      expect(router.currentStep).toBe(10);
+      expect(router.currentStep).toBe(5);
     });
 
-    it("given step 6 is auth-gated, clicking back from step 6 leaves currentStep at 6", () => {
+    it("given step 4 is auth-gated, clicking back from step 4 leaves currentStep at 4", () => {
       const router = createWizardRouter();
-      router.goTo(6);
+      router.goTo(4);
       router.back(); // blocked
-      expect(router.currentStep).toBe(6);
+      expect(router.currentStep).toBe(4);
     });
   });
 
@@ -257,32 +259,30 @@ describe("createWizardRouter", () => {
       const router = createWizardRouter();
       // From step 1, forward jumps are fine — caller is responsible for
       // gating against unvisited steps via maxReachedStep.
-      expect(router.canNavigateTo(5)).toBe(true);
+      expect(router.canNavigateTo(3)).toBe(true);
     });
 
     it("allows backward jumps when no auth gate sits between target and current", () => {
       const router = createWizardRouter();
-      router.goTo(8);
-      expect(router.canNavigateTo(6)).toBe(true);
-      expect(router.canNavigateTo(7)).toBe(true);
+      router.goTo(5);
+      // Step 5 → step 4 doesn't cross the gate (target == gate is allowed).
+      expect(router.canNavigateTo(4)).toBe(true);
     });
 
-    it("blocks backward jumps that would cross AUTH_GATED_STEPS=[6]", () => {
+    it("blocks backward jumps that would cross AUTH_GATED_STEPS=[4]", () => {
       const router = createWizardRouter();
-      router.goTo(8);
-      // step 6 is auth-gated → can't return to steps 1-5
+      router.goTo(5);
+      // step 4 is auth-gated → can't return to steps 1-3
       expect(router.canNavigateTo(1)).toBe(false);
       expect(router.canNavigateTo(2)).toBe(false);
       expect(router.canNavigateTo(3)).toBe(false);
-      expect(router.canNavigateTo(4)).toBe(false);
-      expect(router.canNavigateTo(5)).toBe(false);
-      // step 6 itself is reachable (the gate is on leaving it backwards)
-      expect(router.canNavigateTo(6)).toBe(true);
+      // step 4 itself is reachable (the gate is on leaving it backwards)
+      expect(router.canNavigateTo(4)).toBe(true);
     });
 
     it("AUTH_GATED_STEPS const is honored — modifying gate set affects rule", () => {
       // Sanity: confirm the test fixture matches what the rule reads.
-      expect(AUTH_GATED_STEPS).toContain(6);
+      expect(AUTH_GATED_STEPS).toContain(4);
     });
   });
 });

@@ -1,33 +1,22 @@
-// 04-deps.tsx — US-014
-// Dependency detection and auto-install screen.
+// 04-deps.tsx — US-002
+// Non-interactive dependency install screen.
 //
-// Each row is gated by its `dependsOn` list — a dep stays locked ("Waiting
-// for X") until every parent reports `status: "installed"`. When the last
-// blocker flips, the Install button fades + scales in so the unlock reads
-// as a small reward instead of a dead-button surprise.
-//
-// Xcode CLT was removed in v0.1.22. Homebrew is no longer a required root
-// dependency: fresh Macs without admin access can use the managed HQ toolchain
-// for Node/npm, qmd, and yq, while Homebrew/Git/gh remain optional system
-// conveniences.
+// Runs all required deps automatically on mount via runDepsInstall().
+// Optional deps (Homebrew, git, gh, claude-code) are silently skipped.
+// A failed required dep surfaces an error + retry; missing/failed optional
+// deps never block progress.
 
-import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { WizardFooterSlot } from "@/components/WizardFooter";
-import { open } from "@tauri-apps/plugin-shell";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import { getWizardState } from "@/lib/wizard-state";
-import {
-  getInstallerVersion,
-  recordDependencies,
-  recordStepOk,
-} from "@/lib/install-manifest";
+import { getInstallerVersion, recordDependencies, recordStepOk } from "@/lib/install-manifest";
+import { DEPS, runDepsInstall } from "@/lib/deps-install";
+import type { DepInstallResult } from "@/lib/deps-install";
 
-/** Snapshot the current `deps` map into the install manifest. Best-effort —
- *  manifest writes never block the wizard. */
-async function snapshotDepsToManifest(
-  deps: Record<string, { status: string; errorMsg: string | null }>,
-): Promise<void> {
+// ---------------------------------------------------------------------------
+// Snapshot helpers
+// ---------------------------------------------------------------------------
+
+async function snapshotResults(results: DepInstallResult[]): Promise<void> {
   const installPath = getWizardState().installPath;
   if (!installPath) return;
   try {
@@ -36,18 +25,11 @@ async function snapshotDepsToManifest(
       string,
       { status: "pending" | "running" | "ok" | "failed" | "skipped"; error?: string }
     > = {};
-    for (const [id, tool] of Object.entries(deps)) {
-      const status: "pending" | "running" | "ok" | "failed" | "skipped" =
-        tool.status === "installed"
-          ? "ok"
-          : tool.status === "installing"
-            ? "running"
-            : tool.status === "error"
-              ? "failed"
-              : tool.status === "missing"
-                ? "skipped"
-                : "pending";
-      snapshot[id] = { status, error: tool.errorMsg ?? undefined };
+    for (const r of results) {
+      snapshot[r.id] = {
+        status: r.status === "ok" ? "ok" : r.status === "failed" ? "failed" : "skipped",
+        error: r.error,
+      };
     }
     await recordDependencies(installPath, installerVersion, snapshot);
   } catch {
@@ -56,111 +38,28 @@ async function snapshotDepsToManifest(
 }
 
 // ---------------------------------------------------------------------------
-// Dep definitions
+// Per-dep runtime state for the progress view
 // ---------------------------------------------------------------------------
 
-interface DepDef {
+type RowStatus = "pending" | "running" | "ok" | "skipped" | "failed";
+
+interface RowState {
   id: string;
   label: string;
-  installCmd: string;
-  installUrl: string;
-  /** CLI binary name for `which` lookup. Defaults to `id` when omitted. */
-  binary?: string;
-  /** When true, a missing/failed state does NOT block the Continue button. */
-  optional?: boolean;
-  /** IDs that must be `installed` before this row unlocks. Empty = root. */
-  dependsOn?: readonly string[];
-  /** Optional secondary line rendered below the label — use for disambiguation hints. */
-  subtitle?: string;
-}
-
-const DEPS: readonly DepDef[] = [
-  {
-    id: "node",
-    label: "Node.js",
-    installCmd: "install_node",
-    installUrl: "https://nodejs.org",
-    subtitle: "Managed local install — no admin access required",
-  },
-  {
-    id: "yq",
-    label: "yq",
-    installCmd: "install_yq",
-    installUrl: "https://github.com/mikefarah/yq",
-    subtitle: "Installed directly when Homebrew is unavailable",
-  },
-  {
-    id: "qmd",
-    label: "qmd",
-    installCmd: "install_qmd",
-    installUrl: "https://github.com/tobi/qmd",
-    dependsOn: ["node"],
-  },
-  {
-    id: "hq-cli",
-    label: "HQ CLI",
-    installCmd: "install_hq_cli",
-    installUrl: "https://www.npmjs.com/package/@indigoai-us/hq-cli",
-    binary: "hq",
-    dependsOn: ["node"],
-    subtitle: "Auth, deploy, and package management for HQ",
-  },
-  {
-    id: "git",
-    label: "Git",
-    installCmd: "install_git",
-    installUrl: "https://git-scm.com",
-    optional: true,
-    subtitle: "CLI optional — HQ uses built-in Git for initial setup",
-  },
-  {
-    id: "gh",
-    label: "gh",
-    installCmd: "install_gh",
-    installUrl: "https://cli.github.com",
-    optional: true,
-  },
-  {
-    id: "claude-code",
-    label: "Claude Code",
-    installCmd: "install_claude_code",
-    installUrl: "https://docs.anthropic.com/en/claude-code",
-    binary: "claude",
-    optional: true,
-    dependsOn: ["node"],
-    subtitle: "Anthropic CLI — not the Claude desktop app",
-  },
-  {
-    id: "homebrew",
-    label: "Homebrew",
-    installCmd: "install_homebrew",
-    installUrl: "https://brew.sh",
-    binary: "brew",
-    optional: true,
-    subtitle: "Optional system package manager — may require admin access",
-  },
-] as const;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type DepStatus = "loading" | "installed" | "missing" | "installing" | "error";
-
-interface ToolState {
-  status: DepStatus;
+  optional: boolean;
+  status: RowStatus;
   progressLines: string[];
-  errorMsg: string | null;
+  error?: string;
 }
 
-type DepsMap = Record<string, ToolState>;
-
-function initMap(): DepsMap {
-  const m: DepsMap = {};
-  for (const dep of DEPS) {
-    m[dep.id] = { status: "loading", progressLines: [], errorMsg: null };
-  }
-  return m;
+function buildInitialRows(): RowState[] {
+  return DEPS.map((d) => ({
+    id: d.id,
+    label: d.label,
+    optional: !!d.optional,
+    status: "pending" as RowStatus,
+    progressLines: [],
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -172,331 +71,192 @@ interface DepsInstallProps {
 }
 
 export function DepsInstall({ onNext }: DepsInstallProps) {
-  const [deps, setDeps] = useState<DepsMap>(initMap);
+  const [rows, setRows] = useState<RowState[]>(buildInitialRows);
+  const [failed, setFailed] = useState(false);
+  const [running, setRunning] = useState(false);
 
-  const activeToolRef = useRef<string | null>(null);
-
-  function updateTool(id: string, patch: Partial<ToolState>) {
-    setDeps((prev) => ({
-      ...prev,
-      [id]: { ...prev[id], ...patch },
-    }));
+  function patchRow(id: string, patch: Partial<RowState>) {
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
-  function appendProgress(id: string, line: string) {
-    setDeps((prev) => ({
-      ...prev,
-      [id]: {
-        ...prev[id],
-        progressLines: [...prev[id].progressLines, line],
-      },
-    }));
+  function appendLine(id: string, line: string) {
+    setRows((prev) =>
+      prev.map((r) =>
+        r.id === id ? { ...r, progressLines: [...r.progressLines, line] } : r,
+      ),
+    );
   }
 
-  // ---------------------------------------------------------------------------
-  // Mount: check all deps + register progress listener
-  // ---------------------------------------------------------------------------
+  async function startInstall() {
+    setFailed(false);
+    setRunning(true);
 
-  useEffect(() => {
-    async function checkAll() {
-      await Promise.all(
-        DEPS.map(async (dep) => {
-          try {
-            const result = await invoke<{ installed: boolean }>("check_dep", {
-              tool: dep.binary ?? dep.id,
-            });
-            updateTool(dep.id, {
-              status: result.installed ? "installed" : "missing",
-            });
-          } catch {
-            updateTool(dep.id, { status: "missing" });
-          }
-        }),
-      );
-    }
-
-    checkAll().then(() => {
-      // Snapshot the freshly-detected dep state once so the manifest reflects
-      // what the user saw on entry to this screen. setDeps batches updates,
-      // so we read the latest snapshot back via setDeps' callback.
-      setDeps((latest) => {
-        void snapshotDepsToManifest(latest);
-        return latest;
-      });
-    });
-
-    let unlistenInstall: (() => void) | undefined;
-    const installListenerPromise = listen(
-      "install:progress",
-      (event: { payload: unknown }) => {
-        const payload = event.payload as { line?: string };
-        const line = payload?.line ?? "";
-        const activeId = activeToolRef.current;
-        if (activeId && line) {
-          appendProgress(activeId, line);
-        }
-      },
-    ).then((unlisten) => {
-      unlistenInstall = unlisten as () => void;
-    });
-
-    return () => {
-      installListenerPromise.then(() => unlistenInstall?.());
-    };
-  }, []);
-
-  // ---------------------------------------------------------------------------
-  // Install handler
-  // ---------------------------------------------------------------------------
-
-  async function handleInstall(dep: DepDef) {
-    activeToolRef.current = dep.id;
-    updateTool(dep.id, {
-      status: "installing",
-      progressLines: [],
-      errorMsg: null,
-    });
-    try {
-      await invoke(dep.installCmd);
-      const result = await invoke<{ installed: boolean }>("check_dep", {
-        tool: dep.binary ?? dep.id,
-      });
-      updateTool(dep.id, { status: result.installed ? "installed" : "missing" });
-    } catch (err) {
-      // Tauri's `invoke` rejects with the raw Err value — for our Rust
-      // commands that's a plain string, not an Error instance.
-      const errorMsg =
-        typeof err === "string"
-          ? err
-          : err instanceof Error
-            ? err.message
-            : "Installation failed";
-      updateTool(dep.id, { status: "error", errorMsg });
-      // Deps-screen failures are not Slack-worthy: the dominant cause is a
-      // user without Node yet (npm-backed installs can't run until Node is
-      // present), which is recoverable in the wizard and not a regression.
-      // Real regressions (auth failures, template fetch, pack install) still
-      // ping from their own screens. Failure is recorded in the manifest
-      // snapshot below for local debugging.
-    } finally {
-      activeToolRef.current = null;
-      // Snapshot post-install regardless of outcome so the manifest is fresh.
-      setDeps((latest) => {
-        void snapshotDepsToManifest(latest);
-        return latest;
-      });
-    }
-  }
-
-  async function handleOpenPage(url: string) {
-    await open(url);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Derived state
-  // ---------------------------------------------------------------------------
-
-  const allRequiredInstalled = DEPS.filter((d) => !d.optional).every(
-    (dep) => deps[dep.id].status === "installed",
-  );
-
-  /** Returns unmet parent deps by label — empty array means unlocked. */
-  function unmetDepsFor(dep: DepDef): string[] {
-    if (!dep.dependsOn || dep.dependsOn.length === 0) return [];
-    const unmet: string[] = [];
-    for (const parentId of dep.dependsOn) {
-      const parent = deps[parentId];
-      if (!parent || parent.status !== "installed") {
-        const parentDef = DEPS.find((d) => d.id === parentId);
-        unmet.push(parentDef?.label ?? parentId);
+    // Mark optional deps as skipped immediately so the UI is clear.
+    for (const dep of DEPS) {
+      if (dep.optional) {
+        patchRow(dep.id, { status: "skipped" });
       }
     }
-    return unmet;
+
+    // Track which dep is currently running so we can mark it in the UI.
+    let currentId: string | null = null;
+
+    const summary = await runDepsInstall((depId, line) => {
+      if (depId !== currentId) {
+        // Dep changed — mark new dep as running, previous stays wherever it was.
+        if (currentId) {
+          // Let the result loop handle final status for previous dep.
+        }
+        currentId = depId;
+        patchRow(depId, { status: "running" });
+      }
+      appendLine(depId, line);
+    });
+
+    // Apply final statuses from summary.
+    for (const result of summary.results) {
+      const status: RowStatus =
+        result.status === "ok"
+          ? "ok"
+          : result.status === "skipped"
+            ? "skipped"
+            : "failed";
+      patchRow(result.id, { status, error: result.error });
+    }
+
+    setRunning(false);
+
+    void snapshotResults(summary.results);
+
+    if (summary.allRequiredOk) {
+      const installPath = getWizardState().installPath;
+      if (installPath) {
+        try {
+          const installerVersion = await getInstallerVersion();
+          await recordStepOk(installPath, installerVersion, "prerequisites");
+        } catch {
+          /* non-fatal */
+        }
+      }
+      onNext?.();
+    } else {
+      setFailed(true);
+    }
   }
+
+  useEffect(() => {
+    void startInstall();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
 
+  const requiredRows = rows.filter((r) => !r.optional);
+  const failedRows = requiredRows.filter((r) => r.status === "failed");
+
   return (
     <div className="flex flex-col gap-6 max-w-lg">
       <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-medium text-white">Install dependencies</h1>
+        <h1 className="text-2xl font-medium text-white">Installing dependencies</h1>
         <p className="text-sm font-light text-zinc-400">
-          Required tools install locally when needed. Optional system tools can be added now or later.
+          Required tools install automatically. Optional tools are skipped.
         </p>
       </div>
 
       <div className="flex flex-col gap-3">
-        {DEPS.map((dep) => {
-          const tool = deps[dep.id];
-          const unmet = unmetDepsFor(dep);
-          return (
-            <DepRow
-              key={dep.id}
-              dep={dep}
-              tool={tool}
-              unmetDeps={unmet}
-              onInstall={() => handleInstall(dep)}
-              onOpenPage={() => handleOpenPage(dep.installUrl)}
-              onRetry={() => handleInstall(dep)}
-            />
-          );
-        })}
+        {rows.map((row) => (
+          <DepProgressRow key={row.id} row={row} />
+        ))}
       </div>
 
-      {allRequiredInstalled && (
-        <WizardFooterSlot>
+      {failed && failedRows.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-red-400">
+            {failedRows.length === 1
+              ? `${failedRows[0].label} failed to install.`
+              : `${failedRows.length} required tools failed to install.`}{" "}
+            Check your connection and try again.
+          </p>
           <button
             type="button"
-            onClick={async () => {
-              const installPath = getWizardState().installPath;
-              if (installPath) {
-                try {
-                  const installerVersion = await getInstallerVersion();
-                  await recordStepOk(installPath, installerVersion, "prerequisites");
-                } catch {
-                  /* non-fatal */
-                }
-              }
-              onNext?.();
-            }}
-            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors animate-in fade-in-0 zoom-in-95 duration-500"
+            disabled={running}
+            onClick={() => void startInstall()}
+            className="w-fit px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-50"
           >
-            Continue
+            Retry
           </button>
-        </WizardFooterSlot>
+        </div>
+      )}
+
+      {running && (
+        <p className="text-xs text-zinc-500 hq-text-shimmer">Installing…</p>
       )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// DepRow
+// DepProgressRow
 // ---------------------------------------------------------------------------
 
-interface DepRowProps {
-  dep: DepDef;
-  tool: ToolState;
-  /** Parent labels that aren't yet `installed`. Non-empty ⇒ locked. */
-  unmetDeps: string[];
-  onInstall: () => void;
-  onRetry: () => void;
-  onOpenPage: () => void;
+interface DepProgressRowProps {
+  row: RowState;
 }
 
-function DepRow({
-  dep,
-  tool,
-  unmetDeps,
-  onInstall,
-  onRetry,
-  onOpenPage,
-}: DepRowProps) {
-  // Locked = dep is missing AND at least one parent isn't installed yet.
-  // We still render the row normally — just swap the Install button for a
-  // dimmed "Waiting for X" label. When the last blocker lands, React
-  // re-renders this row, and the Install button mounts with the animate-in
-  // classes firing a one-shot fade/zoom so the unlock reads as a reward.
-  const locked = tool.status === "missing" && unmetDeps.length > 0;
-  const installable = tool.status === "missing" && unmetDeps.length === 0;
-
+function DepProgressRow({ row }: DepProgressRowProps) {
   return (
     <div
       className={`flex flex-col gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3 transition-opacity duration-300 ${
-        locked ? "opacity-60" : "opacity-100"
+        row.status === "skipped" ? "opacity-40" : "opacity-100"
       }`}
-      data-dep={dep.id}
-      data-locked={locked ? "true" : "false"}
+      data-dep={row.id}
+      data-status={row.status}
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex flex-col">
           <span className="text-sm font-medium text-zinc-200">
-            {dep.label}
-            {dep.optional && (
+            {row.label}
+            {row.optional && (
               <span className="ml-2 text-[10px] uppercase tracking-wider text-zinc-500 font-normal">
                 Optional
               </span>
             )}
           </span>
-          {dep.subtitle && (
-            <span
-              data-subtitle
-              className="text-xs text-zinc-500 font-normal mt-0.5"
-            >
-              {dep.subtitle}
-            </span>
-          )}
         </div>
 
         <div className="flex items-center gap-2">
-          {tool.status === "loading" && (
-            <span className="text-xs text-zinc-500 hq-text-shimmer">Checking…</span>
+          {row.status === "pending" && (
+            <span className="text-xs text-zinc-600">Pending</span>
           )}
-          {tool.status === "installed" && (
-            <span data-status="installed" className="text-xs text-green-400 animate-in fade-in-0 duration-500">
+          {row.status === "running" && (
+            <span className="text-xs text-zinc-400 hq-text-shimmer">Installing…</span>
+          )}
+          {row.status === "ok" && (
+            <span className="text-xs text-green-400 animate-in fade-in-0 duration-500">
               Installed
             </span>
           )}
-          {locked && (
-            <span
-              data-status="locked"
-              className="text-xs text-zinc-500 italic"
-              title={`Install ${unmetDeps.join(", ")} first`}
-            >
-              Waiting for {unmetDeps.join(", ")}
-            </span>
+          {row.status === "skipped" && (
+            <span className="text-xs text-zinc-600">Skipped</span>
           )}
-          {installable && (
-            <>
-              <span data-status="missing" className="text-xs text-zinc-500">
-                Missing
-              </span>
-              <button
-                type="button"
-                onClick={onInstall}
-                className="text-xs px-3 py-1 rounded-full bg-white text-black hover:bg-zinc-100 transition-colors font-medium animate-in fade-in-0 zoom-in-95 duration-500"
-              >
-                Install {dep.label}
-              </button>
-            </>
-          )}
-          {tool.status === "installing" && (
-            <span className="text-xs text-zinc-400 hq-text-shimmer">Installing…</span>
-          )}
-          {tool.status === "error" && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onRetry}
-                className="text-xs px-3 py-1 rounded-full bg-white/10 text-zinc-300 hover:bg-white/20 transition-colors font-medium"
-              >
-                Retry
-              </button>
-              <button
-                type="button"
-                onClick={onOpenPage}
-                className="text-xs px-3 py-1 rounded-full bg-white/5 border border-white/10 text-zinc-400 hover:text-white transition-colors font-medium"
-              >
-                Open install page
-              </button>
-            </div>
+          {row.status === "failed" && (
+            <span className="text-xs text-red-400">Failed</span>
           )}
         </div>
       </div>
 
-      {/* Progress output */}
-      {tool.progressLines.length > 0 && (
+      {row.progressLines.length > 0 && (
         <div className="text-xs font-mono text-zinc-500 bg-black/20 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
-          {tool.progressLines.map((line, i) => (
+          {row.progressLines.map((line, i) => (
             <div key={i}>{line}</div>
           ))}
         </div>
       )}
 
-      {/* Error message */}
-      {tool.status === "error" && tool.errorMsg && (
-        <p className="text-xs text-zinc-400">{tool.errorMsg}</p>
+      {row.status === "failed" && row.error && (
+        <p className="text-xs text-zinc-400">{row.error}</p>
       )}
     </div>
   );

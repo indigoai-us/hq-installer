@@ -3,10 +3,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { WizardShell } from "../WizardShell.js";
 
 // ---------------------------------------------------------------------------
-// WizardShell component tests (US-012)
+// WizardShell component tests — US-005 5-step contract
 //
-// These tests are written BEFORE the implementation exists.
-// They will fail until WizardShell.tsx is created.
+// The shell hosts the sidebar ProgressIndicator and the per-step content
+// slot. With the flow collapsed to 5 steps (welcome → install → signin →
+// setup → done), `currentStep` only ever takes values 1..5.
 // ---------------------------------------------------------------------------
 
 describe("WizardShell", () => {
@@ -184,12 +185,12 @@ describe("WizardShell", () => {
 
     it("passes currentStep to ProgressIndicator correctly", () => {
       render(
-        <WizardShell currentStep={6}>
+        <WizardShell currentStep={4}>
           <div>content</div>
         </WizardShell>,
       );
-      // Step 6 numeral should be visible
-      expect(screen.getByText("6")).toBeTruthy();
+      // Step 4 numeral should be visible (Setup in the 5-step flow)
+      expect(screen.getByText("4")).toBeTruthy();
     });
   });
 });

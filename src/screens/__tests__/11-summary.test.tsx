@@ -331,6 +331,39 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(mockPingSuccess).not.toHaveBeenCalled();
   });
 
+  // ── 5b. US-008 — reflects the 5-step flow; no references to removed steps ─
+
+  describe("US-008 — no references to removed steps", () => {
+    it("does NOT reference the removed 'packages' step", () => {
+      render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+      const text = (document.body.textContent ?? "").toLowerCase();
+      expect(text).not.toMatch(/\bpackages?\b/);
+      expect(text).not.toMatch(/pack catalog/);
+    });
+
+    it("does NOT reference the removed 'prerequisites' step", () => {
+      render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+      const text = (document.body.textContent ?? "").toLowerCase();
+      expect(text).not.toMatch(/prerequisite/);
+    });
+
+    it("does NOT reference 'menubar' as a standalone step", () => {
+      render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+      const text = (document.body.textContent ?? "").toLowerCase();
+      expect(text).not.toMatch(/menubar/);
+    });
+
+    it("does NOT reference 'personalize' or 'indexing' as standalone steps", () => {
+      render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+      const text = (document.body.textContent ?? "").toLowerCase();
+      // These were folded into the unified setup orchestrator (US-004); the
+      // summary should describe the end state, not the removed standalone
+      // steps.
+      expect(text).not.toMatch(/personalize/);
+      expect(text).not.toMatch(/indexing/);
+    });
+  });
+
   // ── 6. No purple/indigo class names in DOM ────────────────────────────────
 
   it("does NOT use 'purple' class names in the DOM", () => {

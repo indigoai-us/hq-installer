@@ -145,6 +145,37 @@ describe("Welcome screen (01-welcome.tsx)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // US-008: streamlined 5-step flow — welcome is a single minimal intro
+  describe("US-008 — minimal intro, no preamble for removed steps", () => {
+    it("does NOT render a numbered step-list preamble (Step 1/Step 2/…)", () => {
+      const { container } = render(<Welcome onNext={vi.fn()} />);
+      const text = container.textContent ?? "";
+      // A multi-step preamble would surface as "Step 1", "Step 2", or "1.", "2.", "3." rows.
+      expect(text).not.toMatch(/step\s*1/i);
+      expect(text).not.toMatch(/step\s*2/i);
+      expect(text).not.toMatch(/step\s*3/i);
+    });
+
+    it("does NOT name-check removed screens (packages, prerequisites, github walkthrough, template)", () => {
+      const { container } = render(<Welcome onNext={vi.fn()} />);
+      const text = (container.textContent ?? "").toLowerCase();
+      expect(text).not.toMatch(/prerequisite/);
+      expect(text).not.toMatch(/\bpackages?\b/);
+      expect(text).not.toMatch(/pack catalog/);
+      expect(text).not.toMatch(/github walkthrough/);
+      expect(text).not.toMatch(/\btemplate\b/);
+    });
+
+    it("renders at most one heading (no multi-section preamble)", () => {
+      render(<Welcome onNext={vi.fn()} />);
+      const headings = screen.getAllByRole("heading");
+      // A walking-the-user-through-the-installer preamble would emit multiple
+      // section headings. The minimal welcome has just the product-identity h1.
+      expect(headings.length).toBeLessThanOrEqual(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe("Tauri environment compatibility", () => {
     beforeEach(() => {
       Object.defineProperty(window, "__TAURI_INTERNALS__", {

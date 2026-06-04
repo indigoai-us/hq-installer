@@ -141,6 +141,22 @@ pub fn create_directory(parent: String, name: String) -> Result<CreateDirectoryR
     })
 }
 
+/// Expand `~/hq`, create it if absent, and return its absolute path.
+///
+/// Auto-grafts when an existing HQ tree is found — no prompt needed.
+/// This is the single entry point for US-001's silent local install.
+#[tauri::command]
+pub fn resolve_hq_path() -> Result<String, String> {
+    let hq_path = expand_tilde("~/hq");
+    if !hq_path.exists() {
+        std::fs::create_dir_all(&hq_path).map_err(|e| format!("Failed to create ~/hq: {e}"))?;
+    }
+    // Canonicalize to get an absolute, symlink-resolved path.
+    // Fall back to the unresolved path if canonicalize fails (e.g. race).
+    let canonical = hq_path.canonicalize().unwrap_or_else(|_| hq_path.clone());
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub fn detect_hq(path: String) -> DetectHqResult {
     let p = PathBuf::from(&path);
@@ -256,5 +272,47 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn resolve_hq_path_creates_directory_and_returns_absolute_path() {
+        let tmp = tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path().as_os_str());
+        let result = resolve_hq_path().unwrap();
+        let expected = tmp.path().join("hq");
+        assert!(expected.exists(), "~/hq should be created");
+        // The returned path should end with "hq" (canonical may add prefix).
+        assert!(
+            result.ends_with("/hq"),
+            "resolved path should end with /hq, got: {result}"
+        );
+    }
+
+    #[test]
+    fn resolve_hq_path_is_idempotent_when_directory_already_exists() {
+        let tmp = tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path().as_os_str());
+        // Pre-create the directory.
+        fs::create_dir_all(tmp.path().join("hq")).unwrap();
+        // Should succeed even though it already exists.
+        let result = resolve_hq_path();
+        assert!(result.is_ok(), "should not error if ~/hq already exists");
+    }
+
+    #[test]
+    fn resolve_hq_path_auto_grafts_existing_hq_tree() {
+        let tmp = tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path().as_os_str());
+        // Simulate an existing HQ tree with the manifest marker.
+        let hq = tmp.path().join("hq");
+        fs::create_dir_all(hq.join("companies")).unwrap();
+        fs::write(hq.join("companies/manifest.yaml"), "").unwrap();
+        // resolve_hq_path should succeed (auto-graft) without any error.
+        let result = resolve_hq_path();
+        assert!(
+            result.is_ok(),
+            "should auto-graft existing HQ, not error: {:?}",
+            result
+        );
     }
 }

@@ -1,10 +1,10 @@
-// 06-directory.test.tsx — US-015 (revised 2026-04-29)
-// New flow: pick a parent location, name the HQ folder, create & continue.
-// Existing-HQ detection still surfaces graft/overwrite when the resolved
-// folder already contains an HQ install.
+// 06-directory.test.tsx — US-001
+// Silent local install step: ~/hq resolved automatically (no picker / name
+// form), then the HQ core scaffold is fetched + extracted into it before the
+// wizard advances. The scaffold-fetch assertions are the regression guard for
+// the bug where the install step only created an empty ~/hq and skipped ahead.
 
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DirectoryPicker } from "../06-directory.js";
 
@@ -21,8 +21,6 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
   emit: vi.fn().mockResolvedValue(undefined),
 }));
-// fs + app plugins are touched by the install-manifest helper. Stub them
-// rather than risk real fs writes during tests.
 vi.mock("@tauri-apps/plugin-fs", () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   readTextFile: vi.fn().mockRejectedValue(new Error("not found")),
@@ -32,352 +30,222 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 vi.mock("@tauri-apps/api/app", () => ({
   getVersion: vi.fn().mockResolvedValue("test"),
 }));
-// Telemetry pings would otherwise hit the network — stub.
 vi.mock("@tauri-apps/plugin-http", () => ({
   fetch: vi.fn().mockResolvedValue(new Response(null, { status: 200 })),
 }));
 
+// The scaffold fetcher is mocked so these unit tests never touch the network;
+// the regression assertions below verify the install step *calls* it correctly.
+vi.mock("@/lib/template-fetcher", () => ({
+  fetchAndExtract: vi.fn().mockResolvedValue({ version: "v-test" }),
+  TemplateFetchError: class TemplateFetchError extends Error {},
+}));
+
 import { invoke } from "@tauri-apps/api/core";
+import { fetchAndExtract } from "@/lib/template-fetcher";
 const mockInvoke = vi.mocked(invoke);
+const mockFetch = vi.mocked(fetchAndExtract);
 
 // ---------------------------------------------------------------------------
-// Default invoke behaviour
+// Helpers
 // ---------------------------------------------------------------------------
+
 function setupInvokeMock({
-  pickedPath = "/Users/test",
-  createResult = {
-    path: "/Users/test/hq",
-    already_existed: false,
-    non_empty: false,
-  },
-  detectResult = { exists: true, isHq: false },
+  resolvedPath = "/Users/test/hq",
+  shouldFail = false,
+  failMessage = "Failed to create ~/hq",
+  useStaging = false,
+  stagingToken = "gh-token",
 }: {
-  pickedPath?: string | null;
-  createResult?: {
-    path: string;
-    already_existed?: boolean;
-    non_empty?: boolean;
-  };
-  detectResult?: { exists: boolean; isHq: boolean };
+  resolvedPath?: string;
+  shouldFail?: boolean;
+  failMessage?: string;
+  useStaging?: boolean;
+  stagingToken?: string;
 } = {}) {
   mockInvoke.mockImplementation(async (command: string): Promise<unknown> => {
-    if (command === "pick_directory") return pickedPath;
-    if (command === "create_directory") return createResult;
-    if (command === "detect_hq") return detectResult;
+    if (command === "resolve_hq_path") {
+      if (shouldFail) throw new Error(failMessage);
+      return resolvedPath;
+    }
+    if (command === "get_use_staging_source") return useStaging;
+    if (command === "get_github_token") return stagingToken;
     return null;
   });
 }
 
-async function clickChooseLocation(user: ReturnType<typeof userEvent.setup>) {
-  const btn =
-    screen.queryByRole("button", { name: /choose location/i }) ??
-    screen.queryByRole("button", { name: /choose folder/i });
-  expect(btn).not.toBeNull();
-  await user.click(btn!);
-}
-
-async function clickCreateAndContinue(
-  user: ReturnType<typeof userEvent.setup>,
-) {
-  const btn = await waitFor(() => {
-    const b = screen.queryByRole("button", { name: /create.*continue/i });
-    expect(b).not.toBeNull();
-    return b!;
-  });
-  await user.click(btn);
-}
-
 // ---------------------------------------------------------------------------
 
-describe("DirectoryPicker screen (06-directory.tsx)", () => {
+describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupInvokeMock();
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue({ version: "v-test" });
   });
 
   // -------------------------------------------------------------------------
-  describe("initial render", () => {
-    it("renders a 'Choose location' button", () => {
+  describe("auto-resolution on mount", () => {
+    it("calls invoke('resolve_hq_path') automatically with no user interaction", async () => {
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await waitFor(() => {
+        expect(mockInvoke).toHaveBeenCalledWith("resolve_hq_path");
+      });
+    });
+
+    it("calls onNext automatically after the scaffold is installed", async () => {
+      const onNext = vi.fn();
+      setupInvokeMock({ resolvedPath: "/Users/test/hq" });
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => {
+        expect(onNext).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it("does NOT require any user input before advancing", async () => {
+      const onNext = vi.fn();
+      render(<DirectoryPicker onNext={onNext} />);
+      // onNext fires without any click/fill/interaction.
+      await waitFor(() => {
+        expect(onNext).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // REGRESSION: the install step must actually lay the HQ tree, not just mkdir.
+  describe("scaffold install (regression: empty ~/hq bug)", () => {
+    it("fetches + extracts the hq-core scaffold into the resolved ~/hq", async () => {
+      setupInvokeMock({ resolvedPath: "/Users/test/hq" });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      // First positional arg is the extraction targetDir — must be the ~/hq path.
+      expect(mockFetch.mock.calls[0][0]).toBe("/Users/test/hq");
+    });
+
+    it("does NOT advance until the scaffold finishes extracting", async () => {
+      // Hold the fetch open so we can assert the wizard is blocked on it.
+      let resolveFetch!: (v: { version: string }) => void;
+      mockFetch.mockImplementation(
+        () =>
+          new Promise((res) => {
+            resolveFetch = res;
+          }),
+      );
+      const onNext = vi.fn();
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+      // Scaffold still extracting → must not have advanced.
+      expect(onNext).not.toHaveBeenCalled();
+      // A progress bar is shown while installing.
+      expect(screen.queryByRole("progressbar")).not.toBeNull();
+      resolveFetch({ version: "v15.0.0" });
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+    });
+
+    it("uses the staging-channel source when the staging toggle is on", async () => {
+      setupInvokeMock({ useStaging: true, stagingToken: "ghtok" });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+      // 5th positional arg is the TemplateSource override.
+      expect(mockFetch.mock.calls[0][4]).toEqual({
+        repo: "indigoai-us/hq-core-staging",
+        ref: "main",
+        authToken: "ghtok",
+      });
+    });
+
+    it("defaults to the stable hq-core release (no source override) when staging is off", async () => {
+      setupInvokeMock({ useStaging: false });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+      expect(mockFetch.mock.calls[0][4]).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("no interactive controls rendered", () => {
+    it("does NOT render a folder picker / 'Choose location' button", () => {
       render(<DirectoryPicker onNext={vi.fn()} />);
       const btn =
         screen.queryByRole("button", { name: /choose location/i }) ??
         screen.queryByRole("button", { name: /choose folder/i });
-      expect(btn).not.toBeNull();
+      expect(btn).toBeNull();
     });
 
-    it("does NOT show a Create & continue button before a location is picked", () => {
+    it("does NOT render a folder name input", () => {
       render(<DirectoryPicker onNext={vi.fn()} />);
-      const continueBtn = screen.queryByRole("button", {
-        name: /create.*continue/i,
-      });
-      expect(continueBtn).toBeNull();
+      const input = screen.queryByRole("textbox");
+      expect(input).toBeNull();
     });
 
-    it("does NOT call onNext on initial render", () => {
-      const onNext = vi.fn();
-      render(<DirectoryPicker onNext={onNext} />);
-      expect(onNext).not.toHaveBeenCalled();
+    it("does NOT render Graft / Overwrite prompt buttons", async () => {
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      // Wait long enough for the async effect to complete.
+      await waitFor(() => expect(mockInvoke).toHaveBeenCalled());
+      expect(screen.queryByRole("button", { name: /graft/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /overwrite/i })).toBeNull();
     });
   });
 
   // -------------------------------------------------------------------------
-  describe("location picker invocation", () => {
-    it("clicking 'Choose location' calls invoke('pick_directory', { defaultPath: '~' })", async () => {
-      const user = userEvent.setup();
+  describe("progress indicator", () => {
+    it("renders a heading about preparing HQ before resolution completes", () => {
+      // Never resolve so the spinner stays visible.
+      mockInvoke.mockImplementation(() => new Promise(() => {}));
       render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("pick_directory", {
-          defaultPath: "~",
-        });
-      });
+      const heading = screen.queryByText(/preparing hq/i);
+      expect(heading).not.toBeNull();
     });
 
-    it("displays the picked parent path and the resolved install preview", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({ pickedPath: "/Users/test" });
-      render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("/Users/test");
-        // Default folder name is "hq" — preview should compose to /Users/test/hq
-        expect(text).toContain("/Users/test/hq");
-      });
-    });
-
-    it("does nothing when pick_directory returns null (user cancelled)", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({ pickedPath: null });
-      render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      // create_directory must NOT be called when no parent was picked
-      await new Promise((r) => setTimeout(r, 50));
-      const createCall = mockInvoke.mock.calls.find(
-        ([cmd]) => cmd === "create_directory",
+    it("renders an 'Installing HQ' progress bar while the scaffold downloads", async () => {
+      let resolveFetch!: (v: { version: string }) => void;
+      mockFetch.mockImplementation(
+        () =>
+          new Promise((res) => {
+            resolveFetch = res;
+          }),
       );
-      expect(createCall).toBeUndefined();
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await waitFor(() =>
+        expect(screen.queryByText(/installing hq/i)).not.toBeNull(),
+      );
+      expect(screen.queryByRole("progressbar")).not.toBeNull();
+      resolveFetch({ version: "v1" });
     });
   });
 
   // -------------------------------------------------------------------------
-  describe("create & continue (no existing HQ)", () => {
-    it("calls invoke('create_directory', { parent, name }) on Create & continue", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({ pickedPath: "/Users/test" });
+  describe("error handling", () => {
+    it("shows an error message when resolve_hq_path fails", async () => {
+      setupInvokeMock({ shouldFail: true, failMessage: "permission denied" });
       render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("create_directory", {
-          parent: "/Users/test",
-          name: "hq",
-        });
-      });
-    });
-
-    it("calls invoke('detect_hq', { path }) with the resolved install path", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: false,
-          non_empty: false,
-        },
-      });
-      render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith("detect_hq", {
-          path: "/Users/test/hq",
-        });
-      });
-    });
-
-    it("calls onNext after a fresh folder is created and detection clears", async () => {
-      const user = userEvent.setup();
-      const onNext = vi.fn();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: false,
-          non_empty: false,
-        },
-        detectResult: { exists: true, isHq: false },
-      });
-      render(<DirectoryPicker onNext={onNext} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      await waitFor(() => {
-        expect(onNext).toHaveBeenCalledTimes(1);
-      });
-    });
-
-    it("warns when the resolved folder already has files in it", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: true,
-          non_empty: true,
-        },
-        detectResult: { exists: true, isHq: false },
-      });
-      render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
       await waitFor(() => {
         const text = document.body.textContent ?? "";
-        expect(text.toLowerCase()).toMatch(/already has files/);
+        expect(text.toLowerCase()).toContain("permission denied");
       });
     });
-  });
 
-  // -------------------------------------------------------------------------
-  describe("existing HQ detection — graft or overwrite", () => {
-    it("shows 'Existing HQ detected' when detect_hq returns isHq: true", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: true,
-          non_empty: true,
-        },
-        detectResult: { exists: true, isHq: true },
-      });
-      render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
+    it("does NOT call onNext when resolve_hq_path fails", async () => {
+      const onNext = vi.fn();
+      setupInvokeMock({ shouldFail: true });
+      render(<DirectoryPicker onNext={onNext} />);
       await waitFor(() => {
         const text = document.body.textContent ?? "";
-        expect(text.toLowerCase()).toMatch(/existing hq detected/);
+        expect(text.toLowerCase()).toContain("setup failed");
       });
-    });
-
-    it("renders both Graft and Overwrite buttons when an existing HQ is detected", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: true,
-          non_empty: true,
-        },
-        detectResult: { exists: true, isHq: true },
-      });
-      render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      await waitFor(() => {
-        expect(screen.queryByRole("button", { name: /graft/i })).not.toBeNull();
-        expect(
-          screen.queryByRole("button", { name: /overwrite/i }),
-        ).not.toBeNull();
-      });
-    });
-
-    it("does NOT call onNext until Graft or Overwrite is chosen", async () => {
-      const user = userEvent.setup();
-      const onNext = vi.fn();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: true,
-          non_empty: true,
-        },
-        detectResult: { exists: true, isHq: true },
-      });
-      render(<DirectoryPicker onNext={onNext} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      await waitFor(() => {
-        expect(screen.queryByRole("button", { name: /graft/i })).not.toBeNull();
-      });
-      // Detection surfaced — onNext should still be untouched.
       expect(onNext).not.toHaveBeenCalled();
     });
 
-    it("clicking Graft advances the wizard via onNext", async () => {
-      const user = userEvent.setup();
+    it("shows an error and does NOT advance when scaffold extraction fails", async () => {
+      mockFetch.mockRejectedValue(new Error("network down"));
       const onNext = vi.fn();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: true,
-          non_empty: true,
-        },
-        detectResult: { exists: true, isHq: true },
-      });
       render(<DirectoryPicker onNext={onNext} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      const graftBtn = await waitFor(() => {
-        const b = screen.queryByRole("button", { name: /graft/i });
-        expect(b).not.toBeNull();
-        return b!;
-      });
-      await user.click(graftBtn);
       await waitFor(() => {
-        expect(onNext).toHaveBeenCalledTimes(1);
+        const text = document.body.textContent ?? "";
+        expect(text.toLowerCase()).toContain("network down");
       });
-    });
-
-    it("clicking Overwrite advances the wizard via onNext", async () => {
-      const user = userEvent.setup();
-      const onNext = vi.fn();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: true,
-          non_empty: true,
-        },
-        detectResult: { exists: true, isHq: true },
-      });
-      render(<DirectoryPicker onNext={onNext} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      const overwriteBtn = await waitFor(() => {
-        const b = screen.queryByRole("button", { name: /overwrite/i });
-        expect(b).not.toBeNull();
-        return b!;
-      });
-      await user.click(overwriteBtn);
-      await waitFor(() => {
-        expect(onNext).toHaveBeenCalledTimes(1);
-      });
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  describe("HQ detection markers", () => {
-    it("delegates HQ detection to the Tauri command (no inline checks)", async () => {
-      const user = userEvent.setup();
-      setupInvokeMock({
-        pickedPath: "/Users/test",
-        createResult: {
-          path: "/Users/test/hq",
-          already_existed: true,
-          non_empty: true,
-        },
-        detectResult: { exists: true, isHq: true },
-      });
-      render(<DirectoryPicker onNext={vi.fn()} />);
-      await clickChooseLocation(user);
-      await clickCreateAndContinue(user);
-      await waitFor(() => {
-        expect(mockInvoke).toHaveBeenCalledWith(
-          "detect_hq",
-          expect.objectContaining({ path: "/Users/test/hq" }),
-        );
-      });
+      expect(onNext).not.toHaveBeenCalled();
     });
   });
 

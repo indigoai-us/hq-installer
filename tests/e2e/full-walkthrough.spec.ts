@@ -1,20 +1,87 @@
-import { test, expect } from '@playwright/test';
-import { setupCognitoMock } from './fixtures/cognito-mock';
-import { setupGithubReleasesMock } from './fixtures/github-releases-mock';
+import { test, expect, type Page } from '@playwright/test';
+
+// ---------------------------------------------------------------------------
+// US-007 — E2E walk of the streamlined 5-step flow.
+//
+// Screen flow under test:
+//   1. Welcome  ("Set up HQ" + "Get Started")
+//   2. Install  (silent ~/hq lay-down — auto-advances; "Preparing HQ")
+//   3. Sign in  ("Continue with Google" — OAuth mocked here)
+//   4. Setup    (unified post-login orchestrator — auto-advances; "Setting up HQ")
+//   5. Done     ("HQ is ready")
+//
+// Removed-screen guard: the test asserts that the headings of every screen
+// folded or deleted in US-005/006 never appear at ANY transition. This is the
+// PRD's "github-walkthrough and template/packages never visible" assertion.
+//
+// Mocking strategy:
+//   - Tauri IPC is stubbed via __TAURI_INTERNALS__ injected pre-React. The
+//     mock keychain is stateful so the OAuth flow's 4-row token write is
+//     visible to setup-progress's later getCurrentUser() read.
+//   - Google OAuth is short-circuited at two seams:
+//       (a) `oauth_listen_for_code` invoke resolves immediately with a fake
+//           authorization code (no real loopback listener needed).
+//       (b) the POST to /oauth2/token at the Cognito Hosted UI domain is
+//           routed to a stub that returns mock tokens whose idToken decodes
+//           to { sub, email, name } — enough for git-init + personalize.
+//   - vault-handoff (`/entity/by-type/person`) returns no entities → the
+//     setup orchestrator branches into Personal HQ mode and skips S3 sync.
+// ---------------------------------------------------------------------------
+
+// Headings of every screen deleted or folded by US-004/005/006 — must NEVER
+// appear at any point in the walkthrough.
+const REMOVED_SCREEN_HEADINGS = [
+  'Set up GitHub',          // 05-github-walkthrough.tsx (deleted)
+  'Choose template',        // 07-template.tsx (deleted)
+  'Fetching template',
+  'Install dependencies',   // 04-deps.tsx (folded into setup-progress)
+  'Choose install directory', // old 06-directory picker (now silent)
+  'Personalize your HQ',    // 09-personalize.tsx (folded)
+  'Indexing HQ',            // 10-indexing.tsx (folded)
+  'Git setup',              // 08-git-init.tsx (folded)
+  'Create your account',    // old email/password Cognito copy (now Google-only)
+];
+
+async function expectRemovedScreensAbsent(page: Page): Promise<void> {
+  for (const heading of REMOVED_SCREEN_HEADINGS) {
+    // exact: false matches substrings — defends against the heading being
+    // wrapped in some new container that adds incidental text around it.
+    const count = await page.getByText(heading, { exact: false }).count();
+    expect(count, `removed-screen text "${heading}" must not appear`).toBe(0);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tauri mock init script (injected into browser before React loads)
 // ---------------------------------------------------------------------------
-// This script is pure JS — it cannot import Node modules.
-// It simulates the Tauri 2 IPC bridge so components work in a plain browser.
+// Pure JS (no Node modules) — runs in the page context. Simulates the Tauri 2
+// IPC bridge and short-circuits every native call the 5-step flow makes.
+
+const ID_TOKEN_PAYLOAD = {
+  sub: 'e2e-user-123',
+  email: 'e2e@example.com',
+  name: 'E2E User',
+  // given_name/family_name omitted on purpose — setup-progress's git-init
+  // falls back to `name` when those are absent, exercising the realistic
+  // Google-token shape (Google emits `name` not `family_name` for many users).
+};
+const ID_TOKEN_PAYLOAD_B64 = Buffer.from(JSON.stringify(ID_TOKEN_PAYLOAD))
+  .toString('base64')
+  .replace(/=+$/, '');
+const MOCK_ID_TOKEN = `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.${ID_TOKEN_PAYLOAD_B64}.mock-signature`;
+
 const TAURI_MOCK_SCRIPT = `
 (function() {
+  // Tell the install step (06-directory) to skip its network scaffold fetch:
+  // this mocked browser env can't serve a real hq-core release tarball. The
+  // wizard flow is what this walkthrough validates; the scaffold fetch itself
+  // is covered by 06-directory.test.tsx and clean-room VM runs.
+  window.__HQ_INSTALLER_E2E__ = true;
   const callbacks = new Map();
   const listeners = new Map(); // event -> [handlerId, ...]
-  // Stateful keychain store — keyed by "\${service}:\${account}". Required by
-  // cognito.ts loadTokens(), which reads access_token / id_token / refresh_token /
-  // expires_at separately. A no-op keychain broke screen 03's getCurrentUser()
-  // because handleCreate throws "No active session" when any token is missing.
+  // Stateful keychain — cognito.ts stores 4 rows (access_token, id_token,
+  // refresh_token, expires_at) and loadTokens() returns null if any are
+  // missing, so the mock must actually persist what storeTokens writes.
   const keychainStore = new Map();
 
   function transformCallback(fn, once) {
@@ -22,18 +89,15 @@ const TAURI_MOCK_SCRIPT = `
     callbacks.set(id, { fn, once });
     return id;
   }
-
   function runCallback(id, data) {
     const entry = callbacks.get(id);
     if (!entry) return;
     if (entry.once) callbacks.delete(id);
     entry.fn(data);
   }
-
   function unregisterCallback(id) {
     callbacks.delete(id);
   }
-
   function emitTauriEvent(event, payload) {
     const eventListeners = listeners.get(event) || [];
     for (const handlerId of eventListeners) {
@@ -42,7 +106,7 @@ const TAURI_MOCK_SCRIPT = `
   }
 
   async function invoke(cmd, args) {
-    // plugin:event — listen/emit/unlisten
+    // ── plugin:event — listen/emit/unlisten ─────────────────────────────
     if (cmd === 'plugin:event|listen') {
       const { event, handler } = args || {};
       if (!listeners.has(event)) listeners.set(event, []);
@@ -64,48 +128,57 @@ const TAURI_MOCK_SCRIPT = `
       return null;
     }
 
-    // Dependency checking
-    if (cmd === 'check_dep') {
-      return { installed: true, version: '1.0.0' };
-    }
-    if (cmd === 'xcode_clt_status') {
-      return { installed: true };
-    }
-    if (cmd === 'check_xcode_clt') {
-      return { installed: true };
+    // ── plugin:app — installer-version probe ────────────────────────────
+    if (cmd === 'plugin:app|version') {
+      return '0.4.2-e2e';
     }
 
-    // Directory picking
-    if (cmd === 'pick_directory') {
-      return '/tmp/hq-e2e-test';
-    }
-    if (cmd === 'detect_hq') {
-      return { exists: false, isHq: false };
-    }
-
-    // Template fetch — schedules template:progress event with done=true
-    if (cmd === 'fetch_template') {
-      setTimeout(function() {
-        emitTauriEvent('template:progress', {
-          downloaded: 1024,
-          total: 1024,
-          done: true,
-        });
-      }, 100);
+    // ── plugin:shell — Open authorize URL in system browser (no-op) ─────
+    if (cmd === 'plugin:shell|open') {
       return null;
     }
 
-    // Git user probe
-    if (cmd === 'git_probe_user') {
-      return { name: 'E2E User', email: 'e2e@example.com' };
+    // ── Install step (US-001) — silent ~/hq resolution ──────────────────
+    if (cmd === 'resolve_hq_path') {
+      return '/tmp/hq-e2e-test';
     }
 
-    // Git init
+    // ── Sign-in step (US-003-ish) — OAuth loopback stub ─────────────────
+    // The real command binds 127.0.0.1:53682 and blocks until the browser
+    // hits /callback. Here we resolve immediately with a fixed code —
+    // exchangeCodeForTokens is then routed (HTTP) to the token-endpoint
+    // mock below.
+    if (cmd === 'oauth_listen_for_code') {
+      return { code: 'stub-auth-code' };
+    }
+
+    // ── Setup orchestrator: deps stage ──────────────────────────────────
+    // runDepsInstall iterates DEPS and calls check_dep first; reporting
+    // installed=true short-circuits the install_<dep> branch entirely.
+    if (cmd === 'check_dep') {
+      return { installed: true, version: '1.0.0' };
+    }
+    if (
+      cmd === 'install_node' ||
+      cmd === 'install_yq' ||
+      cmd === 'install_qmd' ||
+      cmd === 'install_hq_cli' ||
+      cmd === 'install_git' ||
+      cmd === 'install_gh' ||
+      cmd === 'install_claude_code' ||
+      cmd === 'install_homebrew'
+    ) {
+      return null;
+    }
+
+    // ── Setup orchestrator: git-init stage ──────────────────────────────
     if (cmd === 'git_init') {
       return 'abc1234abc1234abc1234abc1234abc1234abc1234';
     }
 
-    // Process spawning — used by git-init steps 1+2 and indexing
+    // ── Setup orchestrator: indexing stage (spawn_process for qmd) ──────
+    // The real command streams stdout/stderr/exit events; here we just
+    // emit a successful exit so spawnAndWait resolves true.
     if (cmd === 'spawn_process') {
       const handle = 'proc-' + Math.random().toString(36).slice(2);
       setTimeout(function() {
@@ -113,19 +186,30 @@ const TAURI_MOCK_SCRIPT = `
           code: 0,
           success: true,
         });
-      }, 100);
+      }, 50);
       return handle;
     }
 
-    // qmd indexing
-    if (cmd === 'run_qmd') {
+    // ── Setup orchestrator: menubar stage ───────────────────────────────
+    if (cmd === 'install_menubar_app') {
+      return { success: true, appPath: '/Applications/HQ Sync.app', error: null };
+    }
+    if (cmd === 'launch_menubar_app') {
       return null;
     }
 
-    // Keychain — stateful per-service/account store. cognito.ts splits tokens
-    // across 4 rows (access_token, id_token, refresh_token, expires_at) and
-    // loadTokens() returns null if ANY row is missing — so we have to actually
-    // persist what sign-in writes.
+    // ── Summary screen probes / actions ─────────────────────────────────
+    if (cmd === 'claude_desktop_installed') {
+      return false;
+    }
+    if (cmd === 'open_claude_code_link') {
+      return null;
+    }
+    if (cmd === 'launch_claude_code') {
+      return null;
+    }
+
+    // ── Keychain — stateful (cognito.ts splits tokens across 4 rows) ───
     if (cmd === 'keychain_set') {
       const { service, account, secret } = args || {};
       keychainStore.set(service + ':' + account, secret);
@@ -141,50 +225,36 @@ const TAURI_MOCK_SCRIPT = `
       return keychainStore.get(service + ':' + account) || null;
     }
 
-    // Claude Code launch
-    if (cmd === 'launch_claude_code') {
+    // ── Cognito misc ────────────────────────────────────────────────────
+    if (cmd === 'home_dir') {
+      return '/tmp/hq-e2e-home';
+    }
+
+    // ── Tauri FS (used by manifest writer + personalize-writer) ─────────
+    if (cmd === 'plugin:fs|mkdir') return null;
+    if (cmd === 'plugin:fs|write_text_file' || cmd === 'plugin:fs|write_file') return null;
+    if (cmd === 'plugin:fs|read_text_file' || cmd === 'plugin:fs|read_file') return '';
+    if (cmd === 'plugin:fs|read_dir') return [];
+    if (cmd === 'plugin:fs|exists') return false;
+    if (cmd === 'plugin:path|resolve_path' || cmd === 'plugin:path|resolve_resource') {
+      return '/mock-resource-path';
+    }
+
+    // ── Telemetry pref (best-effort, fire-and-forget) ──────────────────
+    if (cmd === 'write_menubar_telemetry_pref') {
       return null;
     }
 
-    // Webview
-    if (cmd === 'open_webview') {
-      return null;
-    }
-
-    // Homebrew / xcode install commands (should not be called since all deps are installed)
-    if (cmd === 'install_homebrew' || cmd === 'xcode_clt_install' || cmd === 'install_node' ||
-        cmd === 'install_git' || cmd === 'install_gh' || cmd === 'install_claude_code' || cmd === 'install_qmd') {
-      return null;
-    }
-
-    // Telemetry ping (fire-and-forget)
+    // ── Failure ping (manifest-side, best-effort) ──────────────────────
     if (cmd === 'plugin:http|fetch') {
       return { status: 200, data: '{}', headers: {} };
     }
 
-    // Tauri FS operations used by personalize-writer
-    if (cmd === 'plugin:fs|mkdir') {
-      return null;
+    // Default — log so a new invoke from future code shows up in test
+    // output, but don't throw (best-effort branches swallow errors).
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[tauri-mock] Unhandled invoke:', cmd, args);
     }
-    if (cmd === 'plugin:fs|write_text_file' || cmd === 'plugin:fs|write_file') {
-      return null;
-    }
-    if (cmd === 'plugin:path|resolve_path' || cmd === 'plugin:path|resolve_resource') {
-      // Return a mock path that readDir can "read"
-      return '/mock-resource-path';
-    }
-    if (cmd === 'plugin:fs|read_dir') {
-      // Return empty array — no starter project files to iterate
-      return [];
-    }
-    if (cmd === 'plugin:fs|read_text_file' || cmd === 'plugin:fs|read_file') {
-      return '';
-    }
-    if (cmd === 'plugin:fs|exists') {
-      return false;
-    }
-
-    console.warn('[tauri-mock] Unhandled invoke:', cmd, args);
     return null;
   }
 
@@ -195,7 +265,6 @@ const TAURI_MOCK_SCRIPT = `
     unregisterCallback,
     callbacks,
   };
-
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
     unregisterListener: function(event, id) {
       const arr = listeners.get(event);
@@ -209,135 +278,142 @@ const TAURI_MOCK_SCRIPT = `
 `;
 
 // ---------------------------------------------------------------------------
-// Test
+// HTTP route stubs
 // ---------------------------------------------------------------------------
 
-test.describe('HQ Installer walkthrough', () => {
-  test.beforeEach(async ({ page }) => {
-    // Inject Tauri mock before React loads
-    await page.addInitScript(TAURI_MOCK_SCRIPT);
-
-    // Set up HTTP mocks
-    await setupCognitoMock(page);
-    await setupGithubReleasesMock(page);
-
-    // Mock the team registration API — snake_case contract matches hq-ops
-    // /api/installer/register-company which returns { team_id, company_id, created_at }.
-    // 03-team.tsx reassembles TeamMetadata from response IDs + local form state.
-    await page.route('**/api/installer/register-company', (route) => {
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          team_id: 'team-e2e-123',
-          company_id: 'company-e2e-123',
-          created_at: new Date().toISOString(),
-        }),
-      });
-    });
-
-    // Mock telemetry endpoint
-    await page.route('**/api/telemetry**', (route) => {
-      route.fulfill({ status: 200, body: '{}' });
+async function setupHttpStubs(page: Page): Promise<void> {
+  // Cognito Hosted UI token exchange (PKCE step 4 in google-oauth.ts).
+  // Domain matches playwright.config.ts VITE_COGNITO_DOMAIN default.
+  await page.route('**/oauth2/token', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        access_token: 'mock-access-token',
+        id_token: MOCK_ID_TOKEN,
+        refresh_token: 'mock-refresh-token',
+        expires_in: 3600,
+        token_type: 'Bearer',
+      }),
     });
   });
 
-  // TODO(installer-e2e): Rewrite for Google OAuth via Cognito Hosted UI.
-  // The original flow used in-webview email/password — replaced in commit
-  // fa01971 with a Tauri-driven loopback OAuth listener (oauth_listen_for_code
-  // + system browser). The current TAURI_MOCK_SCRIPT doesn't simulate
-  // either piece, so the test sits at Screen 2 until the heading regex
-  // (which referenced the removed "Create your account" copy) times out.
-  // Skipping rather than green-rubberstamping a stale assertion. Restoration
-  // requires (a) mocking oauth_listen_for_code to resolve with a fake code,
-  // (b) mocking exchangeCodeForTokens, and (c) updating Screen-2 assertions
-  // to match the Google sign-in copy ("Sign in" / "Continue with Google").
-  test.skip('full 11-screen walkthrough', async ({ page }) => {
-    // ── Screen 1: Welcome ──────────────────────────────────────────────────
+  // vault-handoff /entity/by-type/person → no person entities means the
+  // setup orchestrator's S3-sync stage skips into Personal-HQ mode without
+  // trying to vend STS credentials.
+  await page.route('**/entity/by-type/person', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ entities: [] }),
+    });
+  });
+
+  // Telemetry endpoint — silent acceptance so postOptIn / pingSuccess don't
+  // hang the test on a real network call.
+  await page.route('**/api/telemetry**', (route) => {
+    route.fulfill({ status: 200, body: '{}' });
+  });
+
+  // Defensive: any other vault endpoints we might hit.
+  await page.route('**/membership/**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ memberships: [] }),
+    });
+  });
+  await page.route('**/sts/vend', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        AccessKeyId: 'AKIA-MOCK',
+        SecretAccessKey: 'mock',
+        SessionToken: 'mock',
+        Expiration: new Date(Date.now() + 3600_000).toISOString(),
+      }),
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Test
+// ---------------------------------------------------------------------------
+
+test.describe('Streamlined installer — 5-step walkthrough (US-007)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(TAURI_MOCK_SCRIPT);
+    await setupHttpStubs(page);
+  });
+
+  test('welcome → install → Google sign-in → setup → done with no removed screens', async ({
+    page,
+  }) => {
+    // ── Step 1: Welcome ────────────────────────────────────────────────────
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: /set up hq/i })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: /set up hq/i }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expectRemovedScreensAbsent(page);
+
     await page.getByRole('button', { name: /get started/i }).click();
 
-    // ── Screen 2: CognitoAuth — sign in ────────────────────────────────────
-    await expect(page.getByRole('heading', { name: /create your account/i })).toBeVisible();
-    await page.getByLabel('Email').fill('test@example.com');
-    await page.getByLabel('Password').fill('TestPassword123!');
-    await page.getByRole('button', { name: /^sign in$/i }).click();
+    // ── Step 2: Install (silent ~/hq) ──────────────────────────────────────
+    // The DirectoryPicker calls resolve_hq_path → setInstallPath →
+    // onNext on success, so the heading is visible only briefly. We assert
+    // it appears (or has already advanced past it) by waiting for either
+    // "Preparing HQ" OR "Sign in" — both are valid mid-flight states.
+    await expect
+      .poll(
+        async () => {
+          const preparing = await page
+            .getByText(/preparing hq/i, { exact: false })
+            .count();
+          const signedIn = await page
+            .getByRole('heading', { name: /^sign in$/i })
+            .count();
+          return preparing + signedIn;
+        },
+        { timeout: 15_000 },
+      )
+      .toBeGreaterThan(0);
+    await expectRemovedScreensAbsent(page);
 
-    // ── Screen 3: TeamSetup — create team ──────────────────────────────────
-    // Heading is "Create your team" after the Join-team mode was removed in the
-    // hq-ops register-company contract cut-over.
-    await expect(page.getByRole('heading', { name: /create your team/i })).toBeVisible();
-    await page.getByLabel('Team name').fill('E2E Test Team');
-    // Slug auto-fills from the team name — clear + retype to override so the
-    // explicit value lands in the POST body instead of "e2e-test-team".
-    await page.getByLabel('Slug').clear();
-    await page.getByLabel('Slug').fill('e2e-test');
-    await page.getByRole('button', { name: /^create team$/i }).click();
+    // ── Step 3: Sign in (Google OAuth — stubbed) ───────────────────────────
+    await expect(
+      page.getByRole('heading', { name: /^sign in$/i }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expectRemovedScreensAbsent(page);
 
-    // ── Screen 4: DepsInstall — deps auto-detected as installed ────────────
-    await expect(page.getByText(/homebrew/i)).toBeVisible();
-    // Wait for all deps to show installed and Continue button to appear
-    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible({ timeout: 15_000 });
-    await page.getByRole('button', { name: /continue/i }).click();
+    // The Sign in screen renders a single "Continue with Google" button.
+    // Clicking it kicks off the (mocked) OAuth flow:
+    //   oauth_listen_for_code → {code: stub}
+    //   exchangeCodeForTokens → mock tokens (idToken decodes to E2E user)
+    //   storeTokens → 4 keychain rows persisted in-memory
+    //   onNext → step 4 (Setup)
+    await page.getByRole('button', { name: /continue with google/i }).click();
 
-    // ── Screen 5: GithubWalkthrough ─────────────────────────────────────────
-    await expect(page.getByRole('heading', { name: /set up github/i })).toBeVisible();
-    await page.locator('[data-step="account"]').check();
-    await page.locator('[data-step="ssh"]').check();
-    await page.locator('[data-step="pat"]').check();
-    await page.locator('#pat-input').fill('ghp_mocktokenvalue');
-    // Trigger keychain_set on blur
-    await page.locator('#pat-input').blur();
-    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible();
-    await page.getByRole('button', { name: /continue/i }).click();
+    // ── Step 4: Setup (unified orchestrator) ───────────────────────────────
+    // The orchestrator runs 5 stages behind one progress bar. We just check
+    // that the heading appears and then auto-advances to Done — exactly the
+    // PRD contract ("no intermediate input").
+    await expect(
+      page.getByRole('heading', { name: /setting up hq/i }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expectRemovedScreensAbsent(page);
 
-    // ── Screen 6: DirectoryPicker ───────────────────────────────────────────
-    await expect(page.getByRole('heading', { name: /choose install directory/i })).toBeVisible();
-    await page.getByRole('button', { name: /choose folder/i }).click();
-    // After mocked pick_directory and detect_hq, path shows and Continue appears
-    await expect(page.getByText('/tmp/hq-e2e-test')).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible({ timeout: 10_000 });
-    await page.getByRole('button', { name: /continue/i }).click();
+    // ── Step 5: Done ───────────────────────────────────────────────────────
+    // Generous timeout — the orchestrator chains six async stages that each
+    // tick through journal writes + state patches before resolving.
+    await expect(
+      page.getByRole('heading', { name: /hq is ready/i }),
+    ).toBeVisible({ timeout: 60_000 });
+    await expectRemovedScreensAbsent(page);
 
-    // ── Screen 7: TemplateFetch — auto-starts, waits for done ──────────────
-    await expect(page.getByRole('heading', { name: /fetching template/i })).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: /continue/i }).click();
-
-    // ── Screen 8: GitInit — git user pre-filled, run setup ─────────────────
-    await expect(page.getByRole('heading', { name: /git setup/i })).toBeVisible();
-    // git_probe_user is mocked to return name + email so fields pre-fill
-    await expect(page.getByLabel('Name')).toHaveValue('E2E User', { timeout: 5_000 });
-    await page.getByRole('button', { name: /run setup/i }).click();
-    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: /continue/i }).click();
-
-    // ── Screen 9: Personalize — 3-step form ────────────────────────────────
-    await expect(page.getByRole('heading', { name: /personaliz/i })).toBeVisible();
-
-    // Step 1: Identity
-    await page.getByLabel('Name').fill('E2E Test User');
-    await page.getByLabel('About').fill('A developer testing the installer');
-    await page.getByLabel('Goals').fill('Ship more with AI assistance');
-    // The WizardShell also has a "Next" button — use .first() to click the form's Next
-    await page.getByRole('button', { name: /^next$/i }).first().click();
-
-    // Step 2: Starter project
-    await page.getByLabel('Code Worker').check();
-    await page.getByRole('button', { name: /^next$/i }).first().click();
-
-    // Step 3: Customization + submit
-    // personalize() calls Tauri FS — mocked via invoke handlers
-    await page.getByRole('button', { name: /^submit$/i }).click();
-
-    // ── Screen 10: Indexing — auto-starts, waits for done ──────────────────
-    await expect(page.getByRole('heading', { name: /indexing hq/i })).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole('button', { name: /continue/i })).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: /continue/i }).click();
-
-    // ── Screen 11: Summary ──────────────────────────────────────────────────
-    await expect(page.getByRole('heading', { name: /hq is ready/i })).toBeVisible();
-    await expect(page.getByText('/tmp/hq-e2e-test')).toBeVisible();
+    // Sanity: the install path written by step 2 surfaces on the summary.
+    // The path renders twice (summary card + "Open in Claude Desktop"
+    // instructions panel) — .first() picks one for the visibility assert.
+    await expect(page.getByText('/tmp/hq-e2e-test').first()).toBeVisible();
   });
 });

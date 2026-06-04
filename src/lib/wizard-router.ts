@@ -1,14 +1,14 @@
-// wizard-router.ts — US-006
-// Wizard navigation state machine.
+// wizard-router.ts — US-005
+// Wizard navigation state machine — collapsed 5-step flow.
 //
-// Screen flow (install-first, prereqs-then-login — 2026-05-02):
-//   01 Welcome → 02 Install (dir) → 03 Templates → 04 Prerequisites →
-//   05 Cognito Auth → 06 Workspace (git init) → 07 Personalize →
-//   08 Verify (indexing) → 09 HQ Sync (menubar) → 10 Done
+// Screen flow:
+//   01 Welcome → 02 Install (silent ~/hq) → 03 Sign In (Cognito/Google) →
+//   04 Setup (unified post-login progress orchestrator) → 05 Done
 //
-// Files land in the chosen HQ folder before the user logs in, so an
-// install-manifest exists on disk even if the user bails partway. Agents
-// reading the HQ tree can then self-heal partial installs.
+// Old install-then-templates-then-prereqs-then-login-then-everything ordering
+// is gone — every install phase now sits behind the single Setup progress
+// bar (see screens/setup-progress.tsx) and the user only sees one explicit
+// input (Google sign-in at step 3).
 
 import type { WizardState } from "./wizard-state";
 
@@ -21,49 +21,41 @@ export interface WizardStep {
 export const WIZARD_STEPS: WizardStep[] = [
   { index: 1, id: "welcome", label: "Welcome" },
   { index: 2, id: "install", label: "Install" },
-  { index: 3, id: "templates", label: "Templates" },
-  { index: 4, id: "prerequisites", label: "Prerequisites" },
-  { index: 5, id: "cognito-auth", label: "Sign In" },
-  { index: 6, id: "workspace", label: "Workspace" },
-  { index: 7, id: "personalize", label: "Personalize" },
-  { index: 8, id: "verify", label: "Verify" },
-  { index: 9, id: "menubar", label: "HQ Sync" },
-  { index: 10, id: "done", label: "Done" },
+  { index: 3, id: "signin", label: "Sign In" },
+  { index: 4, id: "setup", label: "Setup" },
+  { index: 5, id: "done", label: "Done" },
 ];
 
 /** Step indices (1-based) where back navigation is blocked.
- *  Step 6 (Workspace) is the first screen past Cognito auth — crossing it
+ *  Step 4 (Setup) is the first screen past Cognito auth — crossing it
  *  backwards would drop the user behind the auth gate and surface a re-login
  *  prompt they've already handled. */
-export const AUTH_GATED_STEPS: number[] = [6];
+export const AUTH_GATED_STEPS: number[] = [4];
 
 /**
  * Per-step "is the user allowed to advance" check.
  *
- * This gates the GLOBAL Next button rendered by WizardShell. Without it,
- * users can walk past a screen before its internal Submit handler has run,
- * producing a half-built install. Keep this in sync with any screen that
- * has side effects tied to its own Submit/Continue button.
+ * Gates the GLOBAL Next button rendered by WizardShell. Without it,
+ * users could walk past a screen before its internal side-effect handler
+ * has run, producing a half-built install.
  */
 export function getStepValidity(
   step: number,
   state: Readonly<WizardState>,
 ): boolean {
   switch (step) {
-    // Step 2 (DirectoryPicker): must have picked an install path.
+    // Step 2 (Install): the silent ~/hq installer (DirectoryPicker) sets
+    // installPath as soon as the Rust resolve_hq_path command returns.
+    // Until then the global Next must stay disabled — the screen also
+    // self-advances on success, so this gate mostly defends against a
+    // user clicking Next during the spinner.
     case 2:
       return state.installPath !== null && state.installPath.length > 0;
-    // Step 7 (Personalize): Screen's Submit runs personalize() which writes
-    // profile.md, voice-style.md, the starter project, and scaffolds
-    // user-supplied companies. Bypassing it leaves the install missing all
-    // of that. `state.personalized` is flipped to true by Screen 07's
-    // handleSubmit on success.
-    case 7:
-      return state.personalized;
-    // Step 9 (InstallMenubarStep): component drives its own Continue/Skip
-    // buttons — block the global WizardShell Next button so users can't
-    // bypass the install-in-progress state.
-    case 9:
+    // Step 4 (Setup): the unified orchestrator runs every install phase
+    // behind its single progress bar and calls onNext automatically when
+    // every stage settles. There is no manual advance — the global Next
+    // button stays disabled the whole time (US-004 contract).
+    case 4:
       return false;
     default:
       return true;

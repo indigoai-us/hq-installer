@@ -10,10 +10,13 @@ import {
 import type { TeamMetadata } from "../wizard-state.js";
 
 // ---------------------------------------------------------------------------
-// wizard-state unit tests (US-014)
+// wizard-state unit tests — US-005 5-step contract
 //
-// These tests are written BEFORE the implementation exists.
-// They will fail until src/lib/wizard-state.ts is created.
+// wizard-state itself doesn't know about step indices — it's just a typed
+// singleton with mutators. These tests pin its surface: defaults, mutual
+// exclusion (team ↔ isPersonal), defensive copies, and clearWizardState
+// idempotence. The 5-step flow (welcome → install → signin → setup → done)
+// only enters by way of which fields get written by which screen.
 // ---------------------------------------------------------------------------
 
 const MOCK_TEAM: TeamMetadata = {
@@ -155,9 +158,10 @@ describe("wizard-state", () => {
 
   // -------------------------------------------------------------------------
   describe("setPersonalized()", () => {
-    // The personalized flag is the gate the router uses to decide whether
-    // step 9's global Next button is enabled. Screen 09 flips it on
-    // successful personalize() completion, which is what this suite verifies.
+    // The personalized flag records that personalize() succeeded. In the
+    // 5-step flow it's set by the Setup orchestrator's personalize stage
+    // and read by Summary; it no longer gates a global Next button (the
+    // Setup screen auto-advances — see wizard-router.getStepValidity(4)).
 
     it("setPersonalized(true) flips personalized to true", () => {
       setPersonalized(true);

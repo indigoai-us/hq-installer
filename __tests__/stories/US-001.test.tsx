@@ -67,8 +67,9 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
     it("renders wizard overview steps list (via sidebar ProgressIndicator)", () => {
       render(<App />);
       // Steps moved from a duplicated body list into the persistent sidebar.
-      // "Prerequisites" is a sidebar-exclusive label — confirms the sidebar rendered.
-      expect(screen.getByText(/Prerequisites/i)).toBeTruthy();
+      // "Sign In" is a sidebar-exclusive label in the 5-step flow — confirms
+      // the sidebar rendered.
+      expect(screen.getByText(/Sign In/i)).toBeTruthy();
     });
 
     it("renders telemetry opt-in label", () => {

@@ -1,0 +1,628 @@
+// setup-progress.tsx — US-004
+// Unified post-login orchestrator. Sequences five stages behind a single
+// progress bar with one explanatory line and no intermediate input:
+//
+//   1. deps        — runDepsInstall() (core deps; optionals skipped)
+//   2. git-init    — invoke("git_init") with identity from Google idToken
+//   3. personalize — detect cloud company (non-fatal) + personalize()
+//   4. indexing    — qmd collection add (writes embeddings-pending marker)
+//   5. menubar     — install_menubar_app (HQ Sync tray app)
+//
+// Cloud file sync is intentionally NOT done here — the HQ Sync menu-bar app
+// (installed in the last stage) owns syncing the user's company files. The
+// installer only *detects* the company (so the Done screen + personalize
+// reflect it); HQ Sync pulls the files on first launch.
+//
+// Each stage outcome is journaled to the install-manifest so a later /setup
+// can resume any failed stage. On failure the bar freezes — prior stages keep
+// their `ok` status and the user gets a Retry that resumes from the failure
+// point.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import {
+  BaseDirectory,
+  mkdir,
+  writeTextFile,
+} from "@tauri-apps/plugin-fs";
+import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
+import { personalize, type CompanySeed } from "@/lib/personalize-writer";
+import { getCurrentUser } from "@/lib/cognito";
+import { listUserCompanies } from "@/lib/vault-handoff";
+import {
+  setGitIdentity,
+  setIsPersonal,
+  setPersonalized,
+  setTeam,
+} from "@/lib/wizard-state";
+import {
+  getInstallerVersion,
+  recordDependencies,
+  recordStepFailure,
+  recordStepOk,
+  recordStepStart,
+  type ItemStatus,
+} from "@/lib/install-manifest";
+
+// ---------------------------------------------------------------------------
+// Stage model
+// ---------------------------------------------------------------------------
+
+export type StageId =
+  | "deps"
+  | "git-init"
+  | "personalize"
+  | "indexing"
+  | "menubar";
+
+type StageStatus = "pending" | "running" | "ok" | "failed";
+
+interface StageState {
+  id: StageId;
+  label: string;
+  status: StageStatus;
+  error: string | null;
+  logLines: string[];
+}
+
+const STAGE_LABELS: Record<StageId, string> = {
+  deps: "Installing dependencies",
+  "git-init": "Initialising workspace",
+  personalize: "Personalizing",
+  indexing: "Registering for search",
+  menubar: "Installing HQ Sync",
+};
+
+// Order is part of the contract — the progress bar maps directly to indices.
+const STAGE_ORDER: readonly StageId[] = [
+  "deps",
+  "git-init",
+  "personalize",
+  "indexing",
+  "menubar",
+] as const;
+
+function buildInitialStages(): StageState[] {
+  return STAGE_ORDER.map((id) => ({
+    id,
+    label: STAGE_LABELS[id],
+    status: "pending",
+    error: null,
+    logLines: [],
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
+
+export interface SetupProgressProps {
+  installPath: string;
+  onNext?: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
+  const [stages, setStages] = useState<StageState[]>(buildInitialStages);
+  const [failedStage, setFailedStage] = useState<StageId | null>(null);
+  const [running, setRunning] = useState(false);
+  const [allDone, setAllDone] = useState(false);
+
+  // React strict-mode double-mount guard — without it the orchestrator would
+  // run twice and double-install everything.
+  const startedRef = useRef(false);
+
+  // ── Stage state helpers ────────────────────────────────────────────────
+
+  const patchStage = useCallback((id: StageId, patch: Partial<StageState>) => {
+    setStages((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }, []);
+
+  const appendLog = useCallback((id: StageId, line: string) => {
+    setStages((prev) =>
+      prev.map((s) =>
+        s.id === id ? { ...s, logLines: [...s.logLines, line] } : s,
+      ),
+    );
+  }, []);
+
+  // ── Manifest helpers (best-effort — never throw) ───────────────────────
+
+  async function journalStart(stage: StageId) {
+    try {
+      const ver = await getInstallerVersion();
+      await recordStepStart(installPath, ver, stage);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  async function journalOk(stage: StageId) {
+    try {
+      const ver = await getInstallerVersion();
+      await recordStepOk(installPath, ver, stage);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  async function journalFail(stage: StageId, msg: string) {
+    try {
+      const ver = await getInstallerVersion();
+      await recordStepFailure(installPath, ver, stage, msg);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  // ── Stage 1: deps ──────────────────────────────────────────────────────
+
+  async function runDeps(): Promise<boolean> {
+    const summary = await runDepsInstall((_id, line) => appendLog("deps", line));
+
+    try {
+      const ver = await getInstallerVersion();
+      const snapshot: Record<
+        string,
+        { status: ItemStatus; version?: string; error?: string }
+      > = {};
+      for (const r of summary.results as DepInstallResult[]) {
+        snapshot[r.id] = {
+          status: r.status === "ok" ? "ok" : r.status === "skipped" ? "skipped" : "failed",
+          error: r.error,
+        };
+      }
+      await recordDependencies(installPath, ver, snapshot);
+    } catch {
+      /* non-fatal */
+    }
+
+    if (!summary.allRequiredOk) {
+      const failed = summary.results.filter(
+        (r) => !r.optional && r.status === "failed",
+      );
+      const msg =
+        failed.length === 1
+          ? `${failed[0].label} failed to install: ${failed[0].error ?? "unknown error"}`
+          : `${failed.length} required tools failed to install`;
+      patchStage("deps", { error: msg });
+      return false;
+    }
+    return true;
+  }
+
+  // ── Stage 2: git-init ──────────────────────────────────────────────────
+
+  async function runGitInit(): Promise<boolean> {
+    try {
+      const user = await getCurrentUser();
+      const name = user
+        ? (user.name ??
+            [user.givenName, user.familyName].filter(Boolean).join(" ").trim())
+        : "";
+      const email = user?.email ?? "";
+
+      if (!name || !email) {
+        patchStage("git-init", {
+          error: "Cannot initialise git without a signed-in user identity.",
+        });
+        return false;
+      }
+
+      const sha = await invoke<string>("git_init", {
+        path: installPath,
+        name,
+        email,
+      });
+      appendLog("git-init", `Initialised repository (${sha.slice(0, 7)})`);
+      setGitIdentity(name, email);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage("git-init", { error: msg });
+      return false;
+    }
+  }
+
+  // ── Stage 3: personalize (with non-fatal company detection) ────────────
+  //
+  // We detect which cloud company the user belongs to so the Done screen and
+  // the personalized HQ reflect it, then personalize from the Google name.
+  // We do NOT pull the company's files here — that's HQ Sync's job. Company
+  // detection is best-effort: a lookup failure falls back to Personal HQ so
+  // the install always completes.
+
+  async function runPersonalize(): Promise<boolean> {
+    try {
+      const user = await getCurrentUser();
+      const name = user
+        ? (user.name ??
+            [user.givenName, user.familyName].filter(Boolean).join(" ").trim())
+        : "";
+
+      let companies: CompanySeed[] | undefined;
+      if (user) {
+        let cloud: Awaited<ReturnType<typeof listUserCompanies>> = [];
+        try {
+          cloud = await listUserCompanies(user.tokens.accessToken);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          appendLog("personalize", `[warn] Company lookup failed: ${msg}`);
+        }
+
+        if (cloud.length > 0) {
+          const first = cloud[0];
+          setTeam({
+            teamId: first.companyUid,
+            companyId: first.companyUid,
+            slug: first.companySlug,
+            name: first.companyName,
+            joinedViaInvite: false,
+            bucketName: first.bucketName,
+            role: first.role,
+          });
+          companies = [
+            {
+              name: first.companyName,
+              cloud: true,
+              cloudCompanyUid: first.companyUid,
+            },
+          ];
+          appendLog(
+            "personalize",
+            `Detected company ${first.companyName} — HQ Sync will sync its files.`,
+          );
+        } else {
+          setIsPersonal(true);
+        }
+      }
+
+      await personalize({ name, companies }, installPath);
+      setPersonalized(true);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage("personalize", { error: msg });
+      return false;
+    }
+  }
+
+  // ── Stage 4: indexing ──────────────────────────────────────────────────
+  //
+  // qmd collection add . --name <slug>, falling back to `qmd update` if the
+  // collection already exists. Writes a pending-embeddings marker so HQ Sync
+  // picks up indexing on next launch.
+
+  async function spawnAndWait(
+    stage: StageId,
+    cmd: string,
+    args: string[],
+    cwd: string,
+    stderrSink?: string[],
+  ): Promise<boolean> {
+    let handle: string;
+    try {
+      handle = await invoke<string>("spawn_process", {
+        args: { cmd, args, cwd },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage(stage, { error: msg });
+      return false;
+    }
+
+    const stdoutUnlisten = await listen(
+      `process://${handle}/stdout`,
+      (event: { payload: unknown }) => {
+        const payload = event.payload as { line?: string };
+        appendLog(stage, payload?.line ?? "");
+      },
+    );
+    const stderrUnlisten = await listen(
+      `process://${handle}/stderr`,
+      (event: { payload: unknown }) => {
+        const payload = event.payload as { line?: string };
+        const line = payload?.line ?? "";
+        appendLog(stage, `[stderr] ${line}`);
+        stderrSink?.push(line);
+      },
+    );
+
+    return new Promise<boolean>((resolve) => {
+      listen(`process://${handle}/exit`, (event: { payload: unknown }) => {
+        const payload = event.payload as {
+          code: number | null;
+          success: boolean;
+        };
+        (stdoutUnlisten as () => void)();
+        (stderrUnlisten as () => void)();
+        if (payload.success) {
+          resolve(true);
+        } else {
+          patchStage(stage, {
+            error: `Process exited with code ${payload.code ?? -1}`,
+          });
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  async function runIndexing(): Promise<boolean> {
+    const slug = installPath.split("/").filter(Boolean).pop() || "hq";
+    const stderrBuf: string[] = [];
+    let ok = await spawnAndWait(
+      "indexing",
+      "qmd",
+      ["collection", "add", ".", "--name", slug],
+      installPath,
+      stderrBuf,
+    );
+    if (
+      !ok &&
+      stderrBuf.some((l) => l.toLowerCase().includes("already exists"))
+    ) {
+      // Benign — re-index the existing collection.
+      patchStage("indexing", { error: null });
+      appendLog(
+        "indexing",
+        `[info] Collection "${slug}" already exists — re-indexing.`,
+      );
+      ok = await spawnAndWait(
+        "indexing",
+        "qmd",
+        ["update", "--name", slug],
+        installPath,
+      );
+    }
+    if (!ok) return false;
+
+    // Embeddings-pending marker — best-effort, never fails the stage.
+    const payload = JSON.stringify({
+      requestedAt: new Date().toISOString(),
+      reason: "post-install",
+    });
+    try {
+      await writeTextFile(
+        `${installPath.replace(/\/+$/, "")}/.hq-embeddings-pending.json`,
+        payload,
+      );
+    } catch {
+      try {
+        await mkdir(".hq", { baseDir: BaseDirectory.Home, recursive: true });
+        await writeTextFile(".hq/embeddings-pending.json", payload, {
+          baseDir: BaseDirectory.Home,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        appendLog("indexing", `[warn] Could not write embeddings marker: ${msg}`);
+      }
+    }
+    return true;
+  }
+
+  // ── Stage 5: menubar (HQ Sync) ─────────────────────────────────────────
+
+  async function runMenubar(): Promise<boolean> {
+    const unlisten = await listen<{
+      phase?: string;
+      percent?: number;
+      message?: string;
+      done?: boolean;
+      error?: string;
+    }>("menubar-install://progress", (event) => {
+      const p = event.payload;
+      if (p.error) {
+        appendLog("menubar", `[error] ${p.error}`);
+        return;
+      }
+      const line = [
+        p.phase,
+        typeof p.percent === "number" ? `${p.percent}%` : null,
+        p.message,
+      ]
+        .filter(Boolean)
+        .join(" — ");
+      if (line) appendLog("menubar", line);
+    });
+
+    try {
+      const result = await invoke<{
+        success: boolean;
+        appPath: string | null;
+        error: string | null;
+      }>("install_menubar_app");
+      if (result.success) {
+        if (result.appPath) appendLog("menubar", `Installed at ${result.appPath}`);
+        // Best-effort: launch HQ Sync immediately so the menu bar icon is
+        // visible when the user reaches Done. Failure here never blocks.
+        try {
+          await invoke("launch_menubar_app");
+        } catch {
+          /* non-fatal */
+        }
+        return true;
+      }
+      patchStage("menubar", { error: result.error ?? "Installation failed" });
+      return false;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage("menubar", { error: msg });
+      return false;
+    } finally {
+      (unlisten as () => void)();
+    }
+  }
+
+  // ── Stage dispatcher ───────────────────────────────────────────────────
+
+  async function runStage(id: StageId): Promise<boolean> {
+    patchStage(id, { status: "running", error: null });
+    await journalStart(id);
+    let ok = false;
+    switch (id) {
+      case "deps":
+        ok = await runDeps();
+        break;
+      case "git-init":
+        ok = await runGitInit();
+        break;
+      case "personalize":
+        ok = await runPersonalize();
+        break;
+      case "indexing":
+        ok = await runIndexing();
+        break;
+      case "menubar":
+        ok = await runMenubar();
+        break;
+    }
+    if (ok) {
+      patchStage(id, { status: "ok" });
+      await journalOk(id);
+    } else {
+      patchStage(id, { status: "failed" });
+      // Capture the error message from the stage state for the manifest.
+      const msg =
+        stages.find((s) => s.id === id)?.error ??
+        "Stage failed (no detail recorded).";
+      await journalFail(id, msg);
+    }
+    return ok;
+  }
+
+  // ── Orchestrator ───────────────────────────────────────────────────────
+
+  const runFromStage = useCallback(
+    async (startId: StageId) => {
+      setRunning(true);
+      setFailedStage(null);
+      setAllDone(false);
+
+      // Reset the failing stage onward; keep earlier stages' final status.
+      const startIdx = STAGE_ORDER.indexOf(startId);
+      setStages((prev) =>
+        prev.map((s, i) =>
+          i >= startIdx
+            ? {
+                ...s,
+                status: "pending",
+                error: null,
+                logLines: [],
+              }
+            : s,
+        ),
+      );
+
+      for (let i = startIdx; i < STAGE_ORDER.length; i += 1) {
+        const id = STAGE_ORDER[i];
+        const ok = await runStage(id);
+        if (!ok) {
+          setFailedStage(id);
+          setRunning(false);
+          return;
+        }
+      }
+      setRunning(false);
+      setAllDone(true);
+      onNext?.();
+    },
+    // We intentionally only depend on installPath — onNext is captured fresh
+    // each render via closure, and the inner helpers read from refs/setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [installPath],
+  );
+
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void runFromStage("deps");
+  }, [runFromStage]);
+
+  // ── Derived progress + status line ──────────────────────────────────────
+  //
+  // Single progress bar + one explanatory line. The bar counts completed
+  // (ok) stages; a failed stage freezes it so the retry semantics are obvious.
+
+  const settledCount = stages.filter((s) => s.status === "ok").length;
+  const percent = Math.round((settledCount / STAGE_ORDER.length) * 100);
+
+  const activeStage = stages.find((s) => s.status === "running");
+  const failed = failedStage
+    ? (stages.find((s) => s.id === failedStage) ?? null)
+    : null;
+  const statusText = allDone
+    ? "All set. Continuing…"
+    : failed
+      ? (failed.error ?? `${failed.label} needs attention.`)
+      : activeStage
+        ? `${activeStage.label}…`
+        : "Starting…";
+  const statusStage = failed?.id ?? activeStage?.id ?? null;
+  const statusKind = failed ? "failed" : allDone ? "done" : "running";
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  return (
+    <div className="flex flex-col gap-6 max-w-lg" data-testid="setup-progress">
+      <div className="flex flex-col gap-2">
+        <h1 className="text-2xl font-medium text-white">Setting up HQ</h1>
+      </div>
+
+      {/* Single progress bar + one explanatory line — the whole point of US-004. */}
+      <div className="flex flex-col gap-3">
+        <div
+          className="h-1.5 rounded-full bg-white/10 overflow-hidden"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          data-testid="overall-progress"
+        >
+          <div
+            className="h-full rounded-full bg-white transition-all duration-300 ease-out"
+            style={{ width: `${Math.max(2, percent)}%` }}
+          />
+        </div>
+
+        {/* One line under the bar that explains what's happening right now. */}
+        <p
+          data-testid="status-line"
+          data-stage={statusStage ?? undefined}
+          data-status={statusKind}
+          className={`text-sm break-words ${
+            failed
+              ? "text-red-400"
+              : allDone
+                ? "text-zinc-400"
+                : "text-zinc-400 hq-text-shimmer"
+          }`}
+        >
+          {statusText}
+        </p>
+      </div>
+
+      {/* Retry — appears only when a stage has failed and we're idle. The
+          orchestrator never renders Next / Continue / Skip controls; the
+          unified bar advances to Done automatically on success. */}
+      {failedStage && !running && (
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => void runFromStage(failedStage)}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+            data-testid="retry-button"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

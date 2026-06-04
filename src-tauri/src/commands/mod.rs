@@ -9,5 +9,4 @@ pub mod menubar;
 pub mod oauth;
 pub mod process;
 pub mod staging;
-pub mod template;
 pub mod xcode;

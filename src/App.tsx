@@ -9,16 +9,8 @@ import {
 } from "@/lib/wizard-state";
 import { Welcome } from "@/screens/01-welcome";
 import { CognitoAuth } from "@/screens/02-cognito-auth";
-import { DepsInstall } from "@/screens/04-deps";
-// 05-github-walkthrough removed from default flow (US-006).
-// Company-detect (old step 3) and S3-sync (old step 8) removed — the
-// HQ-Sync menu bar app handles continuous S3 reconciliation after install.
 import { DirectoryPicker } from "@/screens/06-directory";
-import { TemplateFetch } from "@/screens/07-template";
-import { GitInit } from "@/screens/08-git-init";
-import { Personalize } from "@/screens/09-personalize";
-import { QmdIndexing } from "@/screens/10-indexing";
-import { InstallMenubarStep } from "@/components/InstallMenubarStep";
+import { SetupProgress } from "@/screens/setup-progress";
 import { Summary } from "@/screens/11-summary";
 
 function App() {
@@ -80,13 +72,9 @@ function App() {
   const wizardState = getWizardState();
   const { currentStep } = router;
 
-  // Screen flow (install-first, prereqs-then-login — 2026-05-02):
-  //   1 Welcome → 2 Install (dir) → 3 Templates → 4 Prerequisites →
-  //   5 Cognito Auth → 6 Workspace (git init) → 7 Personalize →
-  //   8 Verify (indexing) → 9 HQ Sync (menubar) → 10 Done
-  //
-  // Files land before login so a partial install still leaves a manifest on
-  // disk for agents to self-heal. See wizard-router.ts for AUTH_GATED_STEPS.
+  // 5-step flow (US-005):
+  //   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito/Google) →
+  //   4 Setup (unified post-login progress) → 5 Done
   function renderStep() {
     switch (currentStep) {
       case 1:
@@ -103,40 +91,15 @@ function App() {
       case 2:
         return <DirectoryPicker onNext={handleNext} />;
       case 3:
-        return (
-          <TemplateFetch
-            targetDir={wizardState.installPath ?? ""}
-            onNext={handleNext}
-          />
-        );
-      case 4:
-        return <DepsInstall onNext={handleNext} />;
-      case 5:
         return <CognitoAuth onNext={handleNext} />;
-      case 6:
+      case 4:
         return (
-          <GitInit
+          <SetupProgress
             installPath={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
-      case 7:
-        return (
-          <Personalize
-            installPath={wizardState.installPath ?? ""}
-            onNext={handleNext}
-          />
-        );
-      case 8:
-        return (
-          <QmdIndexing
-            installPath={wizardState.installPath ?? ""}
-            onNext={handleNext}
-          />
-        );
-      case 9:
-        return <InstallMenubarStep onNext={handleNext} />;
-      case 10:
+      case 5:
         return <Summary wizardState={wizardState} onLaunch={handleLaunch} />;
       default:
         return null;
