@@ -113,13 +113,7 @@ vi.mock("@/lib/install-manifest", () => ({
 // Default packs default to an empty set so the existing flow tests aren't
 // perturbed by pack installs; the "packages stage" describe sets a real list.
 vi.mock("@/lib/default-packs", () => ({
-  resolveDefaultPacks: vi.fn().mockResolvedValue([]),
-  FALLBACK_DEFAULT_PACKS: [
-    {
-      dir: "hq-pack-engineering",
-      source: "github:indigoai-us/hq-packages#packages/hq-pack-engineering",
-    },
-  ],
+  getDefaultPacks: vi.fn(() => []),
 }));
 
 // ── Imports of mocked symbols (after vi.mock so vitest can rewrite) ───────
@@ -129,7 +123,7 @@ import { runDepsInstall } from "@/lib/deps-install";
 import { personalize } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
 import { listUserCompanies } from "@/lib/vault-handoff";
-import { resolveDefaultPacks } from "@/lib/default-packs";
+import { getDefaultPacks } from "@/lib/default-packs";
 import {
   setGitIdentity,
   setIsPersonal,
@@ -148,7 +142,7 @@ const mockRunDepsInstall = vi.mocked(runDepsInstall);
 const mockPersonalize = vi.mocked(personalize);
 const mockGetCurrentUser = vi.mocked(getCurrentUser);
 const mockListUserCompanies = vi.mocked(listUserCompanies);
-const mockResolveDefaultPacks = vi.mocked(resolveDefaultPacks);
+const mockGetDefaultPacks = vi.mocked(getDefaultPacks);
 const mockRecordStepStart = vi.mocked(recordStepStart);
 const mockRecordStepOk = vi.mocked(recordStepOk);
 const mockRecordStepFailure = vi.mocked(recordStepFailure);
@@ -230,7 +224,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     mockPersonalize.mockResolvedValue(undefined);
     // No default packs unless a test opts in — keeps the flow tests focused.
     // (clearAllMocks keeps implementations, so reset it explicitly each run.)
-    mockResolveDefaultPacks.mockResolvedValue([]);
+    mockGetDefaultPacks.mockReturnValue([]);
     mockInvoke.mockImplementation(buildInvokeMock());
   });
 
@@ -480,17 +474,14 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
   describe("packages stage", () => {
     const PACKS = [
       {
-        dir: "hq-pack-design-styles",
-        source: "github:indigoai-us/hq-packages#packages/hq-pack-design-styles",
+        name: "hq-pack-design-styles",
+        source: "@indigoai-us/hq-pack-design-styles",
       },
-      {
-        dir: "hq-pack-engineering",
-        source: "github:indigoai-us/hq-packages#packages/hq-pack-engineering",
-      },
+      { name: "hq-pack-gstack", source: "@indigoai-us/hq-pack-gstack" },
     ];
 
-    it("installs each default pack via `npx hq install` (no picker)", async () => {
-      mockResolveDefaultPacks.mockResolvedValue(PACKS);
+    it("installs each default pack via `hq install <npm> --allow-hooks` (no picker, no npx)", async () => {
+      mockGetDefaultPacks.mockReturnValue(PACKS);
       const onNext = vi.fn();
       render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
@@ -500,22 +491,23 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       for (const pack of PACKS) {
         expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
           args: {
-            cmd: "npx",
-            args: [
-              "-y",
-              "--package=@indigoai-us/hq-cli@5.5.2",
-              "hq",
-              "install",
-              pack.source,
-            ],
+            cmd: "hq",
+            args: ["install", pack.source, "--allow-hooks"],
             cwd: "/tmp/hq",
           },
         });
       }
+      // No npx indirection — the bug that broke the clean-room install.
+      const npxCalls = mockInvoke.mock.calls.filter(
+        ([cmd, payload]) =>
+          cmd === "spawn_process" &&
+          (payload as { args?: { cmd?: string } })?.args?.cmd === "npx",
+      );
+      expect(npxCalls.length).toBe(0);
     });
 
     it("records each pack's outcome in the install-manifest", async () => {
-      mockResolveDefaultPacks.mockResolvedValue(PACKS);
+      mockGetDefaultPacks.mockReturnValue(PACKS);
       const onNext = vi.fn();
       render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
@@ -527,14 +519,14 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
         expect.any(String),
         expect.objectContaining({
           "hq-pack-design-styles": { status: "ok" },
-          "hq-pack-engineering": { status: "ok" },
+          "hq-pack-gstack": { status: "ok" },
         }),
       );
     });
 
     it("treats a failed pack as non-fatal — the install still completes", async () => {
-      mockResolveDefaultPacks.mockResolvedValue(PACKS);
-      // `npx` pack installs reject; the qmd indexing spawn still succeeds.
+      mockGetDefaultPacks.mockReturnValue(PACKS);
+      // `hq` pack installs reject; the qmd indexing spawn still succeeds.
       let counter = 0;
       mockInvoke.mockImplementation(
         async (command: string, payload?: unknown): Promise<unknown> => {
@@ -543,7 +535,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
           }
           if (command === "spawn_process") {
             const cmd = (payload as { args?: { cmd?: string } })?.args?.cmd;
-            if (cmd === "npx") throw new Error("npx not found");
+            if (cmd === "hq") throw new Error("hq install failed");
             return `handle-${++counter}`;
           }
           if (command === "install_menubar_app") {
@@ -565,25 +557,25 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
         expect.any(String),
         expect.objectContaining({
           "hq-pack-design-styles": expect.objectContaining({ status: "failed" }),
-          "hq-pack-engineering": expect.objectContaining({ status: "failed" }),
+          "hq-pack-gstack": expect.objectContaining({ status: "failed" }),
         }),
       );
     });
 
     it("installs nothing (and records nothing) when there are no default packs", async () => {
-      mockResolveDefaultPacks.mockResolvedValue([]);
+      mockGetDefaultPacks.mockReturnValue([]);
       const onNext = vi.fn();
       render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
         timeout: 5000,
       });
 
-      const npxCalls = mockInvoke.mock.calls.filter(
+      const installCalls = mockInvoke.mock.calls.filter(
         ([cmd, payload]) =>
           cmd === "spawn_process" &&
-          (payload as { args?: { cmd?: string } })?.args?.cmd === "npx",
+          (payload as { args?: { cmd?: string } })?.args?.cmd === "hq",
       );
-      expect(npxCalls.length).toBe(0);
+      expect(installCalls.length).toBe(0);
       expect(mockRecordPacks).not.toHaveBeenCalled();
     });
   });

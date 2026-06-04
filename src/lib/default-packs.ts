@@ -1,94 +1,42 @@
 // default-packs.ts
 //
-// Resolves the set of HQ content packs the installer installs by default,
-// immediately after login. The v4.x wizard showed a catalog with a few packs
-// pre-selected; the streamlined v5 flow drops the picker and just installs the
-// default set with no input.
+// The HQ content packs the installer installs by default, immediately after
+// login. The v4.x wizard showed a catalog with a few packs pre-selected; the
+// streamlined v5 flow drops the picker and just installs the default set.
 //
-// The default set is the `recommended_packages` list in the freshly-scaffolded
-// `{installPath}/core/core.yaml` — the single source of truth maintained in
-// hq-core. That list is the four historically pre-selected packs
-// (design-styles, design-quality, gemini, gstack) plus the engineering pack,
-// so reading it keeps the installer in lock-step with hq-core: a new default
-// pack ships to users with no installer release.
+// These are the four packs v4.x pre-selected, all published to npm under the
+// @indigoai-us scope. We install via the npm transport (`hq install
+// @scope/name`) — NOT the `github:` transport — because a fresh consumer Mac
+// has no git (only the Xcode stub), so a git clone fails. npm needs only the
+// managed Node toolchain the installer already provisions.
 //
-// Unlike `/update-hq`, the installer installs EVERY recommended pack
-// unconditionally — it ignores each entry's `conditional:` gate. Those gates
-// exist to keep some packs opt-in on upgrade (notably engineering, which
-// `/update-hq` only auto-installs for hosts upgrading from <15.0.0); a brand
-// new HQ should ship batteries-included, engineering included.
-
-import { readTextFile } from "@tauri-apps/plugin-fs";
-import { parse as parseYaml } from "yaml";
-
-/** Monorepo holding every published `hq-pack-*` under `packages/`. */
-const PACKAGES_REPO = "indigoai-us/hq-packages";
-const PACKAGES_DIR = "packages";
+// Engineering is intentionally NOT in this list yet. It isn't published to npm
+// (npm 404) and the entitlement-gated registry is undeployed
+// (packages/sources.yaml → registry.indigo-nx.com, "once the registry API is
+// deployed"), so it has no working clean-install path. Its distribution is
+// tracked separately; add it here once it's npm-published (or wire the registry
+// flow) so the installer can install it the same way.
 
 export interface DefaultPack {
-  /** `hq-pack-*` directory name — stable id, manifest key, and log label. */
-  dir: string;
-  /** Source spec passed verbatim to `hq install`. */
+  /** `hq-pack-*` name — stable id, install-manifest key, and log label. */
+  name: string;
+  /** Source spec passed verbatim to `hq install` (npm scope spec). */
   source: string;
 }
 
-/** Build the `hq install` source spec for a pack directory. */
-function packSource(dir: string): string {
-  return `github:${PACKAGES_REPO}#${PACKAGES_DIR}/${dir}`;
-}
-
 /**
- * The default pack set, used when `core.yaml` can't be read or parsed so a
- * flaky scaffold never leaves a new HQ with zero packs. Mirrors hq-core's
- * `recommended_packages`: the four historically pre-selected packs plus the
- * engineering pack.
+ * The installer's default packs, in install order. npm scope specs so
+ * `hq install <source>` uses the npm transport (no git required).
  */
-export const FALLBACK_DEFAULT_PACKS: DefaultPack[] = [
-  "hq-pack-design-styles",
-  "hq-pack-design-quality",
-  "hq-pack-gemini",
-  "hq-pack-gstack",
-  "hq-pack-engineering",
-].map((dir) => ({ dir, source: packSource(dir) }));
+export const DEFAULT_PACKS: DefaultPack[] = [
+  { name: "hq-pack-design-styles", source: "@indigoai-us/hq-pack-design-styles" },
+  { name: "hq-pack-design-quality", source: "@indigoai-us/hq-pack-design-quality" },
+  { name: "hq-pack-gemini", source: "@indigoai-us/hq-pack-gemini" },
+  { name: "hq-pack-gstack", source: "@indigoai-us/hq-pack-gstack" },
+];
 
-/** Extract the `hq-pack-*` token from a source spec (npm scope, github: subpath,
- *  or git URL all carry it), or null when none is present. */
-function dirFromSource(source: string): string | null {
-  const match = source.match(/hq-pack-[a-z0-9-]+/);
-  return match ? match[0] : null;
-}
-
-/**
- * Read `{installPath}/core/core.yaml` and return its `recommended_packages` as
- * the installer's default pack set — every entry, regardless of its
- * `conditional:` gate. Falls back to {@link FALLBACK_DEFAULT_PACKS} when
- * core.yaml is missing/unparseable or lists nothing usable, so the install
- * always has a sensible default set.
- */
-export async function resolveDefaultPacks(
-  installPath: string,
-): Promise<DefaultPack[]> {
-  if (!installPath) return FALLBACK_DEFAULT_PACKS;
-  try {
-    const text = await readTextFile(`${installPath}/core/core.yaml`);
-    const doc = parseYaml(text) as {
-      recommended_packages?: Array<{ source?: string }>;
-    } | null;
-
-    const packs: DefaultPack[] = [];
-    const seen = new Set<string>();
-    for (const entry of doc?.recommended_packages ?? []) {
-      const source = entry.source?.trim();
-      if (!source) continue;
-      // Identity is the hq-pack-* token; fall back to the raw source if the
-      // entry uses an unexpected form so we never silently drop a pack.
-      const dir = dirFromSource(source) ?? source;
-      if (seen.has(dir)) continue;
-      seen.add(dir);
-      packs.push({ dir, source });
-    }
-    return packs.length > 0 ? packs : FALLBACK_DEFAULT_PACKS;
-  } catch {
-    return FALLBACK_DEFAULT_PACKS;
-  }
+/** The packs the installer installs by default. Indirected through a function
+ *  so callers (and tests) have a single seam to stub. */
+export function getDefaultPacks(): DefaultPack[] {
+  return DEFAULT_PACKS;
 }

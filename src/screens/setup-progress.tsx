@@ -46,15 +46,7 @@ import {
   recordStepStart,
   type ItemStatus,
 } from "@/lib/install-manifest";
-import {
-  resolveDefaultPacks,
-  FALLBACK_DEFAULT_PACKS,
-  type DefaultPack,
-} from "@/lib/default-packs";
-
-/** Pinned HQ CLI used to run `hq install <pack>` via npx — bump deliberately
- *  (a floating tag can resolve a version whose install path has changed). */
-const HQ_CLI_PIN = "@indigoai-us/hq-cli@5.5.2";
+import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 
 // ---------------------------------------------------------------------------
 // Stage model
@@ -213,43 +205,42 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   //
   // Installs HQ's default content packs right after login, with NO selection
   // UI — the v4.x wizard let you pick from a catalog; the streamlined flow
-  // just installs the recommended set resolved from core.yaml (the four
-  // historically pre-selected packs + the engineering pack). Runs before
-  // git-init so `hq install` operates on the plain scaffold, exactly as the
-  // old flow did.
+  // just installs the default set. We shell the deps-installed `hq` directly
+  // (mirroring how HQ Sync installs packs: `hq install <source> --allow-hooks`)
+  // rather than npx — `hq` is on the managed-toolchain PATH the spawner uses
+  // (the same one that resolves `qmd` for indexing), and `--allow-hooks` skips
+  // the interactive hooks prompt that would otherwise hang a headless run. The
+  // sources are npm scope specs so no git is required (a fresh consumer Mac has
+  // none, which is exactly what broke the old `github:` transport). Runs before
+  // git-init so install operates on the plain scaffold.
   //
   // Per-pack failures are NON-FATAL: each outcome is journaled to the
   // install-manifest (so a later /setup can finish the job) and the stage
   // still succeeds — one flaky pack fetch never blocks the whole install.
 
   async function runPackages(): Promise<boolean> {
-    let packs: DefaultPack[];
-    try {
-      packs = await resolveDefaultPacks(installPath);
-    } catch {
-      packs = FALLBACK_DEFAULT_PACKS;
-    }
+    const packs: DefaultPack[] = getDefaultPacks();
     if (packs.length === 0) return true;
 
     const outcomes: Record<string, { status: ItemStatus; error?: string }> = {};
     for (const pack of packs) {
-      appendLog("packages", `Installing ${pack.dir}…`);
+      appendLog("packages", `Installing ${pack.name}…`);
       const ok = await spawnAndWait(
         "packages",
-        "npx",
-        ["-y", `--package=${HQ_CLI_PIN}`, "hq", "install", pack.source],
+        "hq",
+        ["install", pack.source, "--allow-hooks"],
         installPath,
       );
       if (ok) {
-        outcomes[pack.dir] = { status: "ok" };
+        outcomes[pack.name] = { status: "ok" };
       } else {
-        outcomes[pack.dir] = {
+        outcomes[pack.name] = {
           status: "failed",
-          error: `hq install ${pack.dir} failed`,
+          error: `hq install ${pack.name} failed`,
         };
         appendLog(
           "packages",
-          `[warn] ${pack.dir} did not install — add it later with: hq install ${pack.source}`,
+          `[warn] ${pack.name} did not install — add it later with: hq install ${pack.source}`,
         );
         // Pack failures are non-fatal — clear the error spawnAndWait recorded
         // so a single pack doesn't freeze the stage.
