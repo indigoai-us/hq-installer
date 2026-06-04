@@ -72,6 +72,11 @@ const MOCK_ID_TOKEN = `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.${ID_TOKEN_PAYLOAD_B
 
 const TAURI_MOCK_SCRIPT = `
 (function() {
+  // Tell the install step (06-directory) to skip its network scaffold fetch:
+  // this mocked browser env can't serve a real hq-core release tarball. The
+  // wizard flow is what this walkthrough validates; the scaffold fetch itself
+  // is covered by 06-directory.test.tsx and clean-room VM runs.
+  window.__HQ_INSTALLER_E2E__ = true;
   const callbacks = new Map();
   const listeners = new Map(); // event -> [handlerId, ...]
   // Stateful keychain — cognito.ts stores 4 rows (access_token, id_token,
@@ -390,7 +395,7 @@ test.describe('Streamlined installer — 5-step walkthrough (US-007)', () => {
     await page.getByRole('button', { name: /continue with google/i }).click();
 
     // ── Step 4: Setup (unified orchestrator) ───────────────────────────────
-    // The orchestrator runs 6 stages behind one progress bar. We just check
+    // The orchestrator runs 5 stages behind one progress bar. We just check
     // that the heading appears and then auto-advances to Done — exactly the
     // PRD contract ("no intermediate input").
     await expect(

@@ -75,70 +75,87 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
           // manifest writes are non-fatal
         }
 
-        // ── Resolve the template source (stable release vs staging channel)
-        let useStaging = false;
-        try {
-          useStaging = await invoke<boolean>("get_use_staging_source");
-        } catch {
-          useStaging = false;
-        }
-        let source: TemplateSource | undefined;
-        if (useStaging) {
-          // hq-core-staging is private — anonymous tarball requests 404, so a
-          // GitHub token is required (read from `gh auth token` via Rust,
-          // never persisted). Surface a clear error instead of an opaque 404.
-          let token: string;
-          try {
-            token = await invoke<string>("get_github_token");
-          } catch (tokenErr) {
-            const m =
-              tokenErr instanceof Error ? tokenErr.message : String(tokenErr);
-            throw new Error(`Staging channel needs a GitHub token. ${m}`);
-          }
-          source = {
-            repo: "indigoai-us/hq-core-staging",
-            ref: "main",
-            authToken: token,
-          };
-        }
-
         // ── Phase 2: download + extract the HQ scaffold into ~/hq ──────────
-        stage = "templates";
-        setPhase("installing");
-        if (cancelled) return;
-        try {
-          await recordStepStart(installPath, installerVersion, "templates");
-        } catch {
-          // non-fatal
-        }
-        const { version } = await fetchAndExtract(
-          installPath,
-          undefined,
-          (event) => {
-            if (cancelled) return;
-            setDownloaded(event.bytes);
-            if (event.total > 0) setTotal(event.total);
-          },
-          controller.signal,
-          source,
-        );
-        if (cancelled) return;
-        try {
-          await recordStepOk(installPath, installerVersion, "templates");
-          await updateManifest(installPath, installerVersion, (m) => {
-            (m as unknown as Record<string, unknown>).templateVersion = version;
-          });
-        } catch {
-          // non-fatal
-        }
+        // The Playwright walkthrough (tests/e2e/full-walkthrough.spec.ts) runs
+        // this UI in a browser against a mocked Tauri layer that cannot serve a
+        // real hq-core release tarball, so it sets `window.__HQ_INSTALLER_E2E__`
+        // to skip the network scaffold fetch and validate the wizard flow only.
+        // The real fetch+extract is covered by this file's unit test and by
+        // clean-room VM runs. Production (real Tauri) never sets the flag, so
+        // the scaffold always lands.
+        const skipScaffold =
+          typeof window !== "undefined" &&
+          (window as unknown as { __HQ_INSTALLER_E2E__?: boolean })
+            .__HQ_INSTALLER_E2E__ === true;
 
-        // Record the chosen HQ folder for HQ Sync (a separate menubar app with
-        // no IPC) so it reads ~/hq as Priority 1 instead of its discovery scan.
-        // Best-effort — install must not fail if this write fails.
-        try {
-          await invoke("write_menubar_hq_path", { hqPath: installPath });
-        } catch {
-          // non-fatal
+        if (!skipScaffold) {
+          // Resolve the template source (stable release vs staging channel).
+          let useStaging = false;
+          try {
+            useStaging = await invoke<boolean>("get_use_staging_source");
+          } catch {
+            useStaging = false;
+          }
+          let source: TemplateSource | undefined;
+          if (useStaging) {
+            // hq-core-staging is private — anonymous tarball requests 404, so a
+            // GitHub token is required (read from `gh auth token` via Rust,
+            // never persisted). Surface a clear error instead of an opaque 404.
+            let token: string;
+            try {
+              token = await invoke<string>("get_github_token");
+            } catch (tokenErr) {
+              const m =
+                tokenErr instanceof Error
+                  ? tokenErr.message
+                  : String(tokenErr);
+              throw new Error(`Staging channel needs a GitHub token. ${m}`);
+            }
+            source = {
+              repo: "indigoai-us/hq-core-staging",
+              ref: "main",
+              authToken: token,
+            };
+          }
+
+          stage = "templates";
+          setPhase("installing");
+          if (cancelled) return;
+          try {
+            await recordStepStart(installPath, installerVersion, "templates");
+          } catch {
+            // non-fatal
+          }
+          const { version } = await fetchAndExtract(
+            installPath,
+            undefined,
+            (event) => {
+              if (cancelled) return;
+              setDownloaded(event.bytes);
+              if (event.total > 0) setTotal(event.total);
+            },
+            controller.signal,
+            source,
+          );
+          if (cancelled) return;
+          try {
+            await recordStepOk(installPath, installerVersion, "templates");
+            await updateManifest(installPath, installerVersion, (m) => {
+              (m as unknown as Record<string, unknown>).templateVersion =
+                version;
+            });
+          } catch {
+            // non-fatal
+          }
+
+          // Record the chosen HQ folder for HQ Sync (a separate menubar app
+          // with no IPC) so it reads ~/hq as Priority 1 instead of its
+          // discovery scan. Best-effort — install must not fail if this fails.
+          try {
+            await invoke("write_menubar_hq_path", { hqPath: installPath });
+          } catch {
+            // non-fatal
+          }
         }
 
         onNextRef.current?.();
