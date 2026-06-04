@@ -34,25 +34,25 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="HQ — Personal OS for orchestrating work across companies, workers, and AI. Download the native macOS installer." />
+    <meta name="description" content="HQ — the operating system for your AI dev team. Orchestrate work across companies, workers, and AI. Download the native macOS installer." />
     <meta name="theme-color" content="#09090b" />
     <title>HQ — Download</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='50' font-size='48'>HQ</text></svg>" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="canonical" href="https://install.getindigo.ai" />
     <meta property="og:title" content="HQ — Download" />
-    <meta property="og:description" content="Personal OS for orchestrating work across companies, workers, and AI." />
+    <meta property="og:description" content="The operating system for your AI dev team — orchestrate work across companies, workers, and AI, with Claude Code driving." />
     <meta property="og:type" content="website" />
 
     <!--
-      Fonts — JetBrains Mono for display/metadata (matches indigo-marketing
-      CTA + terminal type), Inter for body copy. Single stylesheet request
-      covers both families.
+      Fonts — Geist + Geist Mono. Same family hq-console and
+      www.getindigo.ai share: Geist for body, Geist Mono for metadata,
+      labels, and CTAs. Single stylesheet request covers both.
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap"
     />
   </head>
   <body>
@@ -68,23 +68,35 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
           />
         </a>
         <a class="topbar-link" href="https://www.getindigo.ai/sync">
-          HQ Sync →
+          HQ Sync <span aria-hidden="true">→</span>
         </a>
       </nav>
 
       <header class="hero">
-        <div class="prism-beam" aria-hidden="true"></div>
+        <div class="hero-glow" aria-hidden="true"></div>
         <div class="logo">
-          <span class="logo-mark" data-spectrum-reveal="false">HQ</span>
+          <img
+            class="logo-mark"
+            src="/hq-logomark.svg"
+            alt="HQ"
+            width="116"
+            height="67"
+            decoding="async"
+          />
         </div>
-        <h1>Your own personal OS for getting things done.</h1>
+        <h1>The operating system for your AI dev team.</h1>
         <p class="tagline">
-          Orchestrate work across companies, workers, and AI — from one place,
-          on your machine, with Claude Code driving.
+          Orchestrate work across companies, workers, and AI from one place —
+          open source, on your machine, with Claude Code driving.
         </p>
       </header>
 
       <section class="download-card" aria-labelledby="download-heading">
+        <span class="bracket bracket--tl" aria-hidden="true"></span>
+        <span class="bracket bracket--tr" aria-hidden="true"></span>
+        <span class="bracket bracket--bl" aria-hidden="true"></span>
+        <span class="bracket bracket--br" aria-hidden="true"></span>
+
         <h2 id="download-heading">Download HQ Installer</h2>
 
         <!--
@@ -169,12 +181,61 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       </section>
 
       <section class="devs" aria-labelledby="devs-heading">
-        <h3 id="devs-heading">For developers</h3>
-        <p>
-          Comfortable in a terminal? Skip the installer and bootstrap HQ with
-          one command:
-        </p>
-        <pre class="code"><code>npx create-hq</code></pre>
+        <div class="devs-bar">
+          <div class="devs-dots" aria-hidden="true">
+            <span class="dot dot--rose"></span>
+            <span class="dot dot--amber"></span>
+            <span class="dot dot--green"></span>
+          </div>
+          <span class="devs-title" id="devs-heading">for developers</span>
+          <span class="devs-lang">shell</span>
+        </div>
+        <div class="devs-body">
+          <p>
+            Comfortable in a terminal? Skip the installer and bootstrap HQ with
+            one command:
+          </p>
+          <pre class="code"><code><span class="code-prompt">$</span> npx create-hq</code></pre>
+        </div>
+      </section>
+
+      <section class="resources" aria-labelledby="resources-heading">
+        <h2 class="section-label" id="resources-heading">learn hq</h2>
+
+        <a class="resource resource--featured" href="https://www.getindigo.ai/book">
+          <span class="resource-arrow" aria-hidden="true">→</span>
+          <span class="resource-head">
+            <span class="resource-title">Build Your Own AGI</span>
+            <span class="resource-tag">free book</span>
+          </span>
+          <span class="resource-desc">
+            The book behind HQ — 11 chapters, zero filler, on building and
+            running your own AI dev team.
+          </span>
+        </a>
+
+        <div class="resource-grid">
+          <a class="resource" href="https://docs.getindigo.ai">
+            <span class="resource-arrow" aria-hidden="true">→</span>
+            <span class="resource-title">Docs</span>
+            <span class="resource-desc">Setup, skills, workers, and the full reference.</span>
+          </a>
+          <a class="resource" href="https://world.getindigo.ai">
+            <span class="resource-arrow" aria-hidden="true">→</span>
+            <span class="resource-title">HQ World</span>
+            <span class="resource-desc">Training, courses, and the community.</span>
+          </a>
+          <a class="resource" href="https://github.com/indigoai-us/hq">
+            <span class="resource-arrow" aria-hidden="true">→</span>
+            <span class="resource-title">Open source</span>
+            <span class="resource-desc">Star, fork, and read the source on GitHub.</span>
+          </a>
+          <a class="resource" href="https://github.com/coreyepstein/ralph-methodology">
+            <span class="resource-arrow" aria-hidden="true">→</span>
+            <span class="resource-title">The Ralph method</span>
+            <span class="resource-desc">The orchestration loop that ships work autonomously.</span>
+          </a>
+        </div>
       </section>
 
       <footer class="footer">
@@ -184,9 +245,9 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
           <a href="https://www.getindigo.ai/sync">Download HQ Sync for macOS</a>
           <span class="footer-sep" aria-hidden="true">·</span>
           {release ? (
-            <a href={release.htmlUrl}>Releases on GitHub →</a>
+            <a href={release.htmlUrl}>Releases on GitHub <span aria-hidden="true">→</span></a>
           ) : (
-            <a href="https://github.com/indigoai-us/hq-installer">Source on GitHub →</a>
+            <a href="https://github.com/indigoai-us/hq-installer">Source on GitHub <span aria-hidden="true">→</span></a>
           )}
         </p>
         <p class="copyright">© 2026 Indigo. HQ is open source.</p>
@@ -268,21 +329,37 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       })();
     </script>
 
-    <!--
-      Pack assets — copied from
-      knowledge/public/design-styles/packs/hq-cinematic/{tokens,keyframes}.css
-      Do not symlink across repo boundaries (Vercel build constraint).
-    -->
-    <style>@import "../styles/hq-cinematic-tokens.css";</style>
-    <style>@import "../styles/hq-cinematic-keyframes.css";</style>
-
     <style>
       /* ──────────────────────────────────────────────────────────────
-         hq-installer download page — hq-cinematic consumer
-         Navy-void background. One prism beam behind the hero carries
-         chroma (not surfaces). Warm-neutral hairlines. Inter 800/900
-         display. Honors prefers-reduced-motion via the pack's keyframes.
+         hq-installer download page — getindigo.ai monochrome register
+         Near-black background, single indigo accent used as punctuation
+         (never as a surface). White primary CTA per the indigo-marketing
+         brand rule. Geist + Geist Mono — the family hq-console and
+         www.getindigo.ai share. Corner brackets + terminal-card motifs
+         lifted from components/hq/*. Honors prefers-reduced-motion.
          ────────────────────────────────────────────────────────────── */
+
+      :root {
+        --bg: #09090b;
+        --bg-card: #111113;
+        --bg-elevated: #18181b;
+        --border: rgba(255, 255, 255, 0.06);
+        --border-accent: rgba(255, 255, 255, 0.12);
+        --text-primary: #fafafa;
+        --text-secondary: #a1a1aa;
+        --text-muted: #52525b;
+        --accent: #818cf8;          /* indigo — accents only */
+        --accent-dim: #6366f1;
+        --accent-glow: rgba(99, 102, 241, 0.08);
+        --green: #34d399;
+        --amber: #fbbf24;
+        --cyan: #22d3ee;
+        --rose: #fb7185;
+        --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+        --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono",
+          Menlo, Consolas, monospace;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      }
 
       * {
         box-sizing: border-box;
@@ -291,51 +368,40 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       html, body {
         margin: 0;
         padding: 0;
-        background: var(--bg-navy-500);
-        color: rgba(255, 255, 255, 0.88);
-        font-family: "Inter", system-ui, -apple-system, sans-serif;
-        font-size: 14.5px;
-        letter-spacing: 0.005em;
+        background: var(--bg);
+        color: var(--text-secondary);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.6;
         -webkit-font-smoothing: antialiased;
-        /* Subtle vignette — deepest navy at the corners, mid navy in the
-           center. Pack "CrtVignette" primitive in CSS form (no component
-           dependency). Keeps focus on the download card. */
-        background-image: radial-gradient(
-          ellipse at center,
-          var(--bg-navy-400) 0%,
-          var(--bg-navy-600) 60%,
-          var(--bg-navy-900) 100%
-        );
-        background-attachment: fixed;
+        text-rendering: optimizeLegibility;
         min-height: 100vh;
       }
 
-      /* Focus rings — keyboard a11y floor, quality-gate item.
-         Warm-yellow against navy ≈ 11.9:1 (AAA). */
+      /* Focus rings — keyboard a11y floor. Indigo accent against
+         near-black ≈ AA+; offset keeps it off the element edge. */
       a:focus-visible,
       button:focus-visible,
       [tabindex]:focus-visible {
-        outline: 1px solid var(--warm-yellow);
+        outline: 1px solid var(--accent);
         outline-offset: 2px;
+        border-radius: 2px;
       }
 
       .root {
-        max-width: 640px;
+        max-width: 600px;
         margin: 0 auto;
         padding: 28px 24px 80px;
         position: relative;
       }
 
       /* ── Topbar ─────────────────────────────────────── */
-      /* Indigo logo (home link) on the left, secondary /sync link on
-         the right. Thin and unobtrusive — the HQ hero is still the
-         focal point below. */
       .topbar {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        margin-bottom: 44px;
+        margin-bottom: 56px;
         position: relative;
         z-index: 2;
       }
@@ -343,8 +409,8 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       .topbar-home {
         display: inline-flex;
         align-items: center;
-        opacity: 0.85;
-        transition: opacity 200ms var(--motion-ease-cinematic);
+        opacity: 0.8;
+        transition: opacity 200ms var(--ease);
       }
 
       .topbar-home:hover {
@@ -355,190 +421,163 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         display: block;
         height: 20px;
         width: auto;
-        /* Source SVG is near-black (#141414). Invert to white so it reads
-           on the navy background. brightness(0) flattens to black first so
-           invert(1) produces pure white regardless of original paint. */
-        filter: brightness(0) invert(1);
+        /* Source SVG is near-black (#141414). Invert to the off-white
+           foreground so it reads on the near-black background. */
+        filter: brightness(0) invert(0.98);
       }
 
       .topbar-link {
-        font-family: var(--font-display);
-        font-variant-numeric: tabular-nums;
+        font-family: var(--font-mono);
         font-size: 12px;
-        letter-spacing: 0.04em;
-        color: var(--warm-yellow-80);
+        letter-spacing: 0.01em;
+        color: var(--text-muted);
         text-decoration: none;
-        padding: 6px 12px;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 999px;
-        transition:
-          color 200ms var(--motion-ease-cinematic),
-          border-color 200ms var(--motion-ease-cinematic),
-          background 200ms var(--motion-ease-cinematic);
+        transition: color 200ms var(--ease);
       }
 
       .topbar-link:hover {
-        color: #fafafa;
-        border-color: rgba(255, 255, 255, 0.25);
-        background: rgba(255, 255, 255, 0.04);
+        color: var(--text-primary);
+      }
+
+      .topbar-link span {
+        color: var(--accent);
       }
 
       /* ── Hero ───────────────────────────────────────── */
       .hero {
         text-align: center;
-        margin-bottom: 56px;
+        margin-bottom: 48px;
         position: relative;
         isolation: isolate;
       }
 
-      /* Single prism beam behind the wordmark. Pack rule: "reserve the
-         full spectrum gradient for one or two hero moments per screen."
-         This is the one for this page — everything else uses warm
-         neutrals or a single accent hue. */
-      .prism-beam {
+      /* One restrained accent moment — a soft indigo bloom behind the
+         mark. Replaces the old full-spectrum prism beam: single hue,
+         low opacity, no animation. Accent as punctuation, not surface. */
+      .hero-glow {
         position: absolute;
-        inset: -40px -20% auto -20%;
+        top: -30px;
+        left: 50%;
+        width: 320px;
         height: 220px;
-        background: var(--gradient-spectrum-linear);
-        filter: blur(48px);
-        opacity: 0.38;
+        transform: translateX(-50%);
+        background: radial-gradient(
+          ellipse at center,
+          var(--accent-glow) 0%,
+          transparent 70%
+        );
         z-index: -1;
         pointer-events: none;
-        transform-origin: 50% 50%;
-        animation: beam-drift var(--motion-duration-drift)
-          var(--motion-ease-drift) infinite alternate;
       }
 
-      /* Logo — Inter 900, spectrum gradient text mask. */
       .logo {
         margin-bottom: 28px;
-        line-height: 1;
+        line-height: 0;
+        animation: rise 600ms var(--ease) both;
       }
 
       .logo-mark {
         display: inline-block;
-        font-family: var(--font-display);
-        font-weight: var(--font-display-weight-black);
-        font-size: 72px;
-        letter-spacing: -0.02em;
-        text-transform: uppercase;
-        background: var(--gradient-spectrum-linear);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-        -webkit-text-fill-color: transparent;
-        /* Headline reveal — one-shot prism sweep across the mark.
-           Pack keyframes use background-position, which matches our
-           gradient text mask cleanly. */
-        background-size: 200% 100%;
-        /* Pack's `prism-sweep` ends at opacity:0 (designed for transient
-           reveals layered over a static fallback). Local override settles
-           the wordmark visible after the sweep completes. */
-        animation: prism-sweep-settle var(--motion-duration-sweep)
-          var(--motion-ease-cinematic) both;
-        animation-delay: 120ms;
+        height: 64px;
+        width: auto;
       }
 
-      @keyframes prism-sweep-settle {
-        0% {
-          background-position: -120% 0;
-          opacity: 0;
-        }
-        20% {
-          opacity: 1;
-        }
-        100% {
-          background-position: 100% 0;
-          opacity: 1;
+      @media (max-width: 480px) {
+        .logo-mark {
+          height: 52px;
         }
       }
-
-      /* Solid-color fallback already handled by
-         hq-cinematic-keyframes.css `@supports not (background-clip: text)` */
 
       .hero h1 {
-        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        font-family: var(--font-sans);
         font-weight: 600;
-        font-size: 34px;
-        line-height: 1.15;
+        font-size: 30px;
+        line-height: 1.18;
         margin: 0 0 16px;
-        letter-spacing: -0.015em;
-        color: rgba(255, 255, 255, 0.96);
+        letter-spacing: -0.02em;
+        color: var(--text-primary);
+        animation: rise 600ms var(--ease) 60ms both;
       }
 
       .tagline {
         font-size: 15px;
-        color: var(--warm-yellow-80);
+        color: var(--text-secondary);
         line-height: 1.6;
         margin: 0 auto;
-        max-width: 520px;
+        max-width: 460px;
+        animation: rise 600ms var(--ease) 120ms both;
       }
 
       /* ── Download card ──────────────────────────────── */
-      /* Transparent, warm-yellow hairline — counterweight to the
-         navy + spectrum hero. Pack rule: "pair spectrum accents with
-         warm-neutral hairlines and glyphs for counterweight." */
       .download-card {
         position: relative;
-        background: rgba(10, 18, 40, 0.45); /* bg-navy-100 @ 45% — subtle lift */
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-        border: 1px solid var(--warm-yellow-40);
-        border-radius: 2px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
         padding: 28px 24px 24px;
-        margin-bottom: 28px;
+        margin-bottom: 20px;
+        animation: rise 600ms var(--ease) 180ms both;
       }
 
+      /* Corner brackets — indigo /30 tick marks. Lifted from
+         components/hq/corner-brackets.tsx (the marketing-site motif). */
+      .bracket {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        border: 0 solid color-mix(in srgb, var(--accent) 30%, transparent);
+        pointer-events: none;
+      }
+      .bracket--tl { top: -1px; left: -1px; border-top-width: 2px; border-left-width: 2px; }
+      .bracket--tr { top: -1px; right: -1px; border-top-width: 2px; border-right-width: 2px; }
+      .bracket--bl { bottom: -1px; left: -1px; border-bottom-width: 2px; border-left-width: 2px; }
+      .bracket--br { bottom: -1px; right: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+
       .download-card h2 {
-        font-family: var(--font-display);
-        font-size: 10px;
-        font-weight: var(--font-display-weight-bold);
-        letter-spacing: 0.2em;
-        text-transform: uppercase;
-        color: var(--warm-yellow-80);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        text-transform: lowercase;
+        color: var(--text-muted);
         margin: 0 0 18px;
       }
 
       .release-meta {
         display: flex;
         align-items: center;
-        gap: 12px;
-        margin-bottom: 22px;
+        gap: 10px;
+        margin-bottom: 20px;
         font-size: 12px;
-        color: var(--warm-yellow-80);
       }
 
-      /* Status badges — ready (spectrum-gold) / pending (warm-pink).
-         Tabular nums, slight uppercase affectation. */
+      /* Status badge — accent-tinted, ready state. Pending uses the
+         muted/amber register so it reads as "not yet" without alarm. */
       .tag {
         display: inline-flex;
         align-items: center;
-        padding: 3px 8px;
-        border-radius: 2px;
-        background: rgba(129, 140, 248, 0.08);
-        color: var(--spectrum-violet);
-        border: 1px solid rgba(129, 140, 248, 0.3);
-        font-family: var(--font-display);
-        font-variant-numeric: tabular-nums;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+        color: var(--accent);
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+        font-family: var(--font-mono);
         font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
+        font-weight: 500;
+        letter-spacing: 0.01em;
       }
 
       .tag--pending {
-        background: rgba(169, 119, 145, 0.12);
-        color: var(--warm-pink);
-        border-color: var(--warm-pink-40);
+        background: color-mix(in srgb, var(--amber) 8%, transparent);
+        color: var(--amber);
+        border-color: color-mix(in srgb, var(--amber) 30%, transparent);
       }
 
       .published {
-        font-family: var(--font-display);
-        font-variant-numeric: tabular-nums;
+        font-family: var(--font-mono);
         font-size: 11px;
-        color: var(--warm-yellow-60);
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
+        color: var(--text-muted);
+        letter-spacing: 0.01em;
       }
 
       /* ── Buttons ────────────────────────────────────── */
@@ -551,26 +590,53 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       .btn {
         display: flex;
         align-items: center;
-        gap: 16px;
-        padding: 18px 20px;
-        border: 1px solid var(--warm-yellow-40);
-        border-radius: 2px;
+        gap: 14px;
+        padding: 16px 18px;
+        border-radius: 10px;
         text-decoration: none;
-        color: rgba(255, 255, 255, 0.92);
-        background: rgba(14, 23, 51, 0.55); /* bg-navy-000 @ 55% */
         transition:
-          background 200ms var(--motion-ease-cinematic),
-          border-color 200ms var(--motion-ease-cinematic),
-          box-shadow 200ms var(--motion-ease-cinematic);
+          background 180ms var(--ease),
+          border-color 180ms var(--ease),
+          box-shadow 180ms var(--ease),
+          transform 180ms var(--ease);
         position: relative;
       }
 
-      .btn:hover {
+      /* Primary download — white fill, near-black text. The
+         indigo-marketing brand rule (2026-04-24): every primary
+         download / sign-up is white, never periwinkle. */
+      .btn-primary {
+        background: var(--text-primary);
+        color: var(--bg);
+        border: 1px solid var(--text-primary);
+        box-shadow: 0 0 24px -8px rgba(255, 255, 255, 0.35);
+      }
+
+      .btn-primary .btn-os {
+        color: color-mix(in srgb, var(--bg) 65%, transparent);
+      }
+
+      .btn-primary .btn-size {
+        color: color-mix(in srgb, var(--bg) 55%, transparent);
+      }
+
+      .btn-primary:hover {
+        background: #ffffff;
+        border-color: #ffffff;
+        box-shadow: 0 0 32px -6px rgba(255, 255, 255, 0.5);
+        transform: translateY(-1px);
+      }
+
+      /* Secondary — hairline outline, ghost fill. */
+      .btn-secondary {
+        background: transparent;
+        color: var(--text-primary);
+        border: 1px solid var(--border-accent);
+      }
+
+      .btn-secondary:hover {
         background: rgba(255, 255, 255, 0.04);
-        border-color: rgba(255, 255, 255, 0.25);
-        box-shadow:
-          0 0 0 1px rgba(255, 255, 255, 0.06),
-          0 8px 32px -12px rgba(129, 140, 248, 0.25);
+        border-color: rgba(255, 255, 255, 0.22);
       }
 
       .btn[aria-disabled="true"] {
@@ -578,40 +644,19 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
         pointer-events: none;
       }
 
-      /* Featured state (OS-detection match) — bloom pulse + spectrum
-         rim. Pack's bloom-pulse keyframe is single-shot; we replay it
-         on focus-visible and as a one-time entrance. Rim uses a thin
-         spectrum gradient border (no colored drop shadow). */
-      /* Featured state (OS-detection match) — primary CTA, white fill.
-         Per indigo-marketing brand rule (2026-04-24): primary CTAs are
-         white, not periwinkle. Matches the "Learn HQ" / "Download .dmg"
-         pattern on www.getindigo.ai. */
+      /* Featured (OS-detection match) — lift the indigo accent rim so
+         the matched button reads as "the one for you" without changing
+         the white-CTA rule. */
       .btn-featured {
-        border-color: var(--spectrum-gold);
-        background: var(--spectrum-gold);
-        color: var(--bg-navy-500);
         box-shadow:
-          0 0 24px -6px rgba(255, 255, 255, 0.5),
-          0 12px 40px -16px rgba(255, 255, 255, 0.25);
+          0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent),
+          0 0 32px -6px rgba(129, 140, 248, 0.45);
       }
 
       .btn-featured:hover {
-        background: #ffffff;
-        border-color: #ffffff;
         box-shadow:
-          0 0 32px -4px rgba(255, 255, 255, 0.7),
-          0 12px 40px -16px rgba(255, 255, 255, 0.3);
-      }
-
-      .btn-featured .btn-arch,
-      .btn-featured .btn-os,
-      .btn-featured .btn-size {
-        color: var(--bg-navy-500);
-      }
-
-      .btn-featured:focus-visible {
-        animation: bloom-pulse var(--motion-duration-bloom)
-          var(--motion-ease-cinematic) both;
+          0 0 0 1px var(--accent),
+          0 0 40px -4px rgba(129, 140, 248, 0.55);
       }
 
       .btn-dim {
@@ -619,104 +664,250 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       }
 
       .btn-arch {
-        font-family: var(--font-display);
-        font-weight: var(--font-display-weight-bold);
-        font-size: 15px;
+        font-family: var(--font-mono);
+        font-weight: 500;
+        font-size: 14px;
         letter-spacing: 0.01em;
         flex: 1;
       }
 
       .btn-os {
         font-size: 12px;
-        color: var(--warm-yellow-80);
+        color: var(--text-secondary);
       }
 
       .btn-size {
-        font-family: var(--font-display);
-        font-variant-numeric: tabular-nums;
+        font-family: var(--font-mono);
         font-size: 11px;
-        color: var(--warm-yellow-60);
-        letter-spacing: 0.02em;
+        color: var(--text-muted);
+        letter-spacing: 0.01em;
       }
 
       .os-hint {
-        margin: 18px 0 0;
+        margin: 16px 0 0;
         font-size: 12px;
-        color: var(--warm-yellow-80);
+        color: var(--text-muted);
         min-height: 18px;
       }
 
       .also {
-        margin: 24px 0 8px;
+        margin: 22px 0 8px;
         font-size: 12px;
-        color: var(--warm-yellow-80);
+        color: var(--text-muted);
       }
 
       .soon {
-        color: var(--warm-yellow-60);
-        font-family: var(--font-display);
-        font-variant-numeric: tabular-nums;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
         font-size: 11px;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
+        letter-spacing: 0.01em;
       }
 
       .security-note {
-        margin: 16px 0 0;
+        margin: 14px 0 0;
         font-size: 12px;
-        color: var(--warm-yellow-80);
+        color: var(--text-muted);
         line-height: 1.55;
       }
 
-      /* ── Dev path ───────────────────────────────────── */
+      /* ── Dev path — terminal card ───────────────────── */
+      /* Mirrors components/hq/terminal-card.tsx: traffic-light dots,
+         mono title bar, code body. Cyan accent on the command echoes
+         the marketing-site create-hq card. */
       .devs {
-        position: relative;
-        background: rgba(10, 18, 40, 0.35);
-        backdrop-filter: blur(4px);
-        -webkit-backdrop-filter: blur(4px);
-        border: 1px solid var(--warm-brown-60);
-        border-radius: 2px;
-        padding: 22px 22px;
-        margin-bottom: 48px;
+        overflow: hidden;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        margin-bottom: 44px;
+        animation: rise 600ms var(--ease) 240ms both;
       }
 
-      .devs h3 {
-        font-family: var(--font-display);
+      .devs-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .devs-dots {
+        display: flex;
+        gap: 6px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+      }
+      .dot--rose { background: color-mix(in srgb, var(--rose) 40%, transparent); }
+      .dot--amber { background: color-mix(in srgb, var(--amber) 40%, transparent); }
+      .dot--green { background: color-mix(in srgb, var(--green) 40%, transparent); }
+
+      .devs-title {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text-muted);
+        flex: 1;
+      }
+
+      .devs-lang {
+        font-family: var(--font-mono);
         font-size: 10px;
-        font-weight: var(--font-display-weight-bold);
-        letter-spacing: 0.2em;
-        text-transform: uppercase;
-        color: var(--warm-yellow-80);
-        margin: 0 0 14px;
+        color: var(--text-muted);
       }
 
-      .devs p {
+      .devs-body {
+        padding: 18px 18px 20px;
+      }
+
+      .devs-body p {
         margin: 0 0 14px;
         font-size: 14px;
-        color: var(--warm-yellow-80);
+        color: var(--text-secondary);
         line-height: 1.6;
       }
 
       .code {
-        background: var(--bg-navy-900);
-        border: 1px solid var(--warm-brown-60);
-        border-radius: 2px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
         padding: 12px 14px;
         margin: 0;
         overflow-x: auto;
-        font-family: var(--font-display);
-        font-variant-numeric: tabular-nums;
+        font-family: var(--font-mono);
         font-size: 13px;
-        color: var(--spectrum-cyan);
+        color: var(--cyan);
         user-select: all;
+      }
+
+      .code-prompt {
+        color: var(--text-muted);
+        user-select: none;
+        margin-right: 8px;
+      }
+
+      /* ── Resources — learn hq ───────────────────────── */
+      .resources {
+        margin-bottom: 44px;
+        animation: rise 600ms var(--ease) 300ms both;
+      }
+
+      .section-label {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        text-transform: lowercase;
+        color: var(--text-muted);
+        margin: 0 0 14px;
+      }
+
+      .resource {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 16px 18px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        text-decoration: none;
+        transition:
+          background 180ms var(--ease),
+          border-color 180ms var(--ease),
+          transform 180ms var(--ease);
+      }
+
+      .resource:hover {
+        background: var(--bg-elevated);
+        border-color: var(--border-accent);
+        transform: translateY(-1px);
+      }
+
+      .resource-arrow {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        font-family: var(--font-mono);
+        font-size: 14px;
+        color: var(--text-muted);
+        transition:
+          color 180ms var(--ease),
+          transform 180ms var(--ease);
+      }
+
+      .resource:hover .resource-arrow {
+        color: var(--accent);
+        transform: translate(2px, -2px);
+      }
+
+      .resource-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .resource-title {
+        font-family: var(--font-mono);
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-primary);
+        padding-right: 22px;
+      }
+
+      .resource-tag {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        letter-spacing: 0.02em;
+        color: var(--accent);
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      }
+
+      .resource-desc {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+        padding-right: 22px;
+      }
+
+      /* Featured — the book. Accent-tinted rim sets it above the grid. */
+      .resource--featured {
+        margin-bottom: 12px;
+        border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--accent) 5%, var(--bg-card)) 0%,
+          var(--bg-card) 100%
+        );
+      }
+
+      .resource--featured:hover {
+        border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+      }
+
+      .resource-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      @media (max-width: 480px) {
+        .resource-grid {
+          grid-template-columns: 1fr;
+        }
       }
 
       /* ── Footer ─────────────────────────────────────── */
       .footer {
         text-align: center;
         font-size: 12px;
-        color: var(--warm-yellow-60);
-        border-top: 1px solid var(--warm-brown-60);
+        color: var(--text-muted);
+        border-top: 1px solid var(--border);
         padding-top: 28px;
       }
 
@@ -730,76 +921,81 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       }
 
       .footer-sep {
-        color: var(--warm-yellow-60);
+        color: var(--text-muted);
         opacity: 0.5;
       }
 
       .footer a {
-        color: var(--warm-yellow-80);
+        color: var(--text-secondary);
         text-decoration: none;
-        border-bottom: 1px solid var(--warm-yellow-40);
-        transition:
-          color 200ms var(--motion-ease-cinematic),
-          border-color 200ms var(--motion-ease-cinematic);
+        transition: color 200ms var(--ease);
+      }
+
+      .footer a span {
+        color: var(--accent);
       }
 
       .footer a:hover {
-        color: var(--spectrum-gold);
-        border-bottom-color: var(--spectrum-gold);
+        color: var(--text-primary);
       }
 
       .copyright {
-        margin-top: 14px;
-        font-family: var(--font-display);
-        font-variant-numeric: tabular-nums;
+        margin-top: 16px;
+        font-family: var(--font-mono);
         font-size: 10px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--warm-yellow-60);
+        letter-spacing: 0.02em;
+        color: var(--text-muted);
       }
 
       /* ── Responsive ─────────────────────────────────── */
       @media (max-width: 480px) {
         .root {
-          padding: 40px 16px 60px;
-        }
-        .logo-mark {
-          font-size: 56px;
+          padding: 32px 16px 60px;
         }
         .hero h1 {
-          font-size: 26px;
+          font-size: 25px;
         }
         .download-card {
-          padding: 22px 18px 20px;
+          padding: 24px 18px 20px;
         }
         .btn {
           flex-direction: column;
           align-items: flex-start;
           gap: 6px;
-          padding: 16px;
+          padding: 14px 16px;
         }
-        .prism-beam {
-          height: 180px;
-          opacity: 0.3;
+        .btn-arch {
+          flex: none;
         }
       }
 
-      /* Reduced motion — stop the beam drift and the intro sweep.
-         Pack's keyframes.css already collapses animations to
-         end-state; we additionally skip the sweep entirely so the
-         wordmark renders with a static gradient (no mid-animation
-         background-position glitch). */
-      @media (prefers-reduced-motion: reduce) {
-        .prism-beam {
-          animation: none;
-          opacity: 0.28;
+      /* ── Motion ─────────────────────────────────────── */
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
         }
-        .logo-mark {
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .logo,
+        .hero h1,
+        .tagline,
+        .download-card,
+        .devs,
+        .resources {
           animation: none;
-          background-position: 50% 0;
         }
         .btn,
-        .footer a {
+        .footer a,
+        .resource,
+        .resource-arrow,
+        .topbar-home,
+        .topbar-link {
           transition: none;
         }
       }
@@ -807,21 +1003,22 @@ const releaseDate = release ? formatDate(release.publishedAt) : null;
       /* Access-funnel handoff banner (hq-access-funnel). Hidden until the
          capture script reveals it for a funnel arrival. */
       .onboarding-banner {
-        margin: 0 0 1.25rem;
-        padding: 0.75rem 1rem;
-        border: 1px solid color-mix(in srgb, var(--accent, #7c5cff) 40%, transparent);
-        border-radius: 0.5rem;
-        background: color-mix(in srgb, var(--accent, #7c5cff) 12%, transparent);
-        color: var(--fg, #e7e7ea);
-        font-family: "JetBrains Mono", ui-monospace, monospace;
-        font-size: 0.875rem;
+        margin: 0 0 18px;
+        padding: 12px 14px;
+        border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: 12.5px;
         line-height: 1.5;
       }
       .onboarding-banner[hidden] {
         display: none;
       }
       #onboarding-banner-company {
-        font-weight: 600;
+        color: var(--text-primary);
+        font-weight: 500;
       }
     </style>
 

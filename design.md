@@ -1,56 +1,125 @@
 # hq-installer — Design Direction
 
-style-pack: hq-cinematic
+style: getindigo.ai monochrome authority (no style-pack)
 scope: docs/download-page
 
 ## Surface
 
-A single-page Astro landing at [install.getindigo.ai](https://install.getindigo.ai) that advertises the native macOS installer and links to `npx create-hq` for terminal users. Scope is **one page** — no shell, no sidebar, no data tables.
+A single-page Astro landing at [install.getindigo.ai](https://install.getindigo.ai)
+that advertises the native macOS installer and links to `npx create-hq` for
+terminal users. Scope is **one page** — no shell, no sidebar, no data tables.
 
-The rest of this repo (the Tauri installer itself) has its own retro-TUI aesthetic and is NOT governed by this pack.
+The rest of this repo (the Tauri installer itself) has its own retro-TUI
+aesthetic and is NOT governed by this direction.
 
-## Pack
+## Direction
 
-Consumes `hq-cinematic` (`knowledge/public/design-styles/packs/hq-cinematic/`).
+The download page is aligned to the **getindigo.ai marketing-site language**
+(`repos/private/indigo-marketing`) so the install surface reads as part of the
+same product family as `www.getindigo.ai` and the `hq-console` (`hq.getindigo.ai`).
+That family is **dark monochrome authority**: near-black surfaces, a single
+indigo accent used as punctuation (never as a surface), white primary CTAs, and
+Geist / Geist Mono type. The page does **not** consume a `hq-cinematic` style
+pack — the prior rainbow-spectrum / prism-beam treatment was removed on
+2026-06-03 because it was the only HQ surface running full spectrum and clashed
+with both getindigo.ai (monochrome + single indigo) and hq-console (minimal
+Vercel-dark).
 
-The pack ships as a tokens + keyframes bundle with nine exported React primitives (in `hq-onboarding`). This download page is plain Astro, so the contract that applies is the **tokens** (`--bg-navy-*`, `--spectrum-*`, `--warm-*`), the **keyframes** (`prism-sweep`, `beam-drift`, `bloom-pulse`, etc.), and the **Do/Don't list** in `README.md`:
+## Tokens
 
-- Background: `--bg-navy-500` (`#080F24`) as the default; a fixed radial vignette lifts the center toward `--bg-navy-400` and deepens the corners toward `--bg-navy-900`.
-- Chroma: **one hero moment per screen.** A single `--gradient-spectrum-linear` beam sits behind the "HQ" wordmark, blurred and drift-animated. The wordmark itself uses the same gradient as a text mask. No other surface in the page uses the full spectrum.
-- Counterweights: warm-yellow / warm-brown tints carry hairlines, body text, tags, and code glyphs. Status affordances use `--spectrum-gold` (ready) and `--warm-pink` (pending) — single hues, not gradients.
-- Corners: 2 px — minimal radius, not flat-square. Keeps the cinematic softness; still reads industrial.
-- Typography: **Inter 800/900 only** for display (pack rule). Body copy inherits the same family at 400–600. No new font dependencies; one Google Fonts `<link>` request.
-- Motion: `prism-sweep` on wordmark entrance (1.4 s, once). `beam-drift` infinitely alternating on the hero beam (8 s). `bloom-pulse` on featured-button focus (900 ms, once). All collapse to end-state under `prefers-reduced-motion: reduce` per the pack's hard-cut overrides in `keyframes.css`.
+Defined inline in `src/pages/index.astro` under the page `<style>` `:root`,
+mirroring `indigo-marketing/app/globals.css`:
 
-## Consumption
+| Token | Value | Use |
+|-------|-------|-----|
+| `--bg` | `#09090b` | Page background |
+| `--bg-card` | `#111113` | Cards, terminal surfaces |
+| `--bg-elevated` | `#18181b` | Raised surfaces |
+| `--border` | `rgba(255,255,255,0.06)` | Hairline borders |
+| `--border-accent` | `rgba(255,255,255,0.12)` | Secondary-button outline |
+| `--text-primary` | `#fafafa` | Headings, primary CTA fill |
+| `--text-secondary` | `#a1a1aa` | Body copy |
+| `--text-muted` | `#52525b` | Metadata, mono labels |
+| `--accent` | `#818cf8` | **Accents only** — brackets, badge, glow, link arrows |
+| `--cyan` | `#22d3ee` | `npx create-hq` command echo |
+| `--green` / `--amber` / `--rose` | — | Terminal traffic-light dots (ornamental) |
 
-Tokens and keyframes are **copy-pasted** into `docs/download-page/src/styles/hq-cinematic-{tokens,keyframes}.css` (pack rule: no symlinks across repo boundaries — Vercel build constraint). Refreshed when the pack version bumps.
+## Hero mark
 
-Fonts are loaded in `<head>` via `<link rel="preconnect">` + Google Fonts CSS (single request, `display=swap`). Self-hosting via `@fontsource/*` is a follow-up if the pack moves to that pattern.
+The hero uses the **canonical HQ logomark** — the geometric white "HQ"
+letterform shared with `hq-console` (`src/app/icon.svg`). Asset:
+`public/hq-logomark.svg` (white, transparent), sourced from the brand
+`HQ.svg`. The page favicon (`public/favicon.svg`) wraps the same mark on a
+`#09090b` rounded square. **Do not** reintroduce a text-rendered "HQ" with a
+gradient text-mask — the mark is a real asset, not a font treatment.
 
-The Astro page `<style>` block consumes tokens via `var(--bg-navy-*)`, `var(--spectrum-*)`, `var(--warm-*)`, and motion primitives via `var(--motion-*)` — no utility classes, no Tailwind.
+## Button system
+
+**Primary download → white, not periwinkle.** This is the indigo-marketing
+brand rule (2026-04-24): every primary download / sign-up is white
+(`--text-primary` fill, `--bg` text), never `--accent`. Reference:
+`indigo-marketing/components/sections/hero.tsx`.
+
+- Primary (`.btn-primary`): white fill, near-black text, soft white glow.
+- Secondary (`.btn-secondary`): transparent, hairline `--border-accent` outline,
+  ghost hover.
+- Featured (`.btn-featured`, applied by OS-detection JS): keeps the white fill,
+  adds an indigo accent rim + glow so the matched build reads as "the one for
+  you" without breaking the white-CTA rule.
+
+## Structural motifs
+
+Both lifted from `indigo-marketing/components/hq/`:
+
+- **Corner brackets** — indigo `/30` tick marks at the four corners of the
+  download card (`.bracket--{tl,tr,bl,br}`). From `corner-brackets.tsx`.
+- **Terminal card** — the "for developers" section uses the fake-mac-terminal
+  chrome: rose/amber/green traffic-light dots, mono title bar, `$`-prefixed
+  command in cyan. From `terminal-card.tsx`.
+
+## Type
+
+- **Geist** (body) + **Geist Mono** (metadata, labels, CTAs, code) — the family
+  `hq-console` and `www.getindigo.ai` share. One Google Fonts request loads both.
+- No display-weight rainbow wordmark, no Inter-900, no JetBrains Mono (the prior
+  page's fonts are gone).
 
 ## Quality gate
 
-Before landing any change to the download page, confirm against the hq-cinematic pack `README.md` Do/Don't list:
+Before landing any change to the download page:
 
-- [ ] Background is navy-500 or navy-900. No light surfaces, no zinc/slate.
-- [ ] **Exactly one** spectrum beam on screen (hero). No stacked beams, no dust layer (this page doesn't need it).
-- [ ] Spectrum-gold / warm-yellow / warm-brown are the only accent hues on body surfaces. No cyan-cyberpunk, no synthwave neon.
-- [ ] Display type is Inter 800 or 900. No Barlow, no Space Grotesk, no display-serif.
-- [ ] Numerals (version tag, file size, dates) use `font-variant-numeric: tabular-nums` for column alignment.
-- [ ] Every animation has a `prefers-reduced-motion: reduce` collapse path. Beam stops drifting. Wordmark renders static-gradient.
-- [ ] Focus-visible rings present on every interactive element (warm-yellow, AAA contrast against navy).
+- [ ] Background is `--bg` / `--bg-card`. No navy, no light surfaces.
+- [ ] **No rainbow spectrum** anywhere. The only chroma is the single indigo
+      accent (brackets, badge, hero glow, link arrows) + the cyan command echo +
+      the ornamental terminal dots.
+- [ ] Hero shows the real HQ logomark asset, not gradient-masked text.
+- [ ] Primary download button is white, never `--accent`.
+- [ ] Display + body type is Geist; metadata/labels/code are Geist Mono.
+- [ ] Numerals (version tag, file size, dates) read in Geist Mono.
+- [ ] Every animation has a `prefers-reduced-motion: reduce` collapse path
+      (the `rise` entrance animations and all transitions are disabled).
+- [ ] Focus-visible rings present on every interactive element (indigo accent
+      against near-black).
 
-## Off-pack moments (documented, not violations)
+## Off-direction moments (documented, not violations)
 
-- **Card radius 2 px.** The pack itself is silent on border-radius. `hq-onboarding` uses `rounded-md` for cards; we pick a tighter 2 px to match the utility-tool register of a download page. Still rounded (not flat), just restrained.
-- **Wordmark with gradient text mask + prism sweep on entrance.** The pack ships a `SpectrumText` React primitive for exactly this, but we're on plain Astro — we inline the `background: var(--gradient-spectrum-linear); background-clip: text;` pattern directly and rely on the pack's `@supports not (background-clip: text)` fallback in `keyframes.css`. Same contract, no React dependency.
-- **Featured-button glow uses warm-yellow + violet drop-shadow mix, not a full spectrum halo.** Keeps the hero beam as the single chroma moment and leaves the CTA reading as warm confident neutral.
-- **Tabular-nums everywhere instead of a dedicated mono family.** Pack rule: "no new font dependencies." Inter's tabular-nums feature carries version strings, sizes, and dates — no IBM Plex Mono loaded.
+- **Soft indigo hero glow.** A single low-opacity radial bloom
+  (`--accent-glow`, no animation) sits behind the wordmark. It is the one
+  accent "moment" — replacing the old animated prism beam — and stays a single
+  hue, not a spectrum.
+- **Cyan on the `npx create-hq` command.** Mirrors the marketing-site create-hq
+  card, where the secondary install path uses a cyan tint to read as obviously
+  secondary to the white primary download.
 
 ## Related
 
-- Pack: [`knowledge/public/design-styles/packs/hq-cinematic/`](../../knowledge/public/design-styles/packs/hq-cinematic/)
-- Sibling consumer: `hq-onboarding` (`repos/private/hq-onboarding/`) — the canonical React primitive implementation. Watch for drift: when the pack rev's, both consumers need a token refresh.
-- Former consumer: this page previously consumed `goclaw-admin` (monochrome industrial admin register). Swapped to `hq-cinematic` on 2026-04-21 to align the marketing surface with `onboarding.getindigo.ai` rather than the internal `hq-console`.
+- Reference site: `indigo-marketing` (`repos/private/indigo-marketing`,
+  `www.getindigo.ai`) — `design.md` + `app/globals.css` are the source of truth
+  for tokens, the white-CTA rule, and the bracket/terminal motifs.
+- Brand: `companies/indigo/knowledge/brand/brand-guidelines.md`.
+- Sibling surface: `hq-console` (`repos/private/hq-console`, `hq.getindigo.ai`) —
+  minimal Vercel-dark; shares the Geist family and near-black palette.
+- History: this page previously consumed `goclaw-admin` (monochrome admin),
+  then `hq-cinematic` (navy + spectrum, 2026-04-21), then was realigned to the
+  getindigo.ai monochrome language on 2026-06-03 to match the marketing site and
+  console rather than the cinematic onboarding surface.
