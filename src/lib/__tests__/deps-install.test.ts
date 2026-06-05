@@ -55,20 +55,23 @@ describe("DEPS table — partition contract", () => {
     expect(optional.length).toBeGreaterThan(0);
   });
 
-  it("marks git, gh, claude-code, homebrew as optional", () => {
+  it("marks gh, claude-code, homebrew as optional (git is now required)", () => {
     const optionalIds = DEPS.filter((d) => d.optional).map((d) => d.id);
-    expect(optionalIds).toContain("git");
     expect(optionalIds).toContain("gh");
     expect(optionalIds).toContain("claude-code");
     expect(optionalIds).toContain("homebrew");
+    // git flipped optional → required: HQ provisions a portable git (dugite)
+    // into the managed toolchain, since autocommit/repos/agents/packs need it.
+    expect(optionalIds).not.toContain("git");
   });
 
-  it("marks node, yq, qmd, hq-cli as required", () => {
+  it("marks node, yq, qmd, hq-cli, git as required", () => {
     const requiredIds = DEPS.filter((d) => !d.optional).map((d) => d.id);
     expect(requiredIds).toContain("node");
     expect(requiredIds).toContain("yq");
     expect(requiredIds).toContain("qmd");
     expect(requiredIds).toContain("hq-cli");
+    expect(requiredIds).toContain("git");
   });
 });
 

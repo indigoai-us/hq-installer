@@ -1,12 +1,13 @@
 // setup-progress.tsx — US-004
-// Unified post-login orchestrator. Sequences five stages behind a single
+// Unified post-login orchestrator. Sequences six stages behind a single
 // progress bar with one explanatory line and no intermediate input:
 //
 //   1. deps        — runDepsInstall() (core deps; optionals skipped)
-//   2. git-init    — invoke("git_init") with identity from Google idToken
-//   3. personalize — detect cloud company (non-fatal) + personalize()
-//   4. indexing    — qmd collection add (writes embeddings-pending marker)
-//   5. menubar     — install_menubar_app (HQ Sync tray app)
+//   2. packages    — install the default HQ content packs (no picker)
+//   3. git-init    — invoke("git_init") with identity from Google idToken
+//   4. personalize — detect cloud company (non-fatal) + personalize()
+//   5. indexing    — qmd collection add (writes embeddings-pending marker)
+//   6. menubar     — install_menubar_app (HQ Sync tray app)
 //
 // Cloud file sync is intentionally NOT done here — the HQ Sync menu-bar app
 // (installed in the last stage) owns syncing the user's company files. The
@@ -39,11 +40,13 @@ import {
 import {
   getInstallerVersion,
   recordDependencies,
+  recordPacks,
   recordStepFailure,
   recordStepOk,
   recordStepStart,
   type ItemStatus,
 } from "@/lib/install-manifest";
+import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 
 // ---------------------------------------------------------------------------
 // Stage model
@@ -51,6 +54,7 @@ import {
 
 export type StageId =
   | "deps"
+  | "packages"
   | "git-init"
   | "personalize"
   | "indexing"
@@ -68,6 +72,7 @@ interface StageState {
 
 const STAGE_LABELS: Record<StageId, string> = {
   deps: "Installing dependencies",
+  packages: "Installing packages",
   "git-init": "Initialising workspace",
   personalize: "Personalizing",
   indexing: "Registering for search",
@@ -77,6 +82,7 @@ const STAGE_LABELS: Record<StageId, string> = {
 // Order is part of the contract — the progress bar maps directly to indices.
 const STAGE_ORDER: readonly StageId[] = [
   "deps",
+  "packages",
   "git-init",
   "personalize",
   "indexing",
@@ -195,7 +201,65 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     return true;
   }
 
-  // ── Stage 2: git-init ──────────────────────────────────────────────────
+  // ── Stage 2: packages (default HQ content packs) ───────────────────────
+  //
+  // Installs HQ's default content packs right after login, with NO selection
+  // UI — the v4.x wizard let you pick from a catalog; the streamlined flow
+  // just installs the default set. We shell the deps-installed `hq` directly
+  // (mirroring how HQ Sync installs packs: `hq install <source> --allow-hooks`)
+  // rather than npx — `hq` is on the managed-toolchain PATH the spawner uses
+  // (the same one that resolves `qmd` for indexing), and `--allow-hooks` skips
+  // the interactive hooks prompt that would otherwise hang a headless run. The
+  // sources are npm scope specs so no git is required (a fresh consumer Mac has
+  // none, which is exactly what broke the old `github:` transport). Runs before
+  // git-init so install operates on the plain scaffold.
+  //
+  // Per-pack failures are NON-FATAL: each outcome is journaled to the
+  // install-manifest (so a later /setup can finish the job) and the stage
+  // still succeeds — one flaky pack fetch never blocks the whole install.
+
+  async function runPackages(): Promise<boolean> {
+    const packs: DefaultPack[] = getDefaultPacks();
+    if (packs.length === 0) return true;
+
+    const outcomes: Record<string, { status: ItemStatus; error?: string }> = {};
+    for (const pack of packs) {
+      appendLog("packages", `Installing ${pack.name}…`);
+      const ok = await spawnAndWait(
+        "packages",
+        "hq",
+        ["install", pack.source, "--allow-hooks"],
+        installPath,
+      );
+      if (ok) {
+        outcomes[pack.name] = { status: "ok" };
+      } else {
+        outcomes[pack.name] = {
+          status: "failed",
+          error: `hq install ${pack.name} failed`,
+        };
+        appendLog(
+          "packages",
+          `[warn] ${pack.name} did not install — add it later with: hq install ${pack.source}`,
+        );
+        // Pack failures are non-fatal — clear the error spawnAndWait recorded
+        // so a single pack doesn't freeze the stage.
+        patchStage("packages", { error: null });
+      }
+    }
+
+    // Journal per-pack outcomes (best-effort — never blocks).
+    try {
+      const ver = await getInstallerVersion();
+      await recordPacks(installPath, ver, outcomes);
+    } catch {
+      /* non-fatal */
+    }
+
+    return true;
+  }
+
+  // ── Stage 3: git-init ──────────────────────────────────────────────────
 
   async function runGitInit(): Promise<boolean> {
     try {
@@ -228,7 +292,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     }
   }
 
-  // ── Stage 3: personalize (with non-fatal company detection) ────────────
+  // ── Stage 4: personalize (with non-fatal company detection) ────────────
   //
   // We detect which cloud company the user belongs to so the Done screen and
   // the personalized HQ reflect it, then personalize from the Google name.
@@ -291,7 +355,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     }
   }
 
-  // ── Stage 4: indexing ──────────────────────────────────────────────────
+  // ── Stage 5: indexing ──────────────────────────────────────────────────
   //
   // qmd collection add . --name <slug>, falling back to `qmd update` if the
   // collection already exists. Writes a pending-embeddings marker so HQ Sync
@@ -405,7 +469,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     return true;
   }
 
-  // ── Stage 5: menubar (HQ Sync) ─────────────────────────────────────────
+  // ── Stage 6: menubar (HQ Sync) ─────────────────────────────────────────
 
   async function runMenubar(): Promise<boolean> {
     const unlisten = await listen<{
@@ -467,6 +531,9 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     switch (id) {
       case "deps":
         ok = await runDeps();
+        break;
+      case "packages":
+        ok = await runPackages();
         break;
       case "git-init":
         ok = await runGitInit();

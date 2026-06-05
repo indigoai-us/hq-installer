@@ -417,6 +417,19 @@ fn parse_node_version(dir_name: &str) -> (u32, u32, u32) {
 /// runtime for npx/qmd/Claude Code, not the newest dist-tag.
 const MANAGED_NODE_VERSION: &str = "v22.17.0";
 
+/// Pinned portable Git from dugite-native (GitHub Desktop's embedded Git).
+/// Self-contained — runs with no Xcode Command Line Tools, Homebrew, or admin.
+/// HQ requires the git CLI for autocommit, repo work, agents, and pack install,
+/// so we provision it into the managed toolchain like Node/qmd rather than
+/// leaving the user to install it. Bump deliberately and refresh BOTH per-arch
+/// SHA-256s from the release's `*.tar.gz.sha256` assets.
+const MANAGED_GIT_RELEASE: &str = "v2.53.0-3";
+const MANAGED_GIT_BUILD: &str = "v2.53.0-f49d009";
+const MANAGED_GIT_SHA256_ARM64: &str =
+    "e561cfc80c755e6f3e938653e81efcd025c9827a5b76dd42778b1159b3fab437";
+const MANAGED_GIT_SHA256_X64: &str =
+    "caf27c36b8834969550535bcd5e58186f970e080d1e175e76d9c1de3aac409ed";
+
 fn managed_toolchain_dir_in(home: &std::path::Path) -> PathBuf {
     home.join("Library")
         .join("Application Support")
@@ -440,11 +453,70 @@ fn managed_npm_bin_in(home: &std::path::Path) -> PathBuf {
     managed_npm_prefix_in(home).join("bin")
 }
 
+fn managed_git_dir_in(home: &std::path::Path) -> PathBuf {
+    managed_toolchain_dir_in(home).join("git")
+}
+
+fn managed_git_bin_in(home: &std::path::Path) -> PathBuf {
+    managed_git_dir_in(home).join("bin")
+}
+
+/// Environment a relocatable (dugite) git needs so it can find its sub-commands
+/// (libexec/git-core, e.g. git-remote-https), its templates, and a CA bundle.
+/// dugite's git has no compiled-in prefix and bundles no CA file, so without
+/// these `git clone https://…` fails first with "remote-https is not a git
+/// command" and then with a certificate-verify error. Returns empty when the
+/// managed git isn't installed (so a real system git keeps its own config).
+/// Exposed for unit tests.
+pub fn managed_git_env_in(home: &std::path::Path) -> Vec<(String, String)> {
+    let git_dir = managed_git_dir_in(home);
+    if !git_dir.join("bin").join("git").exists() {
+        return Vec::new();
+    }
+    let mut env = vec![
+        (
+            "GIT_EXEC_PATH".to_string(),
+            git_dir
+                .join("libexec")
+                .join("git-core")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "GIT_TEMPLATE_DIR".to_string(),
+            git_dir
+                .join("share")
+                .join("git-core")
+                .join("templates")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ];
+    // dugite's git uses OpenSSL and bundles no CA; macOS ships a trusted bundle
+    // at /etc/ssl/cert.pem. Only set it when present.
+    let system_ca = std::path::Path::new("/etc/ssl/cert.pem");
+    if system_ca.exists() {
+        env.push((
+            "GIT_SSL_CAINFO".to_string(),
+            system_ca.to_string_lossy().into_owned(),
+        ));
+    }
+    env
+}
+
+/// Production wrapper over `managed_git_env_in`, resolving the real home dir.
+pub fn managed_git_env() -> Vec<(String, String)> {
+    dirs::home_dir()
+        .map(|h| managed_git_env_in(&h))
+        .unwrap_or_default()
+}
+
 /// User-local tool paths owned by HQ Installer. Exposed for unit tests.
 pub fn managed_tool_paths_in(home: &std::path::Path) -> Vec<String> {
     vec![
         managed_node_bin_in(home).to_string_lossy().into_owned(),
         managed_npm_bin_in(home).to_string_lossy().into_owned(),
+        managed_git_bin_in(home).to_string_lossy().into_owned(),
     ]
 }
 
@@ -463,6 +535,24 @@ fn managed_node_url_for(arch: &str) -> Option<String> {
     Some(format!(
         "https://nodejs.org/dist/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-{node_arch}.tar.gz"
     ))
+}
+
+/// dugite-native publishes per-arch macOS tarballs as `...-macOS-{arm64,x64}`.
+/// Reuses `node_dist_arch_for` since dugite uses the same arch tokens as Node.
+fn managed_git_url_for(arch: &str) -> Option<String> {
+    let git_arch = node_dist_arch_for(arch)?;
+    Some(format!(
+        "https://github.com/desktop/dugite-native/releases/download/{MANAGED_GIT_RELEASE}/dugite-native-{MANAGED_GIT_BUILD}-macOS-{git_arch}.tar.gz"
+    ))
+}
+
+/// Pinned SHA-256 for the dugite-native tarball, per arch.
+fn managed_git_sha256_for(arch: &str) -> Option<&'static str> {
+    match arch {
+        "aarch64" => Some(MANAGED_GIT_SHA256_ARM64),
+        "x86_64" => Some(MANAGED_GIT_SHA256_X64),
+        _ => None,
+    }
 }
 
 fn home_dir_or_err(app: &AppHandle, tool: &str) -> Result<PathBuf, String> {
@@ -580,6 +670,13 @@ fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
 
 /// Internal implementation shared by `check_dep` (uses real PATH) and
 /// `check_dep_in` (uses a caller-supplied search path — useful for tests).
+/// True when `(tool, bin_path)` is the macOS `/usr/bin/git` CLT shim. Pure so
+/// the path classification is unit-tested without filesystem/xcode-select; the
+/// caller layers the CLT-presence check on top to decide "usable or not".
+pub fn is_macos_git_shim(tool: &str, bin_path: &std::path::Path) -> bool {
+    tool == "git" && bin_path == std::path::Path::new("/usr/bin/git")
+}
+
 pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     // Locate the binary.
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -599,6 +696,28 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
             }
         }
     };
+
+    // macOS ships a non-functional `git` shim at /usr/bin/git that forwards to
+    // the Xcode Command Line Tools. With no CLT installed it can't run git — it
+    // errors and pops the "install developer tools" dialog. Treat it as NOT
+    // installed so the managed (dugite) git gets provisioned instead. Detected
+    // via path + `xcode-select -p` so we never RUN the shim (running it is what
+    // pops the dialog). Once the toolchain git is installed, which_in resolves
+    // to it first (toolchain is ahead of /usr/bin), so this guard stops firing.
+    if is_macos_git_shim(tool, &bin_path) {
+        let clt_present = Command::new("/usr/bin/xcode-select")
+            .arg("-p")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !clt_present {
+            return DepStatus {
+                installed: false,
+                version: None,
+                path: None,
+            };
+        }
+    }
 
     // Run `<tool> --version` and capture the first line of stdout.
     let version = Command::new(&bin_path)
@@ -964,19 +1083,95 @@ pub async fn install_node(app: AppHandle) -> Result<String, String> {
 /// Install git via `brew install git`.
 #[tauri::command]
 pub async fn install_git(app: AppHandle) -> Result<String, String> {
-    let brew = match which::which_in(
-        "brew",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    ) {
-        Ok(p) => p,
-        Err(_) => {
-            let msg = "Git CLI is optional for HQ setup. Install Homebrew or Xcode Command Line Tools later if you want the system git command.";
-            emit_preflight_line(&app, msg);
-            return Err(msg.to_string());
-        }
+    let home = home_dir_or_err(&app, "git")?;
+    let toolchain_dir = managed_toolchain_dir_in(&home);
+    let git_dir = managed_git_dir_in(&home);
+    let git_bin = managed_git_bin_in(&home).join("git");
+
+    if git_bin.exists() {
+        emit_preflight_line(
+            &app,
+            &format!("[git] managed Git already present at {}", git_bin.display()),
+        );
+        return Ok(format!("git already installed at {}", git_bin.display()));
+    }
+
+    let arch = std::env::consts::ARCH;
+    let Some(url) = managed_git_url_for(arch) else {
+        let msg = format!("[git] unsupported arch '{arch}' — cannot install managed Git");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
     };
-    run_streaming(&app, brew.to_str().unwrap_or("brew"), &["install", "git"]).await
+    let Some(expected_sha) = managed_git_sha256_for(arch) else {
+        let msg = format!("[git] no pinned checksum for arch '{arch}'");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&git_dir) {
+        let msg = format!("[git] failed to create {}: {e}", git_dir.display());
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+
+    let archive = toolchain_dir.join("dugite-git.tar.gz");
+    let archive_str = archive.to_string_lossy().into_owned();
+    let git_dir_str = git_dir.to_string_lossy().into_owned();
+
+    emit_preflight_line(
+        &app,
+        &format!(
+            "[git] downloading portable Git {url} → {}",
+            archive.display()
+        ),
+    );
+    run_streaming(&app, "/usr/bin/curl", &["-fsSL", "-o", &archive_str, &url]).await?;
+
+    // Verify SHA-256 before trusting a binary we put on PATH. `shasum -c` exits
+    // non-zero on mismatch, which run_streaming surfaces as Err. The checksum
+    // file uses the archive's absolute path so cwd doesn't matter.
+    let check_path = toolchain_dir.join("dugite-git.sha256");
+    let check_str = check_path.to_string_lossy().into_owned();
+    if let Err(e) = std::fs::write(&check_path, format!("{expected_sha}  {archive_str}\n")) {
+        let msg = format!("[git] failed to write checksum file: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    emit_preflight_line(&app, "[git] verifying checksum");
+    if let Err(e) = run_streaming(&app, "/usr/bin/shasum", &["-a", "256", "-c", &check_str]).await {
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_file(&check_path);
+        let msg = format!("[git] checksum verification failed: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    let _ = std::fs::remove_file(&check_path);
+
+    // dugite tarballs extract flat (bin/, libexec/, share/ at the root), so no
+    // --strip-components — git lands at <git_dir>/bin/git.
+    emit_preflight_line(&app, &format!("[git] extracting to {}", git_dir.display()));
+    run_streaming(
+        &app,
+        "/usr/bin/tar",
+        &["-xzf", &archive_str, "-C", &git_dir_str],
+    )
+    .await?;
+    let _ = std::fs::remove_file(&archive);
+
+    if !git_bin.exists() {
+        let msg = format!(
+            "[git] install completed but git binary not found at {}",
+            git_bin.display()
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+
+    emit_preflight_line(
+        &app,
+        &format!("[git] portable Git installed at {}", git_bin.display()),
+    );
+    Ok(format!("git installed at {}", git_bin.display()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

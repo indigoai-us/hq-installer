@@ -6,9 +6,9 @@ import { SetupProgress } from "../setup-progress.js";
 // ---------------------------------------------------------------------------
 // SetupProgress orchestrator tests — US-004
 //
-// The screen runs five stages behind a single progress bar + one status
+// The screen runs six stages behind a single progress bar + one status
 // line, with no intermediate input:
-//   deps → git-init → personalize → indexing → menubar
+//   deps → packages → git-init → personalize → indexing → menubar
 // (Cloud file sync was removed — HQ Sync owns it; company detection folded
 //  into the personalize stage.)
 //
@@ -104,9 +104,16 @@ vi.mock("@/lib/wizard-state", () => ({
 vi.mock("@/lib/install-manifest", () => ({
   getInstallerVersion: vi.fn().mockResolvedValue("0.0.0-test"),
   recordDependencies: vi.fn().mockResolvedValue(undefined),
+  recordPacks: vi.fn().mockResolvedValue(undefined),
   recordStepStart: vi.fn().mockResolvedValue(undefined),
   recordStepOk: vi.fn().mockResolvedValue(undefined),
   recordStepFailure: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Default packs default to an empty set so the existing flow tests aren't
+// perturbed by pack installs; the "packages stage" describe sets a real list.
+vi.mock("@/lib/default-packs", () => ({
+  getDefaultPacks: vi.fn(() => []),
 }));
 
 // ── Imports of mocked symbols (after vi.mock so vitest can rewrite) ───────
@@ -116,6 +123,7 @@ import { runDepsInstall } from "@/lib/deps-install";
 import { personalize } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
 import { listUserCompanies } from "@/lib/vault-handoff";
+import { getDefaultPacks } from "@/lib/default-packs";
 import {
   setGitIdentity,
   setIsPersonal,
@@ -126,6 +134,7 @@ import {
   recordStepOk,
   recordStepFailure,
   recordDependencies,
+  recordPacks,
 } from "@/lib/install-manifest";
 
 const mockInvoke = vi.mocked(invoke);
@@ -133,10 +142,12 @@ const mockRunDepsInstall = vi.mocked(runDepsInstall);
 const mockPersonalize = vi.mocked(personalize);
 const mockGetCurrentUser = vi.mocked(getCurrentUser);
 const mockListUserCompanies = vi.mocked(listUserCompanies);
+const mockGetDefaultPacks = vi.mocked(getDefaultPacks);
 const mockRecordStepStart = vi.mocked(recordStepStart);
 const mockRecordStepOk = vi.mocked(recordStepOk);
 const mockRecordStepFailure = vi.mocked(recordStepFailure);
 const mockRecordDependencies = vi.mocked(recordDependencies);
+const mockRecordPacks = vi.mocked(recordPacks);
 const mockSetGitIdentity = vi.mocked(setGitIdentity);
 const mockSetIsPersonal = vi.mocked(setIsPersonal);
 const mockSetTeam = vi.mocked(setTeam);
@@ -211,6 +222,9 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     mockGetCurrentUser.mockResolvedValue(USER);
     mockListUserCompanies.mockResolvedValue([]);
     mockPersonalize.mockResolvedValue(undefined);
+    // No default packs unless a test opts in — keeps the flow tests focused.
+    // (clearAllMocks keeps implementations, so reset it explicitly each run.)
+    mockGetDefaultPacks.mockReturnValue([]);
     mockInvoke.mockImplementation(buildInvokeMock());
   });
 
@@ -446,11 +460,123 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       // Every stage in the contract order is journaled exactly once.
       expect(startedStages).toEqual([
         "deps",
+        "packages",
         "git-init",
         "personalize",
         "indexing",
         "menubar",
       ]);
+    });
+  });
+
+  // ── 4b. Default-packs stage — installs recommended set, no picker ───────
+
+  describe("packages stage", () => {
+    const PACKS = [
+      {
+        name: "hq-pack-design-styles",
+        source: "@indigoai-us/hq-pack-design-styles",
+      },
+      { name: "hq-pack-gstack", source: "@indigoai-us/hq-pack-gstack" },
+    ];
+
+    it("installs each default pack via `hq install <npm> --allow-hooks` (no picker, no npx)", async () => {
+      mockGetDefaultPacks.mockReturnValue(PACKS);
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      for (const pack of PACKS) {
+        expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
+          args: {
+            cmd: "hq",
+            args: ["install", pack.source, "--allow-hooks"],
+            cwd: "/tmp/hq",
+          },
+        });
+      }
+      // No npx indirection — the bug that broke the clean-room install.
+      const npxCalls = mockInvoke.mock.calls.filter(
+        ([cmd, payload]) =>
+          cmd === "spawn_process" &&
+          (payload as { args?: { cmd?: string } })?.args?.cmd === "npx",
+      );
+      expect(npxCalls.length).toBe(0);
+    });
+
+    it("records each pack's outcome in the install-manifest", async () => {
+      mockGetDefaultPacks.mockReturnValue(PACKS);
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockRecordPacks).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        expect.objectContaining({
+          "hq-pack-design-styles": { status: "ok" },
+          "hq-pack-gstack": { status: "ok" },
+        }),
+      );
+    });
+
+    it("treats a failed pack as non-fatal — the install still completes", async () => {
+      mockGetDefaultPacks.mockReturnValue(PACKS);
+      // `hq` pack installs reject; the qmd indexing spawn still succeeds.
+      let counter = 0;
+      mockInvoke.mockImplementation(
+        async (command: string, payload?: unknown): Promise<unknown> => {
+          if (command === "git_init") {
+            return "0123456789abcdef0123456789abcdef01234567";
+          }
+          if (command === "spawn_process") {
+            const cmd = (payload as { args?: { cmd?: string } })?.args?.cmd;
+            if (cmd === "hq") throw new Error("hq install failed");
+            return `handle-${++counter}`;
+          }
+          if (command === "install_menubar_app") {
+            return { success: true, appPath: "/x", error: null };
+          }
+          return undefined;
+        },
+      );
+
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      // The run still reaches Done despite both packs failing.
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockRecordPacks).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        expect.objectContaining({
+          "hq-pack-design-styles": expect.objectContaining({ status: "failed" }),
+          "hq-pack-gstack": expect.objectContaining({ status: "failed" }),
+        }),
+      );
+    });
+
+    it("installs nothing (and records nothing) when there are no default packs", async () => {
+      mockGetDefaultPacks.mockReturnValue([]);
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      const installCalls = mockInvoke.mock.calls.filter(
+        ([cmd, payload]) =>
+          cmd === "spawn_process" &&
+          (payload as { args?: { cmd?: string } })?.args?.cmd === "hq",
+      );
+      expect(installCalls.length).toBe(0);
+      expect(mockRecordPacks).not.toHaveBeenCalled();
     });
   });
 

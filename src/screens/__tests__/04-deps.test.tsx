@@ -124,7 +124,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       invokeAllOk();
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
-        for (const id of ["git", "gh", "claude-code", "homebrew"]) {
+        for (const id of ["gh", "claude-code", "homebrew"]) {
           const row = document.querySelector(`[data-dep="${id}"]`);
           expect(row).not.toBeNull();
           expect(row!.getAttribute("data-status")).toBe("skipped");
@@ -132,7 +132,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
     });
 
-    it("does NOT call check_dep for optional deps (git, gh, claude-code, homebrew)", async () => {
+    it("does NOT call check_dep for optional deps (gh, claude-code, homebrew)", async () => {
       invokeAllOk();
       render(<DepsInstall onNext={vi.fn()} />);
       await waitFor(() => {
@@ -142,7 +142,7 @@ describe("DepsInstall screen (04-deps.tsx)", () => {
       });
       // Give the install time to complete
       await new Promise((r) => setTimeout(r, 50));
-      const optionalBinaries = ["brew", "git", "gh", "claude"];
+      const optionalBinaries = ["brew", "gh", "claude"];
       const calledTools = mockInvoke.mock.calls
         .filter(([cmd]) => cmd === "check_dep")
         .map(([, args]) => (args as Record<string, string>)?.tool);
