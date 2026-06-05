@@ -4,11 +4,12 @@
 //!   1. Fetch the latest DMG download URL from the GitHub Releases API.
 //!   2. Download the DMG to a temp file, streaming progress events.
 //!   3. Mount the DMG with `hdiutil attach`.
-//!   4. Copy "HQ Sync.app" to /Applications.
+//!   4. Copy "HQ Sync.app" into /Applications, or ~/Applications when the
+//!      system folder isn't writable (standard / non-admin accounts).
 //!   5. Unmount the DMG with `hdiutil detach`.
 //!   6. Clean up the temp file.
 //!
-//! `launch_menubar_app` — open /Applications/HQ Sync.app via `open`.
+//! `launch_menubar_app` — open the installed HQ Sync.app via `open`.
 //!
 //! Progress is emitted as `menubar-install://progress` events with a
 //! `MenubarInstallProgress` payload.  All error paths return `Err(String)`
@@ -308,38 +309,89 @@ fn mount_dmg(app: &AppHandle, dmg_path: &Path) -> Result<String, String> {
     Ok(mount_point)
 }
 
-/// Copy "HQ Sync.app" from the mounted volume to /Applications.
+/// True when the current process can create entries inside `dir`.
 ///
-/// If /Applications/HQ Sync.app already exists it is removed first so that
-/// `cp -R` doesn't nest the bundle inside an existing directory.
-fn copy_app(app: &AppHandle, mount_point: &str) -> Result<(), String> {
-    emit_progress(
-        app,
-        "installing",
-        65,
-        "Copying HQ Sync.app to /Applications…",
-    );
+/// Uses a real write probe (create + remove a uniquely-named file) rather than
+/// inspecting POSIX mode bits: `/Applications` is mode `0775 root:admin` but
+/// grants write to admins via an ACL, so a standard (non-admin) account — or an
+/// MDM-managed Mac — would be mis-reported as "writable" by a mode-bit check
+/// yet still fail the real copy with EACCES. Probing is the only reliable
+/// signal. Returns false when `dir` is absent or the probe can't be created,
+/// which is exactly when we want to fall back to a per-user location.
+fn dir_is_writable(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(".hq-sync-install-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
 
+/// Choose the directory HQ Sync.app is installed into.
+///
+/// Prefers the system `/Applications` when writable; otherwise the per-user
+/// `~/Applications`. Standard/non-admin accounts and managed Macs can't write
+/// `/Applications` — without this fallback the final install step fails with
+/// `cp: /Applications/HQ Sync.app: Permission denied`. Pure (no filesystem
+/// access) so the decision is unit-testable: the caller supplies the
+/// writability verdict and home dir. Mirrors the dual-location lookup already
+/// used for Claude.app in `launch.rs`.
+fn apps_dir_for(system_writable: bool, home: &Path) -> PathBuf {
+    if system_writable {
+        PathBuf::from("/Applications")
+    } else {
+        home.join("Applications")
+    }
+}
+
+/// Copy "HQ Sync.app" from the mounted volume into the Applications folder and
+/// return the installed path.
+///
+/// Installs into `/Applications` when writable, else the per-user
+/// `~/Applications` (created on demand). If the chosen destination already
+/// exists it is removed first so `cp -R` doesn't nest the bundle inside it.
+fn copy_app(app: &AppHandle, mount_point: &str) -> Result<PathBuf, String> {
     // Guard against path traversal — mount_point must be under /Volumes/
     let source_path = PathBuf::from(mount_point).join("HQ Sync.app");
     if !source_path.starts_with("/Volumes/") {
         return Err(format!("Unexpected mount point path: {}", mount_point));
     }
     let source = source_path.to_str().ok_or("Source path is non-UTF-8")?;
-    let dest = "/Applications/HQ Sync.app";
+
+    // Pick the install dir: /Applications when writable, else ~/Applications.
+    let home = dirs::home_dir().ok_or("Could not resolve home directory")?;
+    let apps_dir = apps_dir_for(dir_is_writable(Path::new("/Applications")), &home);
+    std::fs::create_dir_all(&apps_dir)
+        .map_err(|e| format!("Failed to create {}: {}", apps_dir.display(), e))?;
+    let dest_path = apps_dir.join("HQ Sync.app");
+    let dest = dest_path.to_str().ok_or("Destination path is non-UTF-8")?;
+
+    emit_progress(
+        app,
+        "installing",
+        65,
+        &format!("Copying HQ Sync.app to {}…", apps_dir.display()),
+    );
 
     // Remove existing installation so cp -R doesn't nest inside it.
     // Guard against symlink attacks: refuse to rm -rf a symlink target.
-    let dest_path = std::path::Path::new(dest);
     if dest_path.exists() {
-        let meta = std::fs::symlink_metadata(dest)
+        let meta = std::fs::symlink_metadata(&dest_path)
             .map_err(|e| format!("stat failed on {}: {}", dest, e))?;
         if meta.file_type().is_symlink() {
-            return Err(
-                "/Applications/HQ Sync.app is a symlink — refusing to remove. \
-                 Delete it manually and retry."
-                    .to_string(),
-            );
+            return Err(format!(
+                "{} is a symlink — refusing to remove. Delete it manually and retry.",
+                dest
+            ));
         }
         let rm_out = Command::new("rm")
             .args(["-rf", dest])
@@ -348,7 +400,8 @@ fn copy_app(app: &AppHandle, mount_point: &str) -> Result<(), String> {
         if !rm_out.status.success() {
             let stderr = String::from_utf8_lossy(&rm_out.stderr);
             return Err(format!(
-                "Failed to remove existing /Applications/HQ Sync.app: {}",
+                "Failed to remove existing {}: {}",
+                dest,
                 stderr.trim()
             ));
         }
@@ -368,8 +421,13 @@ fn copy_app(app: &AppHandle, mount_point: &str) -> Result<(), String> {
         ));
     }
 
-    emit_progress(app, "installing", 80, "App copied to /Applications");
-    Ok(())
+    emit_progress(
+        app,
+        "installing",
+        80,
+        &format!("App copied to {}", apps_dir.display()),
+    );
+    Ok(dest_path)
 }
 
 /// Detach the mounted DMG volume.
@@ -468,16 +526,19 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
     };
 
     // Phase 4: copy.
-    if let Err(e) = copy_app(&app, &mount_point) {
-        emit_progress(&app, "error", 65, &e);
-        unmount_dmg(&app, &mount_point);
-        cleanup_dmg(&dmg_path);
-        return Ok(MenubarInstallResult {
-            success: false,
-            app_path: None,
-            error: Some(e),
-        });
-    }
+    let installed_path = match copy_app(&app, &mount_point) {
+        Ok(p) => p,
+        Err(e) => {
+            emit_progress(&app, "error", 65, &e);
+            unmount_dmg(&app, &mount_point);
+            cleanup_dmg(&dmg_path);
+            return Ok(MenubarInstallResult {
+                success: false,
+                app_path: None,
+                error: Some(e),
+            });
+        }
+    };
 
     // Phase 5: unmount + cleanup.
     unmount_dmg(&app, &mount_point);
@@ -487,16 +548,52 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
 
     Ok(MenubarInstallResult {
         success: true,
-        app_path: Some("/Applications/HQ Sync.app".to_string()),
+        app_path: Some(installed_path.to_string_lossy().into_owned()),
         error: None,
     })
 }
 
-/// Open /Applications/HQ Sync.app using the macOS `open` command.
+/// Pick which installed HQ Sync.app to open, in precedence order: the system
+/// `/Applications` copy first, then the per-user `~/Applications` fallback.
+/// Pure so the precedence is unit-testable; returns `None` when neither exists.
+fn pick_installed_app<'a>(
+    system: &'a Path,
+    system_exists: bool,
+    user: &'a Path,
+    user_exists: bool,
+) -> Option<&'a Path> {
+    if system_exists {
+        Some(system)
+    } else if user_exists {
+        Some(user)
+    } else {
+        None
+    }
+}
+
+/// Resolve the on-disk HQ Sync.app, checking `/Applications` then
+/// `~/Applications` (where the non-admin fallback install lands).
+fn installed_menubar_app() -> Option<PathBuf> {
+    let system = PathBuf::from("/Applications/HQ Sync.app");
+    let system_exists = system.exists();
+    let user = dirs::home_dir()
+        .unwrap_or_default()
+        .join("Applications/HQ Sync.app");
+    let user_exists = user.exists();
+    pick_installed_app(&system, system_exists, &user, user_exists).map(Path::to_path_buf)
+}
+
+/// Open the installed HQ Sync.app using the macOS `open` command.
+///
+/// Resolves the real install location — `/Applications` first, then the
+/// per-user `~/Applications` fallback — so launch works for non-admin installs.
 #[tauri::command]
 pub fn launch_menubar_app() -> Result<(), String> {
+    let app_path = installed_menubar_app()
+        .ok_or("HQ Sync.app not found in /Applications or ~/Applications")?;
+
     let output = Command::new("open")
-        .arg("/Applications/HQ Sync.app")
+        .arg(&app_path)
         .output()
         .map_err(|e| format!("Failed to spawn open: {}", e))?;
 
@@ -518,7 +615,77 @@ pub fn launch_menubar_app() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_release_response, parse_dmg_url_from_json};
+    use super::{
+        apps_dir_for, classify_release_response, parse_dmg_url_from_json, pick_installed_app,
+    };
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn apps_dir_prefers_system_when_writable() {
+        let home = Path::new("/Users/test");
+        assert_eq!(apps_dir_for(true, home), PathBuf::from("/Applications"));
+    }
+
+    #[test]
+    fn apps_dir_falls_back_to_user_when_system_readonly() {
+        // Standard / non-admin accounts can't write /Applications — the install
+        // must land in ~/Applications rather than fail with EACCES (the
+        // `cp: /Applications/HQ Sync.app: Permission denied` this PR fixes).
+        let home = Path::new("/Users/test");
+        assert_eq!(
+            apps_dir_for(false, home),
+            PathBuf::from("/Users/test/Applications")
+        );
+    }
+
+    #[test]
+    fn pick_installed_prefers_system_then_user() {
+        let system = Path::new("/Applications/HQ Sync.app");
+        let user = Path::new("/Users/test/Applications/HQ Sync.app");
+        // System present wins regardless of the user copy.
+        assert_eq!(pick_installed_app(system, true, user, true), Some(system));
+        // Only the per-user fallback present → use it.
+        assert_eq!(pick_installed_app(system, false, user, true), Some(user));
+        // Neither present → nothing to launch.
+        assert_eq!(pick_installed_app(system, false, user, false), None);
+    }
+
+    #[test]
+    fn dir_is_writable_probes_real_filesystem() {
+        // Exercises the real write-probe (not mode-bit inspection) against the
+        // filesystem — this is the check that decides whether /Applications is
+        // usable or we fall back to ~/Applications. Assumes a non-root runner
+        // (macOS CI + the pre-commit hook both run as a normal user); root
+        // would bypass permission bits and make the negative case meaningless.
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("hq-probe-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // A freshly created temp dir is writable → probe true.
+        assert!(
+            super::dir_is_writable(&dir),
+            "writable temp dir should probe as writable"
+        );
+
+        // Read + execute only (0555) models the non-admin /Applications shape:
+        // entries can't be created, so the probe must report NOT writable and
+        // the installer falls back to ~/Applications.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(
+            !super::dir_is_writable(&dir),
+            "a 0555 (no-write) dir must probe as NOT writable"
+        );
+
+        // A non-existent dir is never writable.
+        assert!(!super::dir_is_writable(&dir.join("does-not-exist")));
+
+        // Restore write so cleanup can remove the dir.
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     const SAMPLE_RELEASE: &str = r#"{
         "tag_name": "v1.2.3",
