@@ -139,8 +139,6 @@ pub fn run() {
             commands::directory::detect_hq,
             commands::directory::create_directory,
             commands::directory::resolve_hq_path,
-            commands::xcode::xcode_clt_status,
-            commands::xcode::xcode_clt_install,
             commands::keychain::keychain_set,
             commands::keychain::keychain_get,
             commands::keychain::keychain_delete,
