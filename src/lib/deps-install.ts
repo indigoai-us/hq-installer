@@ -64,8 +64,8 @@ export const DEPS: readonly DepDef[] = [
     label: "Git",
     installCmd: "install_git",
     installUrl: "https://git-scm.com",
-    optional: true,
-    subtitle: "CLI optional — HQ uses built-in Git for initial setup",
+    subtitle:
+      "Portable Git installed into the HQ toolchain — no Xcode tools or Homebrew. Required: autocommit, repos, agents, and pack install all use it",
   },
   {
     id: "gh",
