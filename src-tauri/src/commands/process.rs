@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-use super::deps::extended_search_path;
+use super::deps::{extended_search_path, managed_git_env};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -255,6 +255,13 @@ where
             search_path.to_string()
         };
         cmd.env("PATH", &child_path);
+    }
+    // A relocatable managed (dugite) git needs its exec-path/templates/CA bundle
+    // set explicitly, so any `git` a child shells out to (e.g. `hq install`'s
+    // github clone) works without a system git. No-op when the managed git isn't
+    // installed. Caller-supplied env (applied below) wins.
+    for (k, v) in managed_git_env() {
+        cmd.env(k, v);
     }
     if let Some(env) = &spawn.env {
         for (k, v) in env {

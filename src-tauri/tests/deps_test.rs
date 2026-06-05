@@ -9,8 +9,9 @@ mod deps_tests {
     use hq_installer_lib::commands::deps::{
         cancel_install, check_dep_in, compute_path_counts, extended_search_path,
         extended_search_path_in, format_install_error, format_path_log, format_shell_probe_log,
-        is_deps_debug_enabled, is_shell_path_configured, managed_tool_paths_in, node_dist_arch_for,
-        register_cancel_handle, shell_path_block, shell_profile_path_in, ShellProbeOutcome,
+        is_deps_debug_enabled, is_macos_git_shim, is_shell_path_configured, managed_git_env_in,
+        managed_tool_paths_in, node_dist_arch_for, register_cancel_handle, shell_path_block,
+        shell_profile_path_in, ShellProbeOutcome,
     };
     use serial_test::serial;
     use std::fs;
@@ -53,6 +54,63 @@ mod deps_tests {
             status.installed,
             "check_dep should report installed:true when binary is in the search path"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // is_macos_git_shim — classifies the /usr/bin/git CLT shim. Regression:
+    // the shim previously satisfied the presence check, so dugite git never
+    // installed and engineering's github clone failed on a bare Mac.
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_is_macos_git_shim_classifies_stub_path() {
+        // The macOS CLT shim path for git → true.
+        assert!(is_macos_git_shim("git", Path::new("/usr/bin/git")));
+        // A real managed/toolchain git → not the shim.
+        assert!(!is_macos_git_shim(
+            "git",
+            Path::new("/Users/x/Library/Application Support/Indigo HQ/toolchain/git/bin/git")
+        ));
+        // Homebrew / other locations → not the shim.
+        assert!(!is_macos_git_shim(
+            "git",
+            Path::new("/opt/homebrew/bin/git")
+        ));
+        // Only git is special-cased — a different tool at that path is not.
+        assert!(!is_macos_git_shim("node", Path::new("/usr/bin/git")));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // managed_git_env_in — the relocatable (dugite) git's GIT_EXEC_PATH /
+    // GIT_TEMPLATE_DIR / CA env. Regression: without these the github clone
+    // failed ("remote-https is not a git command", then cert-verify).
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_managed_git_env_empty_when_not_installed() {
+        let home = TempDir::new().unwrap();
+        // No toolchain git on disk → no env (don't clobber a system git config).
+        assert!(managed_git_env_in(home.path()).is_empty());
+    }
+
+    #[test]
+    fn test_managed_git_env_set_when_installed() {
+        let home = TempDir::new().unwrap();
+        // Seed a fake managed git binary at the toolchain layout.
+        let git_bin_dir = home
+            .path()
+            .join("Library/Application Support/Indigo HQ/toolchain/git/bin");
+        make_fake_bin_at(&git_bin_dir, "git");
+
+        let env: std::collections::HashMap<String, String> =
+            managed_git_env_in(home.path()).into_iter().collect();
+
+        assert!(env
+            .get("GIT_EXEC_PATH")
+            .expect("GIT_EXEC_PATH should be set")
+            .ends_with("toolchain/git/libexec/git-core"));
+        assert!(env
+            .get("GIT_TEMPLATE_DIR")
+            .expect("GIT_TEMPLATE_DIR should be set")
+            .ends_with("toolchain/git/share/git-core/templates"));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

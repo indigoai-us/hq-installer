@@ -461,6 +461,56 @@ fn managed_git_bin_in(home: &std::path::Path) -> PathBuf {
     managed_git_dir_in(home).join("bin")
 }
 
+/// Environment a relocatable (dugite) git needs so it can find its sub-commands
+/// (libexec/git-core, e.g. git-remote-https), its templates, and a CA bundle.
+/// dugite's git has no compiled-in prefix and bundles no CA file, so without
+/// these `git clone https://…` fails first with "remote-https is not a git
+/// command" and then with a certificate-verify error. Returns empty when the
+/// managed git isn't installed (so a real system git keeps its own config).
+/// Exposed for unit tests.
+pub fn managed_git_env_in(home: &std::path::Path) -> Vec<(String, String)> {
+    let git_dir = managed_git_dir_in(home);
+    if !git_dir.join("bin").join("git").exists() {
+        return Vec::new();
+    }
+    let mut env = vec![
+        (
+            "GIT_EXEC_PATH".to_string(),
+            git_dir
+                .join("libexec")
+                .join("git-core")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "GIT_TEMPLATE_DIR".to_string(),
+            git_dir
+                .join("share")
+                .join("git-core")
+                .join("templates")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ];
+    // dugite's git uses OpenSSL and bundles no CA; macOS ships a trusted bundle
+    // at /etc/ssl/cert.pem. Only set it when present.
+    let system_ca = std::path::Path::new("/etc/ssl/cert.pem");
+    if system_ca.exists() {
+        env.push((
+            "GIT_SSL_CAINFO".to_string(),
+            system_ca.to_string_lossy().into_owned(),
+        ));
+    }
+    env
+}
+
+/// Production wrapper over `managed_git_env_in`, resolving the real home dir.
+pub fn managed_git_env() -> Vec<(String, String)> {
+    dirs::home_dir()
+        .map(|h| managed_git_env_in(&h))
+        .unwrap_or_default()
+}
+
 /// User-local tool paths owned by HQ Installer. Exposed for unit tests.
 pub fn managed_tool_paths_in(home: &std::path::Path) -> Vec<String> {
     vec![
@@ -620,6 +670,13 @@ fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHandle) {
 
 /// Internal implementation shared by `check_dep` (uses real PATH) and
 /// `check_dep_in` (uses a caller-supplied search path — useful for tests).
+/// True when `(tool, bin_path)` is the macOS `/usr/bin/git` CLT shim. Pure so
+/// the path classification is unit-tested without filesystem/xcode-select; the
+/// caller layers the CLT-presence check on top to decide "usable or not".
+pub fn is_macos_git_shim(tool: &str, bin_path: &std::path::Path) -> bool {
+    tool == "git" && bin_path == std::path::Path::new("/usr/bin/git")
+}
+
 pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     // Locate the binary.
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -639,6 +696,28 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
             }
         }
     };
+
+    // macOS ships a non-functional `git` shim at /usr/bin/git that forwards to
+    // the Xcode Command Line Tools. With no CLT installed it can't run git — it
+    // errors and pops the "install developer tools" dialog. Treat it as NOT
+    // installed so the managed (dugite) git gets provisioned instead. Detected
+    // via path + `xcode-select -p` so we never RUN the shim (running it is what
+    // pops the dialog). Once the toolchain git is installed, which_in resolves
+    // to it first (toolchain is ahead of /usr/bin), so this guard stops firing.
+    if is_macos_git_shim(tool, &bin_path) {
+        let clt_present = Command::new("/usr/bin/xcode-select")
+            .arg("-p")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !clt_present {
+            return DepStatus {
+                installed: false,
+                version: None,
+                path: None,
+            };
+        }
+    }
 
     // Run `<tool> --version` and capture the first line of stdout.
     let version = Command::new(&bin_path)
