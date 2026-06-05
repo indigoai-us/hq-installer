@@ -650,6 +650,43 @@ mod tests {
         assert_eq!(pick_installed_app(system, false, user, false), None);
     }
 
+    #[test]
+    fn dir_is_writable_probes_real_filesystem() {
+        // Exercises the real write-probe (not mode-bit inspection) against the
+        // filesystem — this is the check that decides whether /Applications is
+        // usable or we fall back to ~/Applications. Assumes a non-root runner
+        // (macOS CI + the pre-commit hook both run as a normal user); root
+        // would bypass permission bits and make the negative case meaningless.
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("hq-probe-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // A freshly created temp dir is writable → probe true.
+        assert!(
+            super::dir_is_writable(&dir),
+            "writable temp dir should probe as writable"
+        );
+
+        // Read + execute only (0555) models the non-admin /Applications shape:
+        // entries can't be created, so the probe must report NOT writable and
+        // the installer falls back to ~/Applications.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(
+            !super::dir_is_writable(&dir),
+            "a 0555 (no-write) dir must probe as NOT writable"
+        );
+
+        // A non-existent dir is never writable.
+        assert!(!super::dir_is_writable(&dir.join("does-not-exist")));
+
+        // Restore write so cleanup can remove the dir.
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     const SAMPLE_RELEASE: &str = r#"{
         "tag_name": "v1.2.3",
         "assets": [
