@@ -318,7 +318,7 @@ describe("Summary screen (11-summary.tsx)", () => {
       <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, telemetryEnabled: true }} />,
     );
     await waitFor(() => {
-      expect(mockPingSuccess).toHaveBeenCalledTimes(1);
+      expect(mockPingSuccess).toHaveBeenCalledWith("test");
     });
   });
 
