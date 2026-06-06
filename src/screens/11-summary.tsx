@@ -54,18 +54,22 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
 
   // ── Telemetry + manifest finalize + Claude-installed probe on mount ─────
   useEffect(() => {
-    if (wizardState.telemetryEnabled) {
-      pingSuccess().catch(() => {});
-    }
     if (wizardState.installPath) {
       (async () => {
         try {
           const v = await getInstallerVersion();
+          if (wizardState.telemetryEnabled) {
+            pingSuccess(v).catch(() => {});
+          }
           await recordInstallComplete(wizardState.installPath as string, v);
         } catch {
           /* non-fatal */
         }
       })();
+    } else if (wizardState.telemetryEnabled) {
+      getInstallerVersion()
+        .then((v) => pingSuccess(v))
+        .catch(() => {});
     }
     // Probe whether Claude Desktop is installed so we can render the right
     // CTA. Default to "not installed" on probe failure — the download link is
