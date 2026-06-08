@@ -1,6 +1,6 @@
 // google-oauth.ts
 //
-// Google sign-in via Cognito Hosted UI + OAuth loopback redirect with PKCE.
+// Provider sign-in via Cognito Hosted UI + OAuth loopback redirect with PKCE.
 //
 // Flow:
 //   1. generatePkce() creates a random `verifier` and its SHA-256 `challenge`.
@@ -101,15 +101,28 @@ export interface AuthorizeArgs {
   config: OAuthConfig;
   state: string;
   codeChallenge: string;
+  provider?: SignInProvider;
+}
+
+export type SignInProvider = "Google" | "Microsoft";
+
+export const SIGN_IN_PROVIDERS: { key: SignInProvider; label: string }[] = [
+  { key: "Google", label: "Google" },
+  { key: "Microsoft", label: "Microsoft" },
+];
+
+export function identityProviderFor(provider: SignInProvider): string {
+  return provider === "Microsoft" ? "MicrosoftPersonal" : "Google";
 }
 
 /**
- * Build the Cognito Hosted UI URL that signs the user in via Google.
+ * Build the Cognito Hosted UI URL that signs the user in via the selected
+ * provider.
  *
- * `identity_provider=Google` skips the Cognito username/password screen and
- * goes straight to Google consent. `prompt=select_account` passes through
- * Cognito to Google so the user always sees the account picker — without it,
- * Google auto-selects whichever Google session is already active in the
+ * `identity_provider` skips the Cognito username/password screen and goes
+ * straight to the selected provider. `prompt=select_account` passes through
+ * Cognito so the user sees the account picker — without it, the provider can
+ * auto-select whichever session is already active in the
  * system browser, which is rarely the account the user actually means to use
  * on a multi-account machine.
  */
@@ -117,13 +130,14 @@ export function buildAuthorizeUrl({
   config,
   state,
   codeChallenge,
+  provider = "Google",
 }: AuthorizeArgs): string {
   const params = new URLSearchParams({
     client_id: config.clientId,
     response_type: "code",
     scope: "openid email profile",
     redirect_uri: config.redirectUri,
-    identity_provider: "Google",
+    identity_provider: identityProviderFor(provider),
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",

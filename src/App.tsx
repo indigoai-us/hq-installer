@@ -73,7 +73,7 @@ function App() {
   const { currentStep } = router;
 
   // 5-step flow (US-005):
-  //   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito/Google) →
+  //   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito provider) →
   //   4 Setup (unified post-login progress) → 5 Done
   function renderStep() {
     switch (currentStep) {

@@ -151,7 +151,7 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// storeTokens — used by Google OAuth flow to persist tokens after exchange
+// storeTokens — used by the provider OAuth flow to persist tokens after exchange
 // ---------------------------------------------------------------------------
 
 describe("storeTokens", () => {
@@ -493,4 +493,3 @@ describe("shared token file", () => {
     );
   });
 });
-
