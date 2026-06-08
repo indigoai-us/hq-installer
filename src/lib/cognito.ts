@@ -1,7 +1,7 @@
 // cognito.ts — token lifecycle + keychain persistence.
 //
-// Authentication itself lives in `google-oauth.ts` (Google via Cognito Hosted
-// UI + PKCE). This module is responsible for:
+// Authentication itself lives in `google-oauth.ts` (provider sign-in via
+// Cognito Hosted UI + PKCE). This module is responsible for:
 //   - Storing/loading/clearing Cognito tokens in the macOS keychain.
 //   - Writing/reading the shared token file (~/.hq/cognito-tokens.json).
 //   - Refreshing expired sessions via REFRESH_TOKEN_AUTH.

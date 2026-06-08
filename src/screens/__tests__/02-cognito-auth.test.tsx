@@ -3,11 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
-// CognitoAuth screen tests — Google OAuth via Cognito Hosted UI + PKCE
+// CognitoAuth screen tests — provider OAuth via Cognito Hosted UI + PKCE
 // ---------------------------------------------------------------------------
 //
-// The screen should render a single "Continue with Google" button. Clicking
-// it kicks off the OAuth flow:
+// The screen should render Google and Microsoft buttons. Clicking either kicks
+// off the OAuth flow:
 //   1. generate PKCE + state (mocked here)
 //   2. invoke("oauth_listen_for_code", ...) — Rust loopback waits for redirect
 //   3. openInBrowser(authorizeUrl) — shells out to the system browser
@@ -70,6 +70,10 @@ vi.mock("../../lib/google-oauth.js", () => ({
     cognitoDomain: "auth.example.com",
     redirectUri: "http://localhost:53682/callback",
   }),
+  SIGN_IN_PROVIDERS: [
+    { key: "Google", label: "Google" },
+    { key: "Microsoft", label: "Microsoft" },
+  ],
   DEFAULT_LOOPBACK_PORT: 53682,
   DEFAULT_REDIRECT_URI: "http://localhost:53682/callback",
 }));
@@ -96,15 +100,15 @@ const FAKE_TOKENS: cognito.CognitoTokens = {
   expiresAt: Date.now() + 3_600_000,
 };
 
-describe("CognitoAuth screen — Google OAuth", () => {
+describe("CognitoAuth screen — provider OAuth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("renders a Continue with Google button", () => {
+  it("renders Google and Microsoft provider buttons", () => {
     render(<CognitoAuth onNext={vi.fn()} />);
-    const btn = screen.getByRole("button", { name: /continue with google/i });
-    expect(btn).not.toBeNull();
+    expect(screen.getByRole("button", { name: /continue with google/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /continue with microsoft/i })).not.toBeNull();
   });
 
   it("does not render email, password, or sign-up UI", () => {
@@ -154,10 +158,27 @@ describe("CognitoAuth screen — Google OAuth", () => {
       expect.objectContaining({
         state: "st-abc",
         codeChallenge: "c-123",
+        provider: "Google",
       }),
     );
     expect(mockExchange).toHaveBeenCalledWith(
       expect.objectContaining({ code: "AUTH_CODE", verifier: "v-123" }),
+    );
+  });
+
+  it("passes Microsoft through to the authorize URL builder", async () => {
+    const user = userEvent.setup();
+    mockInvoke.mockResolvedValue({ code: "AUTH_CODE" });
+    mockExchange.mockResolvedValue(FAKE_TOKENS);
+
+    render(<CognitoAuth onNext={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /continue with microsoft/i }));
+
+    await waitFor(() => expect(mockExchange).toHaveBeenCalled());
+    expect(mockBuildUrl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "Microsoft",
+      }),
     );
   });
 

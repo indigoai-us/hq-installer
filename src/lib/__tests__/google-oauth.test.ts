@@ -5,6 +5,7 @@ import {
   generatePkce,
   generateState,
   getDefaultConfig,
+  identityProviderFor,
   DEFAULT_LOOPBACK_PORT,
   DEFAULT_REDIRECT_URI,
 } from "../google-oauth.js";
@@ -116,6 +117,22 @@ describe("buildAuthorizeUrl", () => {
     expect(u.searchParams.get("code_challenge")).toBe("CHALLENGE");
     expect(u.searchParams.get("code_challenge_method")).toBe("S256");
     expect(u.searchParams.get("prompt")).toBe("select_account");
+  });
+
+  it("maps Microsoft to the personal-account Cognito IdP", () => {
+    expect(identityProviderFor("Google")).toBe("Google");
+    expect(identityProviderFor("Microsoft")).toBe("MicrosoftPersonal");
+
+    const url = buildAuthorizeUrl({
+      config: CONFIG,
+      state: "STATE",
+      codeChallenge: "CHALLENGE",
+      provider: "Microsoft",
+    });
+    const u = new URL(url);
+
+    expect(u.searchParams.get("identity_provider")).toBe("MicrosoftPersonal");
+    expect(u.searchParams.get("redirect_uri")).toBe(DEFAULT_REDIRECT_URI);
   });
 });
 

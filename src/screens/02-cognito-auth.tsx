@@ -1,7 +1,7 @@
 // 02-cognito-auth.tsx
-// Sign in with Google via Cognito Hosted UI (OAuth loopback + PKCE).
+// Sign in via Cognito Hosted UI (OAuth loopback + PKCE).
 //
-// When the user clicks "Continue with Google", we:
+// When the user clicks a provider button, we:
 //   1. Generate a PKCE verifier/challenge + opaque state token.
 //   2. Kick off the Rust `oauth_listen_for_code` command — it binds
 //      127.0.0.1:53682 and blocks until the browser hits /callback.
@@ -23,6 +23,8 @@ import {
   generatePkce,
   generateState,
   getDefaultConfig,
+  SIGN_IN_PROVIDERS,
+  type SignInProvider,
 } from "@/lib/google-oauth";
 import { getWizardState, setGitIdentity } from "@/lib/wizard-state";
 import { postOptIn } from "@/lib/telemetry";
@@ -36,10 +38,10 @@ interface OAuthResult {
 }
 
 export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
-  const [loading, setLoading] = useState(false);
+  const [loadingProvider, setLoadingProvider] = useState<SignInProvider | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Monotonic call counter. If the user re-clicks "Continue with Google"
+  // Monotonic call counter. If the user re-clicks a provider button
   // while a prior OAuth flow is still in flight (browser tab closed, wrong
   // window, etc.), the Rust side cancels the old loopback listener — which
   // rejects the old listenerPromise with "Sign-in cancelled." We use this
@@ -47,10 +49,10 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
   // attempt's loading/error state.
   const currentCallRef = useRef(0);
 
-  async function handleSignIn() {
+  async function handleSignIn(provider: SignInProvider) {
     const myCall = ++currentCallRef.current;
     setError(null);
-    setLoading(true);
+    setLoadingProvider(provider);
     try {
       const config = getDefaultConfig();
       const pkce = await generatePkce();
@@ -59,6 +61,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
         config,
         state,
         codeChallenge: pkce.challenge,
+        provider,
       });
 
       // Start the loopback listener FIRST so we never miss the redirect,
@@ -90,7 +93,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
           setGitIdentity(user.name ?? "", user.email);
         }
       } catch (err) {
-        console.warn("[google-oauth] could not decode idToken for wizard pre-fill:", err);
+        console.warn("[oauth] could not decode idToken for wizard pre-fill:", err);
       }
       if (myCall !== currentCallRef.current) return;
       // Fire-and-forget: postOptIn handles retries + local cache internally.
@@ -111,10 +114,10 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
             ? err
             : JSON.stringify(err);
       // Surface in the webview console as well so right-click → Inspect shows it.
-      console.error("[google-oauth] sign-in failed:", err);
+      console.error("[oauth] sign-in failed:", err);
       setError(msg || "Sign-in failed");
     } finally {
-      if (myCall === currentCallRef.current) setLoading(false);
+      if (myCall === currentCallRef.current) setLoadingProvider(null);
     }
   }
 
@@ -122,7 +125,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
     <div className="flex flex-col gap-6 max-w-sm">
       <h1 className="text-2xl font-medium text-white">Sign in</h1>
       <p className="text-sm text-zinc-400 -mt-4">
-        Use your Google account to continue setting up HQ.
+        Use Google or Microsoft to continue setting up HQ.
       </p>
 
       {error && (
@@ -134,23 +137,45 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={handleSignIn}
-        className="flex items-center justify-center gap-3 rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
-      >
-        <GoogleGlyph />
-        {loading ? "Reopen Google sign-in" : "Continue with Google"}
-      </button>
+      <div className="grid gap-3">
+        {SIGN_IN_PROVIDERS.map((provider) => (
+          <button
+            key={provider.key}
+            type="button"
+            onClick={() => handleSignIn(provider.key)}
+            disabled={loadingProvider !== null}
+            className="flex items-center justify-center gap-3 rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+          >
+            {provider.key === "Google" ? <GoogleGlyph /> : <MicrosoftGlyph />}
+            {loadingProvider === provider.key
+              ? `Reopen ${provider.label} sign-in`
+              : `Continue with ${provider.label}`}
+          </button>
+        ))}
+      </div>
 
-      {loading && (
+      {loadingProvider && (
         <p className="text-xs text-zinc-500 text-center">
-          A browser window opened for Google sign-in. Complete it there and
+          A browser window opened for {loadingProvider} sign-in. Complete it there and
           you'll return here automatically. If the tab closed or opened in the
           wrong window, click the button above to try again.
         </p>
       )}
     </div>
+  );
+}
+
+function MicrosoftGlyph(): React.ReactElement {
+  return (
+    <span
+      aria-hidden="true"
+      className="grid size-[18px] shrink-0 grid-cols-2 gap-0.5"
+    >
+      <span className="bg-[#f25022]" />
+      <span className="bg-[#7fba00]" />
+      <span className="bg-[#00a4ef]" />
+      <span className="bg-[#ffb900]" />
+    </span>
   );
 }
 

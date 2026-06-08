@@ -2,13 +2,13 @@
 // Wizard navigation state machine — collapsed 5-step flow.
 //
 // Screen flow:
-//   01 Welcome → 02 Install (silent ~/hq) → 03 Sign In (Cognito/Google) →
+//   01 Welcome → 02 Install (silent ~/hq) → 03 Sign In (Cognito provider) →
 //   04 Setup (unified post-login progress orchestrator) → 05 Done
 //
 // Old install-then-templates-then-prereqs-then-login-then-everything ordering
 // is gone — every install phase now sits behind the single Setup progress
 // bar (see screens/setup-progress.tsx) and the user only sees one explicit
-// input (Google sign-in at step 3).
+// input (provider sign-in at step 3).
 
 import type { WizardState } from "./wizard-state";
 

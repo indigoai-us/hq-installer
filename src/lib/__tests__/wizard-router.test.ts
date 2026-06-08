@@ -25,7 +25,7 @@ function makeState(overrides: Partial<WizardState> = {}): WizardState {
 // ---------------------------------------------------------------------------
 // wizard-router unit tests — US-005 5-step contract
 //
-//   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito/Google) →
+//   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito provider) →
 //   4 Setup (unified post-login progress) → 5 Done
 //
 // AUTH_GATED_STEPS = [4] — Setup is the first post-auth step, so the gate
