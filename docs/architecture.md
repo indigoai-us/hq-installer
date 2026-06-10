@@ -1,6 +1,6 @@
 # hq-installer Architecture
 
-Native macOS installer for HQ. Guided 10-step wizard built on Tauri 2 + React 19 + TypeScript.
+Native macOS installer for HQ. Guided 5-step wizard built on Tauri 2 + React 19 + TypeScript.
 
 ## Stack
 
@@ -11,7 +11,7 @@ Native macOS installer for HQ. Guided 10-step wizard built on Tauri 2 + React 19
 | Auth | AWS Cognito (email/password + GitHub OAuth) | Identity, session tokens |
 | Build | Vite 6, pnpm | Dev server, bundling |
 | CI | GitHub Actions (macos-latest) | Type-check, lint, test, release |
-| E2E | Playwright | Full 10-step walkthrough |
+| E2E | Playwright | Full 5-step walkthrough |
 
 ## Rust ↔ TypeScript Boundary
 
@@ -36,24 +36,19 @@ All OS-level work lives in Rust (`src-tauri/src/commands/`). TypeScript calls ac
 
 ## Wizard Flow
 
-10 steps in sequence:
+5 steps in sequence:
 
 | Step | File | Key action |
 |---|---|---|
 | 1 — Welcome | `01-welcome.tsx` | Intro + telemetry opt-in |
-| 2 — Sign In | `02-cognito-auth.tsx` | Sign in / sign up (email+pw or GitHub OAuth) |
-| 3 — Prerequisites | `04-deps.tsx` | Probe + install system deps |
-| 4 — Install | `06-directory.tsx` | Native directory picker for HQ install path |
-| 5 — Templates | `07-template.tsx` | Download + extract HQ tarball from GitHub releases. Persists chosen install path to `~/.hq/menubar.json` `hqPath` (Priority 1 input for HQ Sync's folder resolver) |
-| 6 — Workspace | `08-git-init.tsx` | `git_init` command + initial commit |
-| 7 — Personalize | `09-personalize.tsx` | Name + detect cloud companies (lists user's HQ-Cloud memberships, seeds `team` + `connectedCompanyCount` in wizard state) |
-| 8 — Verify | `10-indexing.tsx` | `qmd update` via `spawn_process` |
-| 9 — HQ Sync | `InstallMenubarStep.tsx` | Always installs the HQ Sync menu bar app (universal install — no longer gated on `connectedCompanyCount`). Even users with no cloud-connected companies get personal HQ sync |
-| 10 — Done | `11-summary.tsx` | Launch Claude Code |
+| 2 — Install | `06-directory.tsx` | Native directory picker, then downloads + extracts the HQ core scaffold (indigoai-us/hq-core release). Persists chosen install path to `~/.hq/menubar.json` `hqPath` (Priority 1 input for HQ Sync's folder resolver) |
+| 3 — Sign In | `02-cognito-auth.tsx` | Sign in / sign up (email+pw or GitHub OAuth) |
+| 4 — Setup | `setup-progress.tsx` | Unified post-login orchestrator running seven sequential stages: dependency install → initial cloud sync → default packs → git init → personalization (cloud-company detection) → qmd indexing → HQ Sync menubar app install |
+| 5 — Done | `11-summary.tsx` | Launch Claude Code |
 
-Navigation is managed by `wizard-router.ts` (plain JS state machine, no React context). Step 3 (Prerequisites) is auth-gated: no back navigation allowed once the user has signed in. Wizard session data (team, installPath, gitIdentity, personalized flag, connectedCompanyCount) is held in the `wizard-state.ts` module singleton.
+Navigation is managed by `wizard-router.ts` (plain JS state machine, no React context). Step 4 (Setup) is the first screen past the Cognito auth gate: backward navigation across the gate is blocked once the user signs in. Wizard session data (team, installPath, gitIdentity, personalized flag, connectedCompanyCount) is held in the `wizard-state.ts` module singleton.
 
-Two screens were removed from the earlier 12-step flow: the old Step 3 (`03-team.tsx`, "create/join team") was folded into Step 7 — Personalize auto-lists the user's HQ-Cloud companies on mount instead. The old Step 8 (`08b-sync.tsx`, "S3 sync") was removed entirely because the HQ-Sync menu bar app (installed in Step 9) now owns continuous S3 reconciliation post-install.
+The earlier 10-step flow's standalone screens (prerequisites, templates, git setup, personalize, indexing, HQ Sync install) were folded into Steps 2 and 4 and their screen files removed; the still-earlier 12-step flow's team-selection and S3-sync screens are gone too (company detection happens during personalization, and the HQ Sync menubar app owns continuous sync post-install).
 
 ## Auth Architecture
 
@@ -174,7 +169,7 @@ Required GitHub Actions secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWOR
 |---|---|---|
 | Unit | Vitest | cognito.ts, template-fetcher.ts, personalize-writer.ts, updater.ts |
 | Regression | Vitest (`vitest.config.regression.ts`) | Installer output vs canonical `create-hq + /setup` layout |
-| E2E | Playwright | Full 10-step walkthrough on macOS CI |
+| E2E | Playwright | Full 5-step walkthrough on macOS CI |
 
 Unit tests use dependency injection for Tauri APIs (injected template strings, stub `invoke`) — no real Tauri runtime required.
 
