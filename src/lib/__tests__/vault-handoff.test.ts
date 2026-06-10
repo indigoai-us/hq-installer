@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/plugin-http", () => ({
     globalThis.fetch(input, init),
 }));
 
-import { resolveUserCompany } from "../vault-handoff";
+import { resolveUserCompany, ensurePersonProvisioned } from "../vault-handoff";
 
 const MOCK_TOKEN = "mock-access-token";
 
@@ -21,6 +21,8 @@ function mockFetch(responses: Array<{ ok: boolean; status: number; body: unknown
       ok: resp.ok,
       status: resp.status,
       json: async () => resp.body,
+      text: async () =>
+        typeof resp.body === "string" ? resp.body : JSON.stringify(resp.body),
     } as Response;
   });
 }
@@ -279,6 +281,136 @@ describe("resolveUserCompany", () => {
     const result = await resolveUserCompany(MOCK_TOKEN);
     expect(result).toEqual(
       expect.objectContaining({ found: true, bucketName: "hq-vault-acme" })
+    );
+  });
+});
+
+describe("ensurePersonProvisioned", () => {
+  const originalFetch = globalThis.fetch;
+  const HINTS = { ownerSub: "sub-1", displayName: "Jane Doe" };
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("returns personUid + bucket for an already-provisioned person (one call)", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entities: [
+            {
+              uid: "prs_1",
+              type: "person",
+              slug: "jane",
+              name: "Jane",
+              bucketName: "hq-vault-prs-1",
+            },
+          ],
+        },
+      },
+    ]);
+
+    const res = await ensurePersonProvisioned(MOCK_TOKEN, HINTS);
+    expect(res).toEqual({ personUid: "prs_1", bucketName: "hq-vault-prs-1" });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads bucketName from metadata when it isn't a top-level field", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entities: [
+            {
+              uid: "prs_1",
+              type: "person",
+              slug: "jane",
+              name: "Jane",
+              metadata: { bucketName: "hq-vault-prs-1" },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const res = await ensurePersonProvisioned(MOCK_TOKEN, HINTS);
+    expect(res).toEqual({ personUid: "prs_1", bucketName: "hq-vault-prs-1" });
+  });
+
+  it("provisions the bucket when the existing person has none", async () => {
+    globalThis.fetch = mockFetch([
+      // GET /entity/by-type/person → person without a bucket
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entities: [{ uid: "prs_1", type: "person", slug: "jane", name: "Jane" }],
+        },
+      },
+      // POST /provision/bucket → bucketName
+      { ok: true, status: 200, body: { bucketName: "hq-vault-prs-1" } },
+    ]);
+
+    const res = await ensurePersonProvisioned(MOCK_TOKEN, HINTS);
+    expect(res).toEqual({ personUid: "prs_1", bucketName: "hq-vault-prs-1" });
+
+    // Second call must be POST /provision/bucket with { companyUid: personUid }.
+    const secondCall = vi.mocked(globalThis.fetch).mock.calls[1];
+    expect(String(secondCall[0])).toContain("/provision/bucket");
+    expect(secondCall[1]?.method).toBe("POST");
+    expect(JSON.parse(secondCall[1]?.body as string)).toEqual({
+      companyUid: "prs_1",
+    });
+  });
+
+  it("creates the person entity when none exists, then uses its bucket", async () => {
+    globalThis.fetch = mockFetch([
+      // GET /entity/by-type/person → none
+      { ok: true, status: 200, body: { entities: [] } },
+      // POST /entity → created + provisioned
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entity: {
+            uid: "prs_new",
+            type: "person",
+            slug: "jane-doe",
+            name: "Jane Doe",
+            bucketName: "hq-vault-prs-new",
+          },
+        },
+      },
+    ]);
+
+    const res = await ensurePersonProvisioned(MOCK_TOKEN, HINTS);
+    expect(res).toEqual({
+      personUid: "prs_new",
+      bucketName: "hq-vault-prs-new",
+    });
+    const secondCall = vi.mocked(globalThis.fetch).mock.calls[1];
+    expect(String(secondCall[0])).toContain("/entity");
+    expect(secondCall[1]?.method).toBe("POST");
+  });
+
+  it("throws when provision/bucket fails", async () => {
+    globalThis.fetch = mockFetch([
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entities: [{ uid: "prs_1", type: "person", slug: "jane", name: "Jane" }],
+        },
+      },
+      { ok: false, status: 422, body: { code: "ENTITY_NOT_PROVISIONED" } },
+    ]);
+
+    await expect(ensurePersonProvisioned(MOCK_TOKEN, HINTS)).rejects.toThrow(
+      /provision\/bucket failed: 422/
     );
   });
 });

@@ -321,3 +321,77 @@ export async function listUserCompanies(
 
   return companies.filter((c): c is UserCompanyEntry => c !== null);
 }
+
+// ---------------------------------------------------------------------------
+// Personal vault provisioning
+// ---------------------------------------------------------------------------
+
+/**
+ * Guarantee the caller's PERSON entity exists and its personal vault bucket is
+ * provisioned, returning `{ personUid, bucketName }`.
+ *
+ * Why this is needed before any personal sync: the personal bucket is created
+ * at person-entity creation (`POST /entity {type:person}` provisions it
+ * synchronously) and also best-effort at Cognito signup — but that signup
+ * trigger is fire-and-forget with swallowed errors, so a person row can exist
+ * with no bucket. Critically, `/sts/vend-self` and the hq-cloud-sync runner do
+ * NOT auto-create the bucket — they error (422 `ENTITY_NOT_PROVISIONED`) if
+ * it's missing. So the installer must force it before spawning the runner.
+ *
+ * Reliable path: `ensurePersonEntity` (idempotent GET-or-`POST /entity`) gives
+ * us the person; if its bucket still isn't set we call `/provision/bucket`
+ * (idempotent) to force it. Mirrors hq-cloud-sync's `resolve_or_provision`.
+ */
+export async function ensurePersonProvisioned(
+  accessToken: string,
+  hints: ClaimHints
+): Promise<{ personUid: string; bucketName: string }> {
+  const base = getVaultApiUrl();
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    ...CLIENT_HEADERS,
+  };
+
+  const person = await ensurePersonEntity(base, headers, hints);
+  if (!person) {
+    throw new Error("Could not resolve or create your person entity");
+  }
+
+  let bucketName =
+    person.bucketName ??
+    (person.metadata?.["bucketName"] as string | undefined);
+
+  if (!bucketName) {
+    bucketName = await provisionEntityBucket(base, headers, person.uid);
+  }
+  if (!bucketName) {
+    throw new Error("Personal vault bucket is not provisioned");
+  }
+
+  return { personUid: person.uid, bucketName };
+}
+
+/**
+ * `POST /provision/bucket` for an entity. The endpoint is entity-type-agnostic;
+ * the body field is literally `companyUid` even for a `prs_*` person uid (this
+ * matches hq-cloud-sync's client). Idempotent — safe to call on an
+ * already-provisioned entity. Returns the bucket name.
+ */
+async function provisionEntityBucket(
+  base: string,
+  headers: Record<string, string>,
+  uid: string
+): Promise<string | undefined> {
+  const res = await fetch(`${base}/provision/bucket`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ companyUid: uid }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`provision/bucket failed: ${res.status} ${detail}`.trim());
+  }
+  const body = (await res.json()) as { bucketName?: string };
+  return body.bucketName;
+}

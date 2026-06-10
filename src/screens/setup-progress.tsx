@@ -1,23 +1,30 @@
 // setup-progress.tsx — US-004
-// Unified post-login orchestrator. Sequences six stages behind a single
+// Unified post-login orchestrator. Sequences seven stages behind a single
 // progress bar with one explanatory line and no intermediate input:
 //
-//   1. deps        — runDepsInstall() (core deps; optionals skipped)
-//   2. packages    — install the default HQ content packs (no picker)
-//   3. git-init    — invoke("git_init") with identity from Google idToken
-//   4. personalize — detect cloud company (non-fatal) + personalize()
-//   5. indexing    — qmd collection add (writes embeddings-pending marker)
-//   6. menubar     — install_menubar_app (HQ Sync tray app)
+//   1. deps         — runDepsInstall() (core deps; optionals skipped)
+//   2. initial-sync — provision the personal vault bucket + spawn the
+//                     hq-cloud-sync runner in the background (best-effort)
+//   3. packages     — install the default HQ content packs (no picker)
+//   4. git-init     — invoke("git_init") with identity from Google idToken
+//   5. personalize  — detect cloud company (non-fatal) + personalize()
+//   6. indexing     — qmd collection add (writes embeddings-pending marker)
+//   7. menubar      — install_menubar_app (HQ Sync tray app)
 //
-// Cloud file sync is intentionally NOT done here — the HQ Sync menu-bar app
-// (installed in the last stage) owns syncing the user's company files. The
-// installer only *detects* the company (so the Done screen + personalize
-// reflect it); HQ Sync pulls the files on first launch.
+// The initial cloud sync is kicked off HERE, as early as the flow allows
+// (login already happened; deps just put node/npx on disk), and deliberately
+// before packages per product direction — the runner syncs concurrently while
+// the remaining stages run. It is fire-and-forget: the stage only provisions
+// the personal bucket and launches the runner, then moves on. The HQ Sync
+// menu-bar app (last stage) still owns continuous sync and re-reconciles on
+// first launch, which also covers anything written after the runner's pass
+// (packages, personalization, company detection).
 //
 // Each stage outcome is journaled to the install-manifest so a later /setup
 // can resume any failed stage. On failure the bar freezes — prior stages keep
 // their `ok` status and the user gets a Retry that resumes from the failure
-// point.
+// point. (initial-sync is the exception: kickoff failures are journaled but
+// never fail the stage — HQ Sync's first launch is the fallback.)
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -31,6 +38,7 @@ import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
 import { personalize, type CompanySeed } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
 import { listUserCompanies } from "@/lib/vault-handoff";
+import { startInitialCloudSync } from "@/lib/initial-sync";
 import {
   setGitIdentity,
   setIsPersonal,
@@ -54,6 +62,7 @@ import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 
 export type StageId =
   | "deps"
+  | "initial-sync"
   | "packages"
   | "git-init"
   | "personalize"
@@ -72,6 +81,7 @@ interface StageState {
 
 const STAGE_LABELS: Record<StageId, string> = {
   deps: "Installing dependencies",
+  "initial-sync": "Starting initial cloud sync",
   packages: "Installing packages",
   "git-init": "Initialising workspace",
   personalize: "Personalizing",
@@ -80,8 +90,11 @@ const STAGE_LABELS: Record<StageId, string> = {
 };
 
 // Order is part of the contract — the progress bar maps directly to indices.
+// initial-sync sits right after deps (the earliest point node/npx exist) and
+// before packages, so the cloud sync runs concurrently with the rest of setup.
 const STAGE_ORDER: readonly StageId[] = [
   "deps",
+  "initial-sync",
   "packages",
   "git-init",
   "personalize",
@@ -201,7 +214,57 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     return true;
   }
 
-  // ── Stage 2: packages (default HQ content packs) ───────────────────────
+  // ── Stage 2: initial-sync (provision personal vault + spawn the runner) ─
+  //
+  // The earliest point the first cloud sync can start: the user is signed in
+  // (pre-this-screen) and deps just put node/npx on disk. We guarantee the
+  // personal vault bucket exists (the runner 422s on a missing bucket — the
+  // signup-time auto-provision is fire-and-forget and can silently miss),
+  // then spawn the same hq-cloud-sync runner HQ Sync uses and move on
+  // without waiting. ALWAYS returns true: a kickoff failure is journaled to
+  // the manifest's failure ledger but never blocks the install — the HQ Sync
+  // menu-bar app re-runs the same sync on first launch regardless.
+
+  async function runInitialSync(): Promise<boolean> {
+    try {
+      const user = await getCurrentUser();
+      if (!user) {
+        appendLog(
+          "initial-sync",
+          "[warn] No signed-in user — skipping; HQ Sync will sync on first launch.",
+        );
+        return true;
+      }
+      const name =
+        user.name ??
+        [user.givenName, user.familyName].filter(Boolean).join(" ").trim();
+      const { personUid, handle } = await startInitialCloudSync(
+        installPath,
+        user.tokens.accessToken,
+        { ownerSub: user.sub, displayName: name || user.email },
+      );
+      appendLog(
+        "initial-sync",
+        `Personal vault ready (${personUid}); sync running in the background (${handle}).`,
+      );
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendLog("initial-sync", `[warn] Initial cloud sync did not start: ${msg}`);
+      // Leave a failure-ledger row for a later /setup; the dispatcher's
+      // journalOk then marks the STEP ok (accurate — the install isn't
+      // blocked), while the failures[] entry preserves what went wrong.
+      try {
+        const ver = await getInstallerVersion();
+        await recordStepFailure(installPath, ver, "initial-sync", msg);
+      } catch {
+        /* non-fatal */
+      }
+      return true;
+    }
+  }
+
+  // ── Stage 3: packages (default HQ content packs) ───────────────────────
   //
   // Installs HQ's default content packs right after login, with NO selection
   // UI — the v4.x wizard let you pick from a catalog; the streamlined flow
@@ -259,7 +322,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     return true;
   }
 
-  // ── Stage 3: git-init ──────────────────────────────────────────────────
+  // ── Stage 4: git-init ──────────────────────────────────────────────────
 
   async function runGitInit(): Promise<boolean> {
     try {
@@ -292,7 +355,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     }
   }
 
-  // ── Stage 4: personalize (with non-fatal company detection) ────────────
+  // ── Stage 5: personalize (with non-fatal company detection) ────────────
   //
   // We detect which cloud company the user belongs to so the Done screen and
   // the personalized HQ reflect it, then personalize from the Google name.
@@ -355,7 +418,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     }
   }
 
-  // ── Stage 5: indexing ──────────────────────────────────────────────────
+  // ── Stage 6: indexing ──────────────────────────────────────────────────
   //
   // qmd collection add . --name <slug>, falling back to `qmd update` if the
   // collection already exists. Writes a pending-embeddings marker so HQ Sync
@@ -469,7 +532,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     return true;
   }
 
-  // ── Stage 6: menubar (HQ Sync) ─────────────────────────────────────────
+  // ── Stage 7: menubar (HQ Sync) ─────────────────────────────────────────
 
   async function runMenubar(): Promise<boolean> {
     const unlisten = await listen<{
@@ -531,6 +594,9 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     switch (id) {
       case "deps":
         ok = await runDeps();
+        break;
+      case "initial-sync":
+        ok = await runInitialSync();
         break;
       case "packages":
         ok = await runPackages();
