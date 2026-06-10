@@ -6,11 +6,12 @@ import { SetupProgress } from "../setup-progress.js";
 // ---------------------------------------------------------------------------
 // SetupProgress orchestrator tests — US-004
 //
-// The screen runs six stages behind a single progress bar + one status
+// The screen runs seven stages behind a single progress bar + one status
 // line, with no intermediate input:
-//   deps → packages → git-init → personalize → indexing → menubar
-// (Cloud file sync was removed — HQ Sync owns it; company detection folded
-//  into the personalize stage.)
+//   deps → initial-sync → packages → git-init → personalize → indexing → menubar
+// (initial-sync provisions the personal vault and spawns the hq-cloud-sync
+//  runner in the background — best-effort, never blocks; company detection
+//  is folded into the personalize stage.)
 //
 // Asserted behavior:
 //   - Exactly one progress bar is rendered (role="progressbar").
@@ -110,6 +111,12 @@ vi.mock("@/lib/install-manifest", () => ({
   recordStepFailure: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/initial-sync", () => ({
+  startInitialCloudSync: vi
+    .fn()
+    .mockResolvedValue({ personUid: "prs_1", handle: "h" }),
+}));
+
 // Default packs default to an empty set so the existing flow tests aren't
 // perturbed by pack installs; the "packages stage" describe sets a real list.
 vi.mock("@/lib/default-packs", () => ({
@@ -123,6 +130,7 @@ import { runDepsInstall } from "@/lib/deps-install";
 import { personalize } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
 import { listUserCompanies } from "@/lib/vault-handoff";
+import { startInitialCloudSync } from "@/lib/initial-sync";
 import { getDefaultPacks } from "@/lib/default-packs";
 import {
   setGitIdentity,
@@ -142,6 +150,7 @@ const mockRunDepsInstall = vi.mocked(runDepsInstall);
 const mockPersonalize = vi.mocked(personalize);
 const mockGetCurrentUser = vi.mocked(getCurrentUser);
 const mockListUserCompanies = vi.mocked(listUserCompanies);
+const mockStartInitialCloudSync = vi.mocked(startInitialCloudSync);
 const mockGetDefaultPacks = vi.mocked(getDefaultPacks);
 const mockRecordStepStart = vi.mocked(recordStepStart);
 const mockRecordStepOk = vi.mocked(recordStepOk);
@@ -221,6 +230,10 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     setDepsAllOk();
     mockGetCurrentUser.mockResolvedValue(USER);
     mockListUserCompanies.mockResolvedValue([]);
+    mockStartInitialCloudSync.mockResolvedValue({
+      personUid: "prs_1",
+      handle: "h",
+    });
     mockPersonalize.mockResolvedValue(undefined);
     // No default packs unless a test opts in — keeps the flow tests focused.
     // (clearAllMocks keeps implementations, so reset it explicitly each run.)
@@ -460,12 +473,101 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       // Every stage in the contract order is journaled exactly once.
       expect(startedStages).toEqual([
         "deps",
+        "initial-sync",
         "packages",
         "git-init",
         "personalize",
         "indexing",
         "menubar",
       ]);
+    });
+  });
+
+  // ── 4a. Initial cloud sync stage ─────────────────────────────────────────
+  //
+  // Provisions the personal vault + spawns the hq-cloud-sync runner right
+  // after deps (earliest point node/npx exist), before packages. Best-effort:
+  // a kickoff failure is journaled but never blocks the install — HQ Sync
+  // re-runs the same sync on its first launch.
+
+  describe("initial-sync stage", () => {
+    it("kicks off the sync with install path, token, and person hints", async () => {
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockStartInitialCloudSync).toHaveBeenCalledTimes(1);
+      expect(mockStartInitialCloudSync).toHaveBeenCalledWith(
+        "/tmp/hq",
+        "at",
+        { ownerSub: "sub-123", displayName: "Jane Doe" },
+      );
+    });
+
+    it("runs after deps and before the packages stage", async () => {
+      mockGetDefaultPacks.mockReturnValue([
+        { name: "hq-pack-gstack", source: "@indigoai-us/hq-pack-gstack" },
+      ]);
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      const depsOrder = mockRunDepsInstall.mock.invocationCallOrder[0];
+      const syncOrder = mockStartInitialCloudSync.mock.invocationCallOrder[0];
+      const packSpawn = mockInvoke.mock.calls.findIndex(
+        ([cmd, payload]) =>
+          cmd === "spawn_process" &&
+          (payload as { args?: { cmd?: string } })?.args?.cmd === "hq",
+      );
+      const packOrder = mockInvoke.mock.invocationCallOrder[packSpawn];
+      expect(depsOrder).toBeLessThan(syncOrder);
+      expect(syncOrder).toBeLessThan(packOrder);
+    });
+
+    it("skips the kickoff (and still completes) when no user is signed in", async () => {
+      // No user: initial-sync skips; the flow then halts at git-init (which
+      // requires the identity) — but the sync stage itself must not be the
+      // thing that fails, and no kickoff must have been attempted.
+      mockGetCurrentUser.mockResolvedValue(null);
+      const { container } = render(
+        <SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />,
+      );
+      await waitFor(() => {
+        const row = container.querySelector('[data-stage="git-init"]');
+        expect(row?.getAttribute("data-status")).toBe("failed");
+      });
+      expect(mockStartInitialCloudSync).not.toHaveBeenCalled();
+      const syncRow = container.querySelector('[data-stage="initial-sync"]');
+      expect(syncRow).toBeNull(); // not the active/failed stage
+    });
+
+    it("treats a kickoff failure as non-fatal — install completes, failure journaled", async () => {
+      mockStartInitialCloudSync.mockRejectedValueOnce(
+        new Error("422 ENTITY_NOT_PROVISIONED"),
+      );
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      // Failure-ledger row written for a later /setup…
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "initial-sync",
+        expect.stringContaining("ENTITY_NOT_PROVISIONED"),
+      );
+      // …and the step still ends ok (the install was never blocked).
+      expect(mockRecordStepOk).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "initial-sync",
+      );
     });
   });
 
