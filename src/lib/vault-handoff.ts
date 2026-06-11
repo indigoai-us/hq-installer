@@ -39,7 +39,7 @@ interface MembershipEntry {
  *  When provided, `resolveUserCompany` will list pending invites and, if any
  *  exist, bootstrap a person entity + rewrite the invites to personUid-keyed
  *  BEFORE running the normal lookup. Mirrors the hq-onboarding flow. */
-interface ClaimHints {
+export interface ClaimHints {
   /** Cognito `sub` — used as the ownerUid on the created person entity. */
   ownerSub: string;
   /** Used as the person entity's `name` when creating it. */
@@ -136,6 +136,43 @@ async function claimPendingInvites(
     );
   } else {
     console.log("[vault-handoff] claim: claim-by-email succeeded");
+  }
+}
+
+/**
+ * Public entry point: claim any email-keyed pending invites for the signed-in
+ * user, given only their access token + identity hints.
+ *
+ * This is the standalone, side-effect-only half of `resolveUserCompany`'s
+ * step 0. The installer's personalize stage calls it BEFORE `listUserCompanies`
+ * so a freshly-invited user (e.g. a reinstall on a new machine) has their
+ * pending invite rewritten to an active, personUid-keyed membership — otherwise
+ * `listUserCompanies` sees zero companies and the install silently falls back
+ * to "Personal HQ", leaving the user unattached. Idempotent and best-effort:
+ * resolves to `false` rather than throwing so a claim failure never blocks the
+ * install (company detection simply finds nothing, as it does today).
+ *
+ * Returns `true` if the claim step ran to completion, `false` if it bailed
+ * early (transport error). The caller does not depend on the return value for
+ * correctness — the subsequent membership lookup is the source of truth.
+ */
+export async function claimPendingInvitesForUser(
+  accessToken: string,
+  hints: ClaimHints
+): Promise<boolean> {
+  const base = getVaultApiUrl();
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    ...CLIENT_HEADERS,
+  };
+  try {
+    await claimPendingInvites(base, headers, hints);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[vault-handoff] claimPendingInvitesForUser failed: ${msg}`);
+    return false;
   }
 }
 

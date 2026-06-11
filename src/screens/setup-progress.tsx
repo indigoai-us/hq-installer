@@ -37,7 +37,10 @@ import {
 import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
 import { personalize, type CompanySeed } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
-import { listUserCompanies } from "@/lib/vault-handoff";
+import {
+  claimPendingInvitesForUser,
+  listUserCompanies,
+} from "@/lib/vault-handoff";
 import { startInitialCloudSync } from "@/lib/initial-sync";
 import {
   setGitIdentity,
@@ -373,6 +376,25 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
 
       let companies: CompanySeed[] | undefined;
       if (user) {
+        // Claim any email-keyed pending invites FIRST. A freshly-invited user
+        // (e.g. a reinstall on a new machine) has an invite keyed by their
+        // email, not yet an active personUid-keyed membership — so the company
+        // lookup below would return nothing and the install would silently fall
+        // back to "Personal HQ", leaving them unattached. This rewrites the
+        // invite to an active membership so detection can see it. Best-effort:
+        // a failure here is logged, never fatal (the lookup just finds nothing,
+        // exactly as before).
+        try {
+          await claimPendingInvitesForUser(user.tokens.accessToken, {
+            ownerSub: user.sub,
+            displayName:
+              name || user.name || user.email || user.sub,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          appendLog("personalize", `[warn] Invite claim failed: ${msg}`);
+        }
+
         let cloud: Awaited<ReturnType<typeof listUserCompanies>> = [];
         try {
           cloud = await listUserCompanies(user.tokens.accessToken);
