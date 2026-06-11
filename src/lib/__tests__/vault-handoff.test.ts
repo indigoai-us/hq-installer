@@ -9,7 +9,11 @@ vi.mock("@tauri-apps/plugin-http", () => ({
     globalThis.fetch(input, init),
 }));
 
-import { resolveUserCompany, ensurePersonProvisioned } from "../vault-handoff";
+import {
+  resolveUserCompany,
+  ensurePersonProvisioned,
+  claimPendingInvitesForUser,
+} from "../vault-handoff";
 
 const MOCK_TOKEN = "mock-access-token";
 
@@ -412,5 +416,131 @@ describe("ensurePersonProvisioned", () => {
     await expect(ensurePersonProvisioned(MOCK_TOKEN, HINTS)).rejects.toThrow(
       /provision\/bucket failed: 422/
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claimPendingInvitesForUser — DEV-1733 (feedback_1b3d52fa)
+//
+// The installer's personalize stage calls this BEFORE listing companies so a
+// freshly-invited user's email-keyed pending invite is rewritten to an active
+// membership the lookup can see. Best-effort: never throws.
+// ---------------------------------------------------------------------------
+describe("claimPendingInvitesForUser", () => {
+  const originalFetch = globalThis.fetch;
+  const HINTS = { ownerSub: "sub-1", displayName: "Jane Doe" };
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("no-ops (single GET) when there are no pending invites", async () => {
+    globalThis.fetch = mockFetch([
+      // GET /membership/pending-by-email → none
+      { ok: true, status: 200, body: { invites: [] } },
+    ]);
+
+    const ran = await claimPendingInvitesForUser(MOCK_TOKEN, HINTS);
+    expect(ran).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(globalThis.fetch).mock.calls[0][0])).toContain(
+      "/membership/pending-by-email",
+    );
+  });
+
+  it("claims a pending invite for an existing person", async () => {
+    globalThis.fetch = mockFetch([
+      // GET /membership/pending-by-email → one pending invite
+      {
+        ok: true,
+        status: 200,
+        body: {
+          invites: [
+            {
+              membershipKey: "jane@x.com#cmp_001",
+              personUid: "",
+              companyUid: "cmp_001",
+              role: "member",
+              status: "pending",
+            },
+          ],
+        },
+      },
+      // GET /entity/by-type/person → existing person
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entities: [{ uid: "prs_1", type: "person", slug: "jane", name: "Jane" }],
+        },
+      },
+      // POST /membership/claim-by-email → ok
+      { ok: true, status: 200, body: { claimed: 1 } },
+    ]);
+
+    const ran = await claimPendingInvitesForUser(MOCK_TOKEN, HINTS);
+    expect(ran).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+
+    const claimCall = vi.mocked(globalThis.fetch).mock.calls[2];
+    expect(String(claimCall[0])).toContain("/membership/claim-by-email");
+    expect(claimCall[1]?.method).toBe("POST");
+    expect(JSON.parse(claimCall[1]?.body as string)).toEqual({
+      personUid: "prs_1",
+    });
+  });
+
+  it("bootstraps a person entity when none exists, then claims", async () => {
+    globalThis.fetch = mockFetch([
+      // GET /membership/pending-by-email → one pending invite
+      {
+        ok: true,
+        status: 200,
+        body: {
+          invites: [
+            {
+              membershipKey: "jane@x.com#cmp_001",
+              personUid: "",
+              companyUid: "cmp_001",
+              role: "member",
+              status: "pending",
+            },
+          ],
+        },
+      },
+      // GET /entity/by-type/person → none yet
+      { ok: true, status: 200, body: { entities: [] } },
+      // POST /entity → created person
+      {
+        ok: true,
+        status: 200,
+        body: {
+          entity: { uid: "prs_new", type: "person", slug: "jane-doe", name: "Jane Doe" },
+        },
+      },
+      // POST /membership/claim-by-email → ok
+      { ok: true, status: 200, body: { claimed: 1 } },
+    ]);
+
+    const ran = await claimPendingInvitesForUser(MOCK_TOKEN, HINTS);
+    expect(ran).toBe(true);
+    const claimCall = vi.mocked(globalThis.fetch).mock.calls[3];
+    expect(String(claimCall[0])).toContain("/membership/claim-by-email");
+    expect(JSON.parse(claimCall[1]?.body as string)).toEqual({
+      personUid: "prs_new",
+    });
+  });
+
+  it("is best-effort — a failed pending lookup resolves true, never throws", async () => {
+    globalThis.fetch = mockFetch([
+      { ok: false, status: 500, body: { error: "boom" } },
+    ]);
+
+    await expect(
+      claimPendingInvitesForUser(MOCK_TOKEN, HINTS),
+    ).resolves.toBe(true);
+    // No claim attempted after the failed lookup.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });

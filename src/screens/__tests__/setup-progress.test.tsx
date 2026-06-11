@@ -84,6 +84,7 @@ vi.mock("@/lib/cognito", () => ({
 
 vi.mock("@/lib/vault-handoff", () => ({
   listUserCompanies: vi.fn().mockResolvedValue([]),
+  claimPendingInvitesForUser: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("@/lib/wizard-state", () => ({
@@ -129,7 +130,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { runDepsInstall } from "@/lib/deps-install";
 import { personalize } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
-import { listUserCompanies } from "@/lib/vault-handoff";
+import {
+  claimPendingInvitesForUser,
+  listUserCompanies,
+} from "@/lib/vault-handoff";
 import { startInitialCloudSync } from "@/lib/initial-sync";
 import { getDefaultPacks } from "@/lib/default-packs";
 import {
@@ -150,6 +154,7 @@ const mockRunDepsInstall = vi.mocked(runDepsInstall);
 const mockPersonalize = vi.mocked(personalize);
 const mockGetCurrentUser = vi.mocked(getCurrentUser);
 const mockListUserCompanies = vi.mocked(listUserCompanies);
+const mockClaimPendingInvitesForUser = vi.mocked(claimPendingInvitesForUser);
 const mockStartInitialCloudSync = vi.mocked(startInitialCloudSync);
 const mockGetDefaultPacks = vi.mocked(getDefaultPacks);
 const mockRecordStepStart = vi.mocked(recordStepStart);
@@ -230,6 +235,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     setDepsAllOk();
     mockGetCurrentUser.mockResolvedValue(USER);
     mockListUserCompanies.mockResolvedValue([]);
+    mockClaimPendingInvitesForUser.mockResolvedValue(true);
     mockStartInitialCloudSync.mockResolvedValue({
       personUid: "prs_1",
       handle: "h",
@@ -347,6 +353,99 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
         expect(mockSetIsPersonal).toHaveBeenCalledWith(true),
       );
       expect(mockSetTeam).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── 2a. Company attachment via pending-invite claim (DEV-1733) ──────────
+  //
+  // Regression for feedback_1b3d52fa: a fresh install (reinstall on a new
+  // machine) could NOT attach to a company without manual surgery, because the
+  // personalize stage only called listUserCompanies — which returns nothing for
+  // a user whose membership is still an email-keyed *pending invite*. The fix
+  // claims pending invites BEFORE company detection so the invite becomes an
+  // active membership the lookup can see.
+
+  describe("pending-invite claim before company detection", () => {
+    it("claims pending invites with the user's hints during personalize", async () => {
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockClaimPendingInvitesForUser).toHaveBeenCalledTimes(1);
+      expect(mockClaimPendingInvitesForUser).toHaveBeenCalledWith("at", {
+        ownerSub: "sub-123",
+        displayName: "Jane Doe",
+      });
+    });
+
+    it("claims invites BEFORE listing companies (so the claim is visible)", async () => {
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      const claimOrder =
+        mockClaimPendingInvitesForUser.mock.invocationCallOrder[0];
+      const listOrder = mockListUserCompanies.mock.invocationCallOrder[0];
+      expect(claimOrder).toBeLessThan(listOrder);
+    });
+
+    it("attaches to a company that is only visible after the invite is claimed", async () => {
+      // Simulate the post-claim world: the lookup now returns the company the
+      // user was invited to. The install must attach (setTeam) and NOT fall
+      // back to Personal HQ.
+      mockListUserCompanies.mockResolvedValue([
+        {
+          companyUid: "cmp_acme",
+          companySlug: "acme",
+          companyName: "Acme Corp",
+          bucketName: "hq-vault-acme",
+          role: "member",
+          status: "active",
+        },
+      ]);
+
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockClaimPendingInvitesForUser).toHaveBeenCalledTimes(1);
+      expect(mockSetTeam).toHaveBeenCalledWith(
+        expect.objectContaining({ slug: "acme", companyId: "cmp_acme" }),
+      );
+      expect(mockSetIsPersonal).not.toHaveBeenCalled();
+    });
+
+    it("treats a claim failure as non-fatal — the install still completes", async () => {
+      mockClaimPendingInvitesForUser.mockRejectedValueOnce(
+        new Error("network unreachable"),
+      );
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+      // Detection still ran after the failed claim.
+      expect(mockListUserCompanies).toHaveBeenCalled();
+    });
+
+    it("skips the claim when no user is signed in", async () => {
+      // No user → the flow halts at git-init (needs identity), but the claim
+      // must never be attempted without a signed-in user.
+      mockGetCurrentUser.mockResolvedValue(null);
+      const { container } = render(
+        <SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />,
+      );
+      await waitFor(() => {
+        const row = container.querySelector('[data-stage="git-init"]');
+        expect(row?.getAttribute("data-status")).toBe("failed");
+      });
+      expect(mockClaimPendingInvitesForUser).not.toHaveBeenCalled();
     });
   });
 
