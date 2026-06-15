@@ -20,6 +20,17 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   writeFile: (path: string, data: Uint8Array) => mockWriteFile(path, data),
 }));
 
+// Mock the manifest writer so company seeds can be asserted without touching
+// the (unmocked) fs reads/writes ensureManifestEntries performs internally.
+const mockEnsureManifestEntries = vi.fn<
+  (installPath: string, seeds: unknown) => Promise<unknown>
+>(async () => ({ added: [], skipped: [] }));
+
+vi.mock("../manifest-writer.js", () => ({
+  ensureManifestEntries: (installPath: string, seeds: unknown) =>
+    mockEnsureManifestEntries(installPath, seeds),
+}));
+
 // ---------------------------------------------------------------------------
 // Import module under test AFTER mocks are registered
 // ---------------------------------------------------------------------------
@@ -89,6 +100,9 @@ beforeEach(() => {
   mockMkdir.mockReset().mockResolvedValue(undefined);
   mockWriteTextFile.mockReset().mockResolvedValue(undefined);
   mockWriteFile.mockReset().mockResolvedValue(undefined);
+  mockEnsureManifestEntries
+    .mockReset()
+    .mockResolvedValue({ added: [], skipped: [] });
 });
 
 // ---------------------------------------------------------------------------
@@ -321,6 +335,106 @@ describe("personalize", () => {
           voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
         }),
       ).rejects.toThrow("permission denied");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("cloud-backed companies", () => {
+    const CLOUD_ANSWERS: PersonalizationAnswers = {
+      ...BASE_ANSWERS,
+      companies: [
+        { name: "Broya", cloud: true, cloudCompanyUid: "ent_broya_123" },
+      ],
+    };
+
+    // Regression: a cloud company's knowledge/ dir is sync-owned and usually a
+    // symlink, so scaffolding it via the scope-restricted fs plugin threw
+    // "forbidden path: …/companies/broya/knowledge" and hard-failed Setup.
+    it("never touches any on-disk path under the cloud company's folder", async () => {
+      await personalize(CLOUD_ANSWERS, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+      });
+
+      const companyPrefix = `${BASE_DIR}/companies/broya`;
+      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
+
+      expect(mkdirPaths.some((p) => p.startsWith(companyPrefix))).toBe(false);
+      expect(allWrittenPaths().some((p) => p.startsWith(companyPrefix))).toBe(
+        false,
+      );
+      // The exact path Tauri's fs scope rejected must never be requested.
+      expect(mkdirPaths).not.toContain(`${companyPrefix}/knowledge`);
+    });
+
+    it("still registers the cloud company in the manifest with its cloud uid", async () => {
+      await personalize(CLOUD_ANSWERS, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+      });
+
+      expect(mockEnsureManifestEntries).toHaveBeenCalledTimes(1);
+      const [installArg, seedsArg] = mockEnsureManifestEntries.mock.calls[0];
+      expect(installArg).toBe(BASE_DIR);
+      expect(seedsArg).toEqual([
+        { slug: "broya", name: "Broya", cloudUid: "ent_broya_123" },
+      ]);
+    });
+
+    it("completes without throwing when a cloud company is present", async () => {
+      await expect(
+        personalize(CLOUD_ANSWERS, BASE_DIR, {
+          profileTemplate: PROFILE_TEMPLATE,
+          voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+        }),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("local (non-cloud) companies", () => {
+    const LOCAL_ANSWERS: PersonalizationAnswers = {
+      ...BASE_ANSWERS,
+      companies: [{ name: "Acme Co", website: "https://acme.test" }],
+    };
+
+    it("scaffolds the standard skeleton + company.yaml", async () => {
+      await personalize(LOCAL_ANSWERS, BASE_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+      });
+
+      const base = `${BASE_DIR}/companies/acme-co`;
+      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
+      for (const sub of ["knowledge", "settings", "workers", "projects"]) {
+        expect(mkdirPaths).toContain(`${base}/${sub}`);
+        expect(allWrittenPaths()).toContain(`${base}/${sub}/.gitkeep`);
+      }
+
+      const yaml = getWrittenText(`${base}/company.yaml`);
+      expect(yaml).toContain("name: Acme Co");
+      expect(yaml).toContain("slug: acme-co");
+      expect(yaml).toContain("website: https://acme.test");
+    });
+
+    // Best-effort: a failed scaffold write must not abort Setup — the manifest
+    // entry (what makes the company discoverable) is still registered.
+    it("does not abort Setup when a company scaffold write fails", async () => {
+      mockWriteTextFile.mockImplementation(async (path: string) => {
+        if (path.includes("/companies/acme-co/")) {
+          throw new Error(`forbidden path: ${path}`);
+        }
+        return undefined;
+      });
+
+      await expect(
+        personalize(LOCAL_ANSWERS, BASE_DIR, {
+          profileTemplate: PROFILE_TEMPLATE,
+          voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(mockEnsureManifestEntries).toHaveBeenCalledTimes(1);
     });
   });
 });
