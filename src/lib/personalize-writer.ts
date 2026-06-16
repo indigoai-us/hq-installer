@@ -140,12 +140,25 @@ export async function personalize(
   // -----------------------------------------------------------------------
   // 6. Scaffold user-supplied companies (optional)
   // -----------------------------------------------------------------------
-  // Each company gets the standard HQ skeleton: knowledge/, settings/,
-  // workers/, projects/ + a company.yaml capturing display name + website.
-  // We dedupe by slug so duplicate names don't collide on disk.
-  // Each scaffolded company also gets a manifest entry — without that,
-  // hq-sync's reconciler can't find the folder via manifest-first lookup
-  // and the company stays orphaned from the workspaces list.
+  // Local/personal companies get the standard HQ skeleton (knowledge/,
+  // settings/, workers/, projects/ + a minimal company.yaml). We dedupe by
+  // slug so duplicate names don't collide on disk.
+  //
+  // Cloud-backed companies are deliberately NOT scaffolded on disk here.
+  // Their folders are provisioned by the HQ Sync runner from the vault, and
+  // HQ's canonical knowledge layout is a *symlink* (knowledge ->
+  // repos/private/knowledge-{co}) or an embedded git repo. Creating those
+  // dirs / writing .gitkeep into them via the scope-restricted Tauri fs
+  // plugin both (a) duplicates what sync owns and (b) trips the plugin's
+  // path-scope canonicalization on the symlink target — surfacing as
+  // "forbidden path: …/companies/{slug}/knowledge" and hard-failing Setup for
+  // every cloud-company member. We register only the manifest entry (carrying
+  // cloud_uid) so hq-sync's reconciler can still find the folder via
+  // manifest-first lookup; sync provisions everything else.
+  //
+  // Even for local companies the per-dir/file writes are best-effort: a
+  // single failed scaffold step must never abort Setup. The manifest entry is
+  // what actually makes a company discoverable.
   const manifestSeeds: ManifestEntrySeed[] = [];
   if (companies && companies.length > 0) {
     const seen = new Set<string>();
@@ -156,34 +169,43 @@ export async function personalize(
       if (!slug || seen.has(slug)) continue;
       seen.add(slug);
 
+      if (co.cloud) {
+        // Vault-provisioned — register the manifest entry only, never touch
+        // the (sync-owned, often symlinked) folder on disk.
+        manifestSeeds.push({
+          slug,
+          name: displayName,
+          cloudUid: co.cloudCompanyUid,
+        });
+        continue;
+      }
+
       const coBase = `${baseDir}/companies/${slug}`;
       for (const sub of ["knowledge", "settings", "workers", "projects"]) {
         const subDir = `${coBase}/${sub}`;
-        await mkdir(subDir, { recursive: true });
-        await writeTextFile(`${subDir}/.gitkeep`, "");
+        try {
+          await mkdir(subDir, { recursive: true });
+          await writeTextFile(`${subDir}/.gitkeep`, "");
+        } catch {
+          // Non-fatal: the folder may already exist or be sync-owned. The
+          // manifest seed below keeps the company discoverable regardless.
+        }
       }
 
       // Minimal company.yaml — downstream tooling can enrich it later.
       const websiteLine = co.website?.trim()
         ? `website: ${co.website.trim()}\n`
         : "";
-      const cloudLines = co.cloud
-        ? `cloud: true\n` +
-          (co.cloudCompanyUid
-            ? `cloudCompanyUid: ${co.cloudCompanyUid}\n`
-            : "")
-        : "";
-      const yaml =
-        `name: ${displayName}\n` +
-        `slug: ${slug}\n` +
-        websiteLine +
-        cloudLines;
-      await writeTextFile(`${coBase}/company.yaml`, yaml);
+      const yaml = `name: ${displayName}\n` + `slug: ${slug}\n` + websiteLine;
+      try {
+        await writeTextFile(`${coBase}/company.yaml`, yaml);
+      } catch {
+        // Non-fatal — see above.
+      }
 
       manifestSeeds.push({
         slug,
         name: displayName,
-        cloudUid: co.cloud ? co.cloudCompanyUid : undefined,
       });
     }
   }
