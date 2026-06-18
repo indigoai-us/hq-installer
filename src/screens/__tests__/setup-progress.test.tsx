@@ -6,12 +6,14 @@ import { SetupProgress } from "../setup-progress.js";
 // ---------------------------------------------------------------------------
 // SetupProgress orchestrator tests — US-004
 //
-// The screen runs seven stages behind a single progress bar + one status
+// The screen runs eight stages behind a single progress bar + one status
 // line, with no intermediate input:
-//   deps → initial-sync → packages → git-init → personalize → indexing → menubar
+//   deps → initial-sync → packages → git-init → personalize → import
+//       → indexing → menubar
 // (initial-sync provisions the personal vault and spawns the hq-cloud-sync
 //  runner in the background — best-effort, never blocks; company detection
-//  is folded into the personalize stage.)
+//  is folded into the personalize stage, and the merged import stage applies
+//  Codex parity while deferring Claude adoption to `/import-claude`.)
 //
 // Asserted behavior:
 //   - Exactly one progress bar is rendered (role="progressbar").
@@ -63,6 +65,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-fs", () => ({
   writeTextFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
   exists: vi.fn().mockResolvedValue(false),
   readTextFile: vi.fn().mockResolvedValue("{}"),
   BaseDirectory: { Home: "Home" },
@@ -106,6 +109,7 @@ vi.mock("@/lib/wizard-state", () => ({
 vi.mock("@/lib/install-manifest", () => ({
   getInstallerVersion: vi.fn().mockResolvedValue("0.0.0-test"),
   recordDependencies: vi.fn().mockResolvedValue(undefined),
+  recordImport: vi.fn().mockResolvedValue(undefined),
   recordPacks: vi.fn().mockResolvedValue(undefined),
   recordStepStart: vi.fn().mockResolvedValue(undefined),
   recordStepOk: vi.fn().mockResolvedValue(undefined),
@@ -124,6 +128,10 @@ vi.mock("@/lib/default-packs", () => ({
   getDefaultPacks: vi.fn(() => []),
 }));
 
+vi.mock("@/lib/import-existing", () => ({
+  runExistingImport: vi.fn(),
+}));
+
 // ── Imports of mocked symbols (after vi.mock so vitest can rewrite) ───────
 
 import { invoke } from "@tauri-apps/api/core";
@@ -136,6 +144,7 @@ import {
 } from "@/lib/vault-handoff";
 import { startInitialCloudSync } from "@/lib/initial-sync";
 import { getDefaultPacks } from "@/lib/default-packs";
+import { runExistingImport } from "@/lib/import-existing";
 import {
   setGitIdentity,
   setIsPersonal,
@@ -146,6 +155,7 @@ import {
   recordStepOk,
   recordStepFailure,
   recordDependencies,
+  recordImport,
   recordPacks,
 } from "@/lib/install-manifest";
 
@@ -157,10 +167,12 @@ const mockListUserCompanies = vi.mocked(listUserCompanies);
 const mockClaimPendingInvitesForUser = vi.mocked(claimPendingInvitesForUser);
 const mockStartInitialCloudSync = vi.mocked(startInitialCloudSync);
 const mockGetDefaultPacks = vi.mocked(getDefaultPacks);
+const mockRunExistingImport = vi.mocked(runExistingImport);
 const mockRecordStepStart = vi.mocked(recordStepStart);
 const mockRecordStepOk = vi.mocked(recordStepOk);
 const mockRecordStepFailure = vi.mocked(recordStepFailure);
 const mockRecordDependencies = vi.mocked(recordDependencies);
+const mockRecordImport = vi.mocked(recordImport);
 const mockRecordPacks = vi.mocked(recordPacks);
 const mockSetGitIdentity = vi.mocked(setGitIdentity);
 const mockSetIsPersonal = vi.mocked(setIsPersonal);
@@ -244,6 +256,14 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     // No default packs unless a test opts in — keeps the flow tests focused.
     // (clearAllMocks keeps implementations, so reset it explicitly each run.)
     mockGetDefaultPacks.mockReturnValue([]);
+    mockRunExistingImport.mockResolvedValue({
+      codexApplied: true,
+      discoveryOk: true,
+      claudeCounts: {},
+      totalClaudeArtifacts: 0,
+      scanDir: "workspace/imports/2026-06-18T12-34-56-000Z",
+      issues: [],
+    });
     mockInvoke.mockImplementation(buildInvokeMock());
   });
 
@@ -576,6 +596,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
         "packages",
         "git-init",
         "personalize",
+        "import",
         "indexing",
         "menubar",
       ]);
@@ -670,7 +691,83 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     });
   });
 
-  // ── 4b. Default-packs stage — installs recommended set, no picker ───────
+  // ── 4b. Merged import stage ─────────────────────────────────────────────
+
+  describe("import stage", () => {
+    it("runs after personalize and before indexing", async () => {
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      const personalizeOrder = mockPersonalize.mock.invocationCallOrder[0];
+      const importOrder = mockRunExistingImport.mock.invocationCallOrder[0];
+      const qmdSpawn = mockInvoke.mock.calls.findIndex(
+        ([cmd, payload]) =>
+          cmd === "spawn_process" &&
+          (payload as { args?: { cmd?: string } })?.args?.cmd === "qmd",
+      );
+      const indexingOrder = mockInvoke.mock.invocationCallOrder[qmdSpawn];
+
+      expect(personalizeOrder).toBeLessThan(importOrder);
+      expect(importOrder).toBeLessThan(indexingOrder);
+    });
+
+    it("records the import summary in the install-manifest", async () => {
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockRecordImport).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        {
+          codexApplied: true,
+          discoveryOk: true,
+          claudeCounts: {},
+          totalClaudeArtifacts: 0,
+        },
+      );
+    });
+
+    it("treats import warnings as non-fatal — the install still completes", async () => {
+      mockRunExistingImport.mockResolvedValueOnce({
+        codexApplied: false,
+        discoveryOk: false,
+        claudeCounts: null,
+        totalClaudeArtifacts: null,
+        scanDir: "workspace/imports/2026-06-18T12-34-56-000Z",
+        issues: ["Claude discovery did not complete."],
+      });
+
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "import",
+        "Existing setup import completed with warnings.",
+        expect.objectContaining({
+          codexApplied: false,
+          discoveryOk: false,
+        }),
+      );
+      expect(mockRecordStepOk).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "import",
+      );
+    });
+  });
+
+  // ── 4c. Default-packs stage — installs recommended set, no picker ───────
 
   describe("packages stage", () => {
     const PACKS = [

@@ -17,6 +17,10 @@ import {
   getInstallerVersion,
   recordInstallComplete,
 } from "../lib/install-manifest";
+import {
+  readInstallerImportBreadcrumb,
+  type InstallerImportBreadcrumb,
+} from "../lib/import-existing";
 
 /** Anthropic-canonical install/quickstart page for Claude Desktop's Claude
  *  Code panel — has the download link AND the local-filesystem walkthrough,
@@ -49,6 +53,9 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   const [launchingDesktop, setLaunchingDesktop] = useState(false);
   const [launchingCode, setLaunchingCode] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
+  const [importPromptCopied, setImportPromptCopied] = useState(false);
+  const [installerImport, setInstallerImport] =
+    useState<InstallerImportBreadcrumb | null>(null);
   // null while we're still probing — render a neutral placeholder until known.
   const [desktopInstalled, setDesktopInstalled] = useState<boolean | null>(null);
 
@@ -65,11 +72,22 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         } catch {
           /* non-fatal */
         }
+        try {
+          const breadcrumb = await readInstallerImportBreadcrumb(
+            wizardState.installPath as string,
+          );
+          setInstallerImport(breadcrumb);
+        } catch {
+          setInstallerImport(null);
+        }
       })();
     } else if (wizardState.telemetryEnabled) {
       getInstallerVersion()
         .then((v) => pingSuccess(v))
         .catch(() => {});
+      setInstallerImport(null);
+    } else {
+      setInstallerImport(null);
     }
     // Probe whether Claude Desktop is installed so we can render the right
     // CTA. Default to "not installed" on probe failure — the download link is
@@ -139,17 +157,32 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
 
   async function handleCopyPath() {
     if (!wizardState.installPath) return;
+    await copyText(wizardState.installPath, setPathCopied);
+  }
+
+  async function handleCopyImportPrompt() {
+    await copyText("/import-claude", setImportPromptCopied);
+  }
+
+  async function copyText(
+    text: string,
+    setCopied: (value: boolean) => void,
+  ) {
     try {
       // Web Clipboard API works inside Tauri's webview without a plugin.
-      await navigator.clipboard.writeText(wizardState.installPath);
-      setPathCopied(true);
-      window.setTimeout(() => setPathCopied(false), 1500);
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* clipboard write failures are silent — the path is still on screen */
+      /* clipboard write failures are silent — the value is still on screen */
     }
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
+  const showClaudeImportCard =
+    typeof installerImport?.totalClaudeArtifacts === "number" &&
+    installerImport.totalClaudeArtifacts > 0;
+
   return (
     <div className="flex flex-col gap-6 max-w-lg">
       <div className="flex flex-col gap-2">
@@ -248,6 +281,38 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           extra commands needed.
         </p>
       </div>
+
+      {showClaudeImportCard && installerImport && (
+        <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-4">
+          <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
+            Finish importing your Claude setup
+          </p>
+          <p className="text-sm text-zinc-300">
+            We found {installerImport.totalClaudeArtifacts} Claude artifact
+            {installerImport.totalClaudeArtifacts === 1 ? "" : "s"}.{" "}
+            {installerImport.codexApplied
+              ? "Codex parity was applied automatically."
+              : "Codex parity could not be applied automatically during install."}
+          </p>
+          <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
+            <span className="text-xs font-mono text-zinc-200 break-all flex-1">
+              /import-claude
+            </span>
+            <button
+              type="button"
+              onClick={handleCopyImportPrompt}
+              className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors"
+            >
+              {importPromptCopied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <p className="text-xs text-zinc-500">
+            Run this in Claude Code inside your HQ folder to bring over
+            commands, skills, hooks, and policies, then infer the rest of the
+            Claude setup from the redacted scan.
+          </p>
+        </div>
+      )}
 
       {/* Secondary: Claude Code in Terminal — text link */}
       <div className="flex flex-col gap-2">
