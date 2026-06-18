@@ -40,12 +40,18 @@ vi.mock("../../lib/telemetry.js", () => ({
   pingFailure: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../lib/import-existing.js", () => ({
+  readInstallerImportBreadcrumb: vi.fn().mockResolvedValue(null),
+}));
+
 import { invoke } from "@tauri-apps/api/core";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { pingSuccess } from "../../lib/telemetry.js";
+import { readInstallerImportBreadcrumb } from "../../lib/import-existing.js";
 const mockInvoke = vi.mocked(invoke);
 const mockOpenExternal = vi.mocked(openExternal);
 const mockPingSuccess = vi.mocked(pingSuccess);
+const mockReadInstallerImportBreadcrumb = vi.mocked(readInstallerImportBreadcrumb);
 
 /** Configure the invoke mock with a command-aware default.
  *  Pass `claudeInstalled=true|false` to control the desktop-probe branch. */
@@ -73,6 +79,7 @@ describe("Summary screen (11-summary.tsx)", () => {
     // Default: Claude Desktop is installed. Tests covering the missing-app
     // branch override via setupInvokeMock({ claudeInstalled: false }).
     setupInvokeMock();
+    mockReadInstallerImportBreadcrumb.mockResolvedValue(null);
   });
 
   // ── 1. Tauri environment compatibility ────────────────────────────────────
@@ -138,6 +145,66 @@ describe("Summary screen (11-summary.tsx)", () => {
       <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, gitEmail: null }} />,
     );
     expect(getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  // ── 2b. Deferred Claude import CTA ───────────────────────────────────────
+
+  it("shows the deferred Claude import card when the breadcrumb reports artifacts", async () => {
+    mockReadInstallerImportBreadcrumb.mockResolvedValue({
+      scanId: "2026-06-18T12-34-56-000Z",
+      scanDir: "workspace/imports/2026-06-18T12-34-56-000Z",
+      ranAt: "2026-06-18T12:34:56.000Z",
+      codexApplied: true,
+      discoveryOk: true,
+      claudeCounts: { commands: 2, skills: 1 },
+      totalClaudeArtifacts: 3,
+      deferred: true,
+    });
+
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+
+    expect(
+      await screen.findByText(/finish importing your claude setup/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/we found 3 claude artifacts\./i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("/import-claude")).toBeInTheDocument();
+    expect(
+      screen.getByText(/codex parity was applied automatically\./i),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the deferred Claude import card when the breadcrumb is absent", async () => {
+    mockReadInstallerImportBreadcrumb.mockResolvedValue(null);
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/finish importing your claude setup/i),
+      ).toBeNull();
+    });
+  });
+
+  it("hides the deferred Claude import card when the breadcrumb reports zero artifacts", async () => {
+    mockReadInstallerImportBreadcrumb.mockResolvedValue({
+      scanId: "2026-06-18T12-34-56-000Z",
+      scanDir: "workspace/imports/2026-06-18T12-34-56-000Z",
+      ranAt: "2026-06-18T12:34:56.000Z",
+      codexApplied: true,
+      discoveryOk: true,
+      claudeCounts: {},
+      totalClaudeArtifacts: 0,
+      deferred: true,
+    });
+
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/finish importing your claude setup/i),
+      ).toBeNull();
+    });
   });
 
   // ── 3. Claude Desktop CTA — primary path (Desktop IS installed) ───────────

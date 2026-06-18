@@ -53,6 +53,14 @@ export interface PackRecord {
   updatedAt: string;
 }
 
+export interface ImportRecord {
+  codexApplied: boolean;
+  discoveryOk: boolean;
+  claudeCounts: Record<string, number> | null;
+  totalClaudeArtifacts: number | null;
+  updatedAt: string;
+}
+
 export interface FailureRecord {
   stage: string;
   message: string;
@@ -72,6 +80,7 @@ export interface InstallManifest {
   steps: Record<string, StepRecord>;
   dependencies: Record<string, DependencyRecord>;
   packs: Record<string, PackRecord>;
+  import?: ImportRecord;
   failures: FailureRecord[];
 }
 
@@ -223,6 +232,20 @@ export async function recordPacks(
     for (const [name, record] of Object.entries(packs)) {
       m.packs[name] = { ...record, updatedAt: nowIso() };
     }
+  });
+}
+
+/** Snapshot the merged import-stage outcome in one write. */
+export async function recordImport(
+  installPath: string,
+  installerVersion: string,
+  summary: Omit<ImportRecord, "updatedAt">,
+): Promise<void> {
+  await updateManifest(installPath, installerVersion, (m) => {
+    m.import = {
+      ...summary,
+      updatedAt: nowIso(),
+    };
   });
 }
 

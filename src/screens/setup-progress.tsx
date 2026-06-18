@@ -1,5 +1,5 @@
 // setup-progress.tsx — US-004
-// Unified post-login orchestrator. Sequences seven stages behind a single
+// Unified post-login orchestrator. Sequences eight stages behind a single
 // progress bar with one explanatory line and no intermediate input:
 //
 //   1. deps         — runDepsInstall() (core deps; optionals skipped)
@@ -8,8 +8,9 @@
 //   3. packages     — install the default HQ content packs (no picker)
 //   4. git-init     — invoke("git_init") with identity from Google idToken
 //   5. personalize  — detect cloud company (non-fatal) + personalize()
-//   6. indexing     — qmd collection add (writes embeddings-pending marker)
-//   7. menubar      — install_menubar_app (HQ Sync tray app)
+//   6. import       — apply Codex parity + defer Claude adoption handoff
+//   7. indexing     — qmd collection add (writes embeddings-pending marker)
+//   8. menubar      — install_menubar_app (HQ Sync tray app)
 //
 // The initial cloud sync is kicked off HERE, as early as the flow allows
 // (login already happened; deps just put node/npx on disk), and deliberately
@@ -23,8 +24,8 @@
 // Each stage outcome is journaled to the install-manifest so a later /setup
 // can resume any failed stage. On failure the bar freezes — prior stages keep
 // their `ok` status and the user gets a Retry that resumes from the failure
-// point. (initial-sync is the exception: kickoff failures are journaled but
-// never fail the stage — HQ Sync's first launch is the fallback.)
+// point. (initial-sync and import are the exceptions: kickoff/discovery
+// failures are journaled but never fail the stage.)
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -32,6 +33,8 @@ import { listen } from "@tauri-apps/api/event";
 import {
   BaseDirectory,
   mkdir,
+  readTextFile,
+  rename,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
@@ -51,6 +54,7 @@ import {
 import {
   getInstallerVersion,
   recordDependencies,
+  recordImport,
   recordPacks,
   recordStepFailure,
   recordStepOk,
@@ -58,6 +62,7 @@ import {
   type ItemStatus,
 } from "@/lib/install-manifest";
 import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
+import { runExistingImport } from "@/lib/import-existing";
 
 // ---------------------------------------------------------------------------
 // Stage model
@@ -69,6 +74,7 @@ export type StageId =
   | "packages"
   | "git-init"
   | "personalize"
+  | "import"
   | "indexing"
   | "menubar";
 
@@ -88,6 +94,7 @@ const STAGE_LABELS: Record<StageId, string> = {
   packages: "Installing packages",
   "git-init": "Initialising workspace",
   personalize: "Personalizing",
+  import: "Importing existing setup",
   indexing: "Registering for search",
   menubar: "Installing HQ Sync",
 };
@@ -101,6 +108,7 @@ const STAGE_ORDER: readonly StageId[] = [
   "packages",
   "git-init",
   "personalize",
+  "import",
   "indexing",
   "menubar",
 ] as const;
@@ -440,19 +448,109 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     }
   }
 
-  // ── Stage 6: indexing ──────────────────────────────────────────────────
+  // ── Stage 6: import (best-effort Codex parity + deferred Claude handoff) ─
+  //
+  // The HQ scaffold is already on disk by now, so we can safely shell the
+  // source-of-truth import scripts from this install root. Deterministic,
+  // additive Codex parity is auto-applied here; Claude adoption is limited to
+  // a redacted scan + breadcrumb so the Summary screen can offer a one-click
+  // `/import-claude` handoff after install. ALWAYS returns true: missing
+  // scripts, scan failures, or parse problems are journaled, never blocking.
+
+  async function runImport(): Promise<boolean> {
+    appendLog("import", "Checking for an existing Claude or Codex setup…");
+
+    try {
+      const summary = await runExistingImport({
+        installPath,
+        onLog: (line) => appendLog("import", line),
+        spawn: (cmd, args, cwd) => spawnAndCapture("import", cmd, args, cwd),
+        fs: {
+          mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
+          readTextFile,
+          writeTextFile,
+          rename,
+        },
+      });
+
+      if (
+        summary.discoveryOk &&
+        typeof summary.totalClaudeArtifacts === "number" &&
+        summary.totalClaudeArtifacts > 0
+      ) {
+        appendLog(
+          "import",
+          `Deferred ${summary.totalClaudeArtifacts} Claude artifact${summary.totalClaudeArtifacts === 1 ? "" : "s"} for /import-claude after install.`,
+        );
+      } else if (!summary.discoveryOk) {
+        appendLog(
+          "import",
+          "[warn] Claude discovery was incomplete — you can still run /import-claude later.",
+        );
+      }
+
+      try {
+        const ver = await getInstallerVersion();
+        await recordImport(installPath, ver, {
+          codexApplied: summary.codexApplied,
+          discoveryOk: summary.discoveryOk,
+          claudeCounts: summary.claudeCounts,
+          totalClaudeArtifacts: summary.totalClaudeArtifacts,
+        });
+        if (summary.issues.length > 0) {
+          await recordStepFailure(
+            installPath,
+            ver,
+            "import",
+            "Existing setup import completed with warnings.",
+            {
+              issues: summary.issues,
+              codexApplied: summary.codexApplied,
+              discoveryOk: summary.discoveryOk,
+              totalClaudeArtifacts: summary.totalClaudeArtifacts,
+            },
+          );
+        }
+      } catch {
+        /* non-fatal */
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendLog("import", `[warn] Existing setup import did not complete: ${msg}`);
+      try {
+        const ver = await getInstallerVersion();
+        await recordStepFailure(
+          installPath,
+          ver,
+          "import",
+          `Existing setup import did not complete: ${msg}`,
+        );
+        await recordImport(installPath, ver, {
+          codexApplied: false,
+          discoveryOk: false,
+          claudeCounts: null,
+          totalClaudeArtifacts: null,
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
+
+    return true;
+  }
+
+  // ── Stage 7: indexing ──────────────────────────────────────────────────
   //
   // qmd collection add . --name <slug>, falling back to `qmd update` if the
   // collection already exists. Writes a pending-embeddings marker so HQ Sync
   // picks up indexing on next launch.
 
-  async function spawnAndWait(
+  async function spawnAndCapture(
     stage: StageId,
     cmd: string,
     args: string[],
     cwd: string,
-    stderrSink?: string[],
-  ): Promise<boolean> {
+  ): Promise<{ ok: boolean; stdout: string; stderr: string[] }> {
     let handle: string;
     try {
       handle = await invoke<string>("spawn_process", {
@@ -461,44 +559,84 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       patchStage(stage, { error: msg });
-      return false;
+      return { ok: false, stdout: "", stderr: [msg] };
     }
 
-    const stdoutUnlisten = await listen(
-      `process://${handle}/stdout`,
-      (event: { payload: unknown }) => {
-        const payload = event.payload as { line?: string };
-        appendLog(stage, payload?.line ?? "");
-      },
-    );
-    const stderrUnlisten = await listen(
-      `process://${handle}/stderr`,
-      (event: { payload: unknown }) => {
-        const payload = event.payload as { line?: string };
-        const line = payload?.line ?? "";
-        appendLog(stage, `[stderr] ${line}`);
-        stderrSink?.push(line);
-      },
-    );
+    try {
+      const stdoutLines: string[] = [];
+      const stderrLines: string[] = [];
 
-    return new Promise<boolean>((resolve) => {
-      listen(`process://${handle}/exit`, (event: { payload: unknown }) => {
-        const payload = event.payload as {
-          code: number | null;
-          success: boolean;
-        };
-        (stdoutUnlisten as () => void)();
-        (stderrUnlisten as () => void)();
-        if (payload.success) {
-          resolve(true);
-        } else {
-          patchStage(stage, {
-            error: `Process exited with code ${payload.code ?? -1}`,
-          });
-          resolve(false);
-        }
+      const stdoutUnlisten = await listen(
+        `process://${handle}/stdout`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as { line?: string };
+          const line = payload?.line ?? "";
+          stdoutLines.push(line);
+          appendLog(stage, line);
+        },
+      );
+      const stderrUnlisten = await listen(
+        `process://${handle}/stderr`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as { line?: string };
+          const line = payload?.line ?? "";
+          stderrLines.push(line);
+          appendLog(stage, `[stderr] ${line}`);
+        },
+      );
+
+      let resolveExit: ((value: { ok: boolean; stdout: string; stderr: string[] }) => void) | null =
+        null;
+      const exitResult = new Promise<{
+        ok: boolean;
+        stdout: string;
+        stderr: string[];
+      }>((resolve) => {
+        resolveExit = resolve;
       });
-    });
+
+      let exitUnlisten: (() => void) | null = null;
+      exitUnlisten = await listen(
+        `process://${handle}/exit`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as {
+            code: number | null;
+            success: boolean;
+          };
+          (stdoutUnlisten as () => void)();
+          (stderrUnlisten as () => void)();
+          exitUnlisten?.();
+          if (!payload.success) {
+            patchStage(stage, {
+              error: `Process exited with code ${payload.code ?? -1}`,
+            });
+          }
+          resolveExit?.({
+            ok: payload.success,
+            stdout: stdoutLines.join("\n"),
+            stderr: stderrLines,
+          });
+        },
+      );
+
+      return await exitResult;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage(stage, { error: msg });
+      return { ok: false, stdout: "", stderr: [msg] };
+    }
+  }
+
+  async function spawnAndWait(
+    stage: StageId,
+    cmd: string,
+    args: string[],
+    cwd: string,
+    stderrSink?: string[],
+  ): Promise<boolean> {
+    const result = await spawnAndCapture(stage, cmd, args, cwd);
+    stderrSink?.push(...result.stderr);
+    return result.ok;
   }
 
   async function runIndexing(): Promise<boolean> {
@@ -554,7 +692,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     return true;
   }
 
-  // ── Stage 7: menubar (HQ Sync) ─────────────────────────────────────────
+  // ── Stage 8: menubar (HQ Sync) ─────────────────────────────────────────
 
   async function runMenubar(): Promise<boolean> {
     const unlisten = await listen<{
@@ -628,6 +766,9 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         break;
       case "personalize":
         ok = await runPersonalize();
+        break;
+      case "import":
+        ok = await runImport();
         break;
       case "indexing":
         ok = await runIndexing();

@@ -1,0 +1,56 @@
+{
+  "scan_id": "2026-06-18T12-34-56",
+  "discovery": {
+    "ok": true,
+    "errors": []
+  },
+  "categories": {
+    "plans": [
+      { "category": "plans", "source_path": "$HOME/.claude/plans/plan-a.md" }
+    ],
+    "commands": [
+      { "category": "commands", "source_path": "$HOME/.claude/commands/foo.md" },
+      { "category": "commands", "source_path": "$HOME/.claude/commands/bar.md" }
+    ],
+    "skills": [
+      { "category": "skills", "source_path": "$HOME/.claude/skills/alpha/SKILL.md" }
+    ],
+    "hooks": [],
+    "policies": [
+      { "category": "policies", "source_path": "$HOME/.claude/policies/policy.md" }
+    ],
+    "agents": [],
+    "claude_md": [
+      { "category": "claude_md", "source_path": "$HOME/code/repo/CLAUDE.md" }
+    ],
+    "settings_fragments": [
+      {
+        "category": "settings_fragments",
+        "source_path": "$HOME/.claude/settings.json"
+      }
+    ],
+    "mcp_servers": [
+      {
+        "category": "mcp_servers",
+        "source_path": "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+      }
+    ],
+    "knowledge_dirs": [],
+    "claude_repos": [
+      { "category": "claude_repos", "source_path": "$HOME/code/repo" }
+    ]
+  },
+  "counts": {
+    "plans": 1,
+    "commands": 2,
+    "skills": 1,
+    "hooks": 0,
+    "policies": 1,
+    "agents": 0,
+    "claude_md": 1,
+    "settings_fragments": 1,
+    "mcp_servers": 1,
+    "knowledge_dirs": 0,
+    "claude_repos": 1
+  }
+}
