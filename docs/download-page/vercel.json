@@ -4,7 +4,7 @@
     {
       "source": "/:path*",
       "destination": "https://www.hqforwork.com/install",
-      "permanent": true
+      "permanent": false
     }
   ]
 }
