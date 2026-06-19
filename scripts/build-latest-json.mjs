@@ -1,4 +1,6 @@
-#!/usr/bin/env node
+// Invoked as `node scripts/build-latest-json.mjs …` from release.yml and
+// imported directly by its vitest suite. No shebang: a `#!` line is a syntax
+// error when the module is imported through Vitest's transform on Windows.
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
