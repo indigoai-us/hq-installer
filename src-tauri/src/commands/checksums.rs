@@ -238,13 +238,33 @@ fn atomic_replace(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 fn sync_parent_dir(parent: &Path) -> Result<(), String> {
-    let dir = fs::OpenOptions::new()
+    // Best-effort directory-entry durability flush after the atomic rename.
+    // Windows cannot flush a directory handle — FlushFileBuffers() on a
+    // directory returns ERROR_ACCESS_DENIED (os error 5) even when the handle is
+    // opened with FILE_FLAG_BACKUP_SEMANTICS — and the rename itself was already
+    // performed atomically/write-through, so a failure here must not fail the
+    // checksum write. Log and continue.
+    let dir = match fs::OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(parent)
-        .map_err(|e| format!("open parent dir {} for fsync: {e}", parent.display()))?;
-    dir.sync_all()
-        .map_err(|e| format!("fsync parent dir {}: {e}", parent.display()))
+    {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!(
+                "[hq-checksums] open parent dir {} for fsync (non-fatal): {e}",
+                parent.display()
+            );
+            return Ok(());
+        }
+    };
+    if let Err(e) = dir.sync_all() {
+        eprintln!(
+            "[hq-checksums] fsync parent dir {} (non-fatal): {e}",
+            parent.display()
+        );
+    }
+    Ok(())
 }
 
 fn wide_path(path: &Path) -> Vec<u16> {
