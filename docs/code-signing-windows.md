@@ -1,169 +1,166 @@
 # Code signing on Windows
 
-Authoritative reference for SignTool + Tauri 2 updater signing for the
-Windows target of `hq-installer`. CI wiring lives in `.github/workflows/release.yml`.
+Authoritative reference for Azure Trusted Signing + Tauri 2 updater signing for
+the Windows target of `hq-installer`. CI wiring lives in
+`.github/workflows/release.yml`.
 
 ## The two independent signatures
 
-### 1. SignTool — Authenticode (binary trust)
+### 1. Azure Trusted Signing - Authenticode
 
 What it signs: `*.msi` and `*-setup.exe` bundle artifacts.
-Why: Windows SmartScreen + Defender check the publisher signature when
-the user double-clicks the installer. An unsigned or self-signed binary
-triggers the orange "Windows protected your PC" prompt and a "Don't run"
-default button — terrible first-launch UX.
 
-Cert authorities (pick one):
+Why: Windows SmartScreen and Defender check the publisher signature when a user
+launches the installer. A production release must not publish unsigned Windows
+installers.
 
-| Authority | Type | Cost / year | SmartScreen reputation |
-|---|---|---|---|
-| Sectigo OV | Organization-validated | ~$200 | Builds over weeks of installs |
-| DigiCert OV | Organization-validated | ~$600 | Builds over weeks of installs |
-| Sectigo EV | Extended-validation | $300-1000 + USB token | **Instant** SmartScreen trust |
-| Self-signed | n/a | $0 | Triggers SmartScreen forever |
-| Unsigned | n/a | $0 | Triggers SmartScreen forever |
+The release workflow signs with `azure/trusted-signing-action` after logging in
+with `azure/login` through GitHub OIDC. There is no checked-in PFX and no
+certificate blob secret in GitHub Actions.
 
-**V1 (dogfood) recommendation**: ship unsigned. Internal users can click
-through SmartScreen. Real cert procurement is a separate ops decision —
-see the PRD's `openQuestions` block.
+Required GitHub configuration:
 
-**Pre-external-rollout recommendation**: get an EV cert. The USB token
-sucks for CI, but the instant-trust UX is worth it for first-impression
-installs.
+| Kind | Name | Purpose |
+|---|---|---|
+| Environment | `release` | Applied to the `build-windows` job so the OIDC subject is `repo:indigoai-us/hq-installer:environment:release` |
+| Repository variable | `AZURE_CLIENT_ID` | Azure application/client ID for the Trusted Signing federated credential |
+| Repository variable | `AZURE_TENANT_ID` | Azure tenant ID |
+| Repository variable | `AZURE_SUBSCRIPTION_ID` | Azure subscription ID that owns the Trusted Signing account |
 
-### 2. Tauri updater minisign — auto-update integrity
+Azure-side configuration:
 
-What it signs: `*.msi.zip` and `*.msi.zip.sig` updater artifacts.
-Why: the Tauri auto-updater downloads the `.msi.zip` from the GitHub
-release, verifies its `.sig` against the embedded pubkey, and only
-applies the update if the signature checks out. Without a valid
-keypair, the updater is effectively disabled.
+- Trusted Signing endpoint: `https://eus.codesigning.azure.net/`
+- Signing account: `indigosigning`
+- Certificate profile: `indigo-codesign`
+- Federated credential subject:
+  `repo:indigoai-us/hq-installer:environment:release`
 
-The pubkey is committed in `src-tauri/tauri.conf.json` under
-`plugins.updater.pubkey`. The matching private key MUST be:
+The release job fails before publishing unless all three `AZURE_*` variables are
+present. The only exception is a manual `workflow_dispatch` with
+`allow_unsigned=true`, which is intended for a non-production emergency build.
+CI smoke builds remain unsigned by design.
 
-- Generated via `pnpm tauri signer generate` (see
-  `scripts/generate-updater-keypair.ps1`).
-- Stored OUTSIDE the repo, in a password manager.
-- Pasted into GitHub Actions secrets as `TAURI_SIGNING_PRIVATE_KEY`
-  (the encrypted key file contents) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-  (the passphrase you set at generation time).
-
-## CI secret setup
-
-One-time setup on `indigoai-us/hq-installer`. All commands run from
-a local checkout with `gh` authenticated.
-
-### SignTool cert (when available)
+After signing, CI verifies every staged `.msi` and `*-setup.exe`:
 
 ```powershell
-# 1. Export the cert from Sectigo / DigiCert as a PFX with a strong password.
-# 2. Base64-encode it (avoids binary upload pitfalls in `gh secret set`):
-$pfx = "C:\path\to\hq-installer.pfx"
-$b64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($pfx))
-gh secret set WINDOWS_SIGNING_CERT --repo indigoai-us/hq-installer --body "$b64"
-gh secret set WINDOWS_SIGNING_CERT_PASSWORD --repo indigoai-us/hq-installer --body "<the pfx password>"
+$sig = Get-AuthenticodeSignature "HQ Installer_1.2.3_x64-setup.exe"
+if ($sig.Status -ne 'Valid') { throw "Bad signature: $($sig.Status)" }
 ```
 
-The release workflow decodes the base64 back into a `.pfx` on the runner
-under `$env:RUNNER_TEMP` and points SignTool at it.
+### 2. Tauri updater minisign - auto-update integrity
 
-### Tauri updater keypair
+What it signs: the Tauri updater artifacts and installer bytes referenced by
+the GitHub-hosted `latest.json`.
+
+Why: the Tauri auto-updater downloads an artifact from the GitHub release,
+verifies its `.sig` against the embedded public key, and only applies the update
+if the signature checks out.
+
+macOS and Windows use one updater keypair. The public key is committed in
+`src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. The matching private
+key must be stored in GitHub Actions secrets:
+
+| Secret | Purpose |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Encrypted Tauri updater private key contents |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Passphrase for the private key |
+
+Generate the keypair with:
 
 ```powershell
-# Generate the keypair using the Tauri CLI:
 .\scripts\generate-updater-keypair.ps1 -OutDir "$env:USERPROFILE\.hq-installer\keys"
-# The script prints the GitHub Actions commands at the end. Run them.
 ```
 
-You'll also need to paste the printed `pubkey` blob into
-`src-tauri/tauri.conf.json` under `plugins.updater.pubkey` and commit.
+Paste the printed public key into `src-tauri/tauri.conf.json`, then store the
+private key contents and passphrase in the two GitHub secrets above.
 
-## Local signed builds (rare)
+Important: Authenticode signing mutates Windows installer bytes. The release
+workflow regenerates each Tauri updater `.sig` after Azure Trusted Signing so
+the updater verifies the exact bytes shipped to users.
 
-For pre-release validation:
+## Combined latest.json
+
+The final release job generates and uploads:
+
+```text
+https://github.com/indigoai-us/hq-installer/releases/latest/download/latest.json
+```
+
+The manifest is built from the GitHub release asset list and downloaded `.sig`
+files by `scripts/build-latest-json.mjs`. It includes:
+
+- `darwin-universal`, `darwin-aarch64`, and `darwin-x86_64`, all pointing at the
+  universal macOS updater tarball
+- `windows-x86_64`, pointing at the versioned x64 NSIS setup `.exe`
+- `windows-aarch64`, pointing at the versioned ARM64 NSIS setup `.exe`
+
+Versionless aliases such as `HQ-Installer_x64-setup.exe` are only stable
+download links for humans and onboarding pages. They are intentionally ignored
+when building updater metadata.
+
+## Release inputs
+
+The Windows release job also consumes the same build-time secrets as macOS:
+
+| Secret | Purpose |
+|---|---|
+| `VITE_COGNITO_USER_POOL_ID` | Cognito user pool ID inlined into the Vite bundle |
+| `VITE_COGNITO_CLIENT_ID` | Cognito client ID inlined into the Vite bundle |
+| `VITE_COGNITO_DOMAIN` | Cognito hosted UI domain inlined into the Vite bundle |
+| `HQ_INSTALLER_SENTRY_DSN` | Rust/native Sentry DSN compiled into the Tauri binary |
+| `VITE_HQ_INSTALLER_WEB_SENTRY_DSN` | React/webview Sentry DSN inlined into the Vite bundle |
+| `SENTRY_AUTH_TOKEN` | Token used by Sentry release/source-map upload |
+
+The macOS job additionally requires:
+
+| Secret | Purpose |
+|---|---|
+| `APPLE_CERTIFICATE` | Base64-encoded Apple Developer ID Application `.p12` certificate |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12` certificate |
+| `APPLE_ID` | Apple ID email address used for notarization |
+| `APPLE_PASSWORD` | App-specific password for the Apple ID |
+| `APPLE_TEAM_ID` | 10-character Apple Developer Team ID |
+
+## Local Windows builds
+
+Local Windows builds can produce unsigned MSI/NSIS bundles for smoke testing:
 
 ```powershell
-$env:SIGNING_CERT_PATH = "C:\path\to\hq-installer.pfx"
-$env:WINDOWS_SIGNING_CERT_PASSWORD = "<password>"
-$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content "$env:USERPROFILE\.hq-installer\keys\hq-installer-updater.key" -Raw)
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<passphrase>"
-pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis,updater
+pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis --config src-tauri/tauri.smoke.conf.json
 ```
 
-Then manually sign with SignTool:
-
-```powershell
-$signTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64\signtool.exe" | Select -Last 1
-& $signTool sign /fd SHA256 /f $env:SIGNING_CERT_PATH /p $env:WINDOWS_SIGNING_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 "src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi\*.msi"
-```
-
-Verify with: `Get-AuthenticodeSignature <file.msi>` — status should be
-`Valid`, signer should match the cert subject.
-
-## When the cert changes
-
-Procuring a new cert (annual renewal, switching CAs):
-
-1. Generate / receive the new PFX.
-2. Re-run the `gh secret set WINDOWS_SIGNING_CERT` flow with the new
-   base64 blob.
-3. Update `WINDOWS_SIGNING_CERT_PASSWORD` if the password changed.
-4. Cut a fresh release — old binaries keep their existing signature; only
-   new builds use the new cert.
-5. If SmartScreen reputation reset: be ready for a few weeks of
-   "Windows protected your PC" warnings until reputation re-establishes
-   (OV certs only; EV certs avoid this).
+Production Authenticode signing happens in GitHub Actions through Azure Trusted
+Signing. Do not add local PFX-based signing secrets back to the workflow.
 
 ## When the updater keypair rotates
 
-**Don't, unless compromised.** Rotating the pubkey breaks auto-update
-for every user already on a build with the old pubkey — they'll need
-to download the next release manually. If the private key is leaked:
+Do not rotate the updater keypair unless it is compromised. Rotating the public
+key breaks auto-update for every user already on a build with the old key; those
+users need a manual download of the next release.
+
+If the private key is leaked:
 
 1. Re-run `scripts/generate-updater-keypair.ps1`.
-2. Update `plugins.updater.pubkey` in `tauri.conf.json`.
-3. Update GitHub Actions secrets (`TAURI_SIGNING_PRIVATE_KEY` +
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`).
+2. Update `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`.
+3. Update `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 4. Ship a release.
-5. Email / Slack existing users that they need to download the next
-   release manually.
+5. Notify existing users that they need to download the next release manually.
 
 ## Verifying a signed release
 
 End-user check:
 
-1. Right-click `hq-installer_<version>_x64_en-US.msi` → Properties.
+1. Right-click the versioned installer, for example
+   `HQ Installer_1.2.3_x64-setup.exe`.
 2. Click the "Digital Signatures" tab.
-3. Expect a signature from "Indigo AI" (or whatever your cert subject
-   is) with status "This digital signature is OK."
+3. Expect a valid Indigo AI publisher signature.
 
-Programmatic check on the CI runner:
+Programmatic check:
 
 ```powershell
-$sig = Get-AuthenticodeSignature "hq-installer_*.msi"
-if ($sig.Status -ne 'Valid') { throw "Bad signature: $($sig.Status)" }
+Get-AuthenticodeSignature "HQ Installer_1.2.3_x64-setup.exe" |
+  Select-Object Status, StatusMessage, SignerCertificate
 ```
 
-Tauri updater check:
-
-The `*.msi.zip.sig` file alongside the `*.msi.zip` must base64-decode to
-a valid minisign signature that verifies against the `pubkey` in
-`tauri.conf.json`. The Tauri runtime does this verification before
-applying any update — no manual step needed.
-
-## Open questions / known limitations
-
-- **EV cert + GitHub Actions**: EV certs require a hardware token, which
-  doesn't work cleanly with cloud CI. Options: (a) ship OV signatures
-  in V1 and accept the SmartScreen ramp, (b) sign locally on a developer
-  box with the EV token for each release. PRD US-009 ships with OV / no
-  cert; revisit before external rollout.
-- **Timestamp server**: `timestamp.digicert.com` is the default; if it
-  goes down (rare), DigiCert provides alternates. Tauri signed builds
-  WITHOUT a timestamp expire when the cert expires (~1 year). Timestamp
-  means the signature stays valid forever for binaries signed during the
-  cert's validity window.
-- **Cross-signing for older Windows**: no longer required — Win 10 1607+
-  and all of Win 11 trust SHA-256 Authenticode without the SHA-1
-  cross-signature. We don't support Win 10 below 1607 (per PRD non-goals).
+The Tauri updater `.sig` files are verified by the Tauri runtime before an
+update is applied.

@@ -128,6 +128,7 @@ pub fn run() {
             #[cfg(not(windows))]
             {
                 tauri::generate_handler![
+                    commands::ai_tools::check_ai_tools,
                     commands::deps::check_dep,
                     commands::deps::install_node,
                     commands::deps::install_git,
@@ -168,6 +169,7 @@ pub fn run() {
             #[cfg(windows)]
             {
                 tauri::generate_handler![
+                    commands::ai_tools::check_ai_tools,
                     commands::checksums::compute_checksums,
                     commands::long_paths::is_long_paths_enabled,
                     commands::long_paths::enable_long_paths,

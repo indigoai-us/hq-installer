@@ -626,15 +626,18 @@ describe("fetchAndExtract", () => {
       {
         target: ".claude/CLAUDE.md",
         linkPath: "/tmp/target/AGENTS.md",
+        root: "/tmp/target",
       },
     ]);
 
-    // .codex/output-style.md → ../.claude/output-style.md
+    // .codex/output-style.md → ../.claude/output-style.md — a relative target
+    // with `..` that still resolves INSIDE the install root, so it's allowed.
     expect(symlinkCalls).toContainEqual([
       "create_symlink",
       {
         target: "../.claude/output-style.md",
         linkPath: "/tmp/target/.codex/output-style.md",
+        root: "/tmp/target",
       },
     ]);
 
@@ -649,15 +652,16 @@ describe("fetchAndExtract", () => {
   });
 
   // -------------------------------------------------------------------------
-  it("symlinks: path-traversal in linkname is preserved (host symlink-create command enforces safety)", async () => {
-    // The TS extractor's safeJoin only guards the *link path* itself, not
-    // what the link points to. A symlink whose target is "../../etc/passwd"
-    // is fine to create — POSIX symlinks can dangle or point anywhere — and
-    // we faithfully forward the target string. Real-world hardening (refusing
-    // to follow such links) is the responsibility of whatever code later
-    // reads through them.
+  it("symlinks: a linkname that escapes the install root is rejected (no invocation)", async () => {
+    // Hardening (review P0 #1): the link *target* is untrusted archive
+    // metadata. A symlink whose target resolves outside the install root
+    // (e.g. "../../etc/passwd" from a root-level link) must be skipped, never
+    // forwarded to create_symlink — otherwise a later file write could follow
+    // it and land outside ~/hq. Targets that resolve INSIDE the root are still
+    // allowed (covered by the test above).
     const tarGzBytes = buildGitHubTarGz([
       { name: "weird.lnk", linkname: "../../etc/passwd" },
+      { name: "ok.lnk", linkname: "real-file.txt" },
     ]);
     mockFetch
       .mockResolvedValueOnce({
@@ -672,10 +676,15 @@ describe("fetchAndExtract", () => {
     const symlinkCalls = mockInvoke.mock.calls.filter(
       ([cmd]) => cmd === "create_symlink",
     );
+    // The escaping target is skipped; the in-root one is still created.
     expect(symlinkCalls).toEqual([
       [
         "create_symlink",
-        { target: "../../etc/passwd", linkPath: "/tmp/target/weird.lnk" },
+        {
+          target: "real-file.txt",
+          linkPath: "/tmp/target/ok.lnk",
+          root: "/tmp/target",
+        },
       ],
     ]);
   });

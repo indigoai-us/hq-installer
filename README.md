@@ -94,15 +94,18 @@ cargo test
 
 ## Release Process
 
-Releases are automated via `.github/workflows/release.yml`. Pushing a version tag triggers platform builds, signing, update artifacts, and GitHub release publishing.
+Releases are automated via `.github/workflows/release.yml`. Pushing a version tag triggers macOS and Windows builds, platform signing, Tauri updater signing, a combined GitHub-hosted `latest.json`, and final GitHub release publishing.
 
 ### Cutting a release
 
 ```bash
-# Bump version in src-tauri/tauri.conf.json and src-tauri/Cargo.toml first, then:
+# Bump version in package.json, src-tauri/tauri.conf.json,
+# src-tauri/Cargo.toml, and src-tauri/Cargo.lock first, then:
 git tag v1.2.3
 git push origin v1.2.3
 ```
+
+The release workflow validates that the tag matches `vX.Y.Z` and that the tag version matches all four version files before building.
 
 ### macOS release path
 
@@ -112,43 +115,68 @@ The macOS release workflow will:
 2. Code-sign the `.app` bundle with the Apple Developer ID certificate from GitHub secrets
 3. Submit the `.app` to Apple notarization and staple the ticket
 4. Archive the notarized `.app` into `hq-installer_universal.zip` with `ditto` (preserves the stapled ticket and xattrs)
-5. Create a GitHub release with the signed `.zip` attached
+5. Create a draft GitHub release with the signed `.zip` and updater tarball attached
 
 End-user install flow: download the `.zip` -> Safari auto-extracts -> double-click the `.app` to run the installer wizard. No DMG mount, no drag-to-Applications step.
-
-#### Required macOS GitHub Actions secrets
-
-| Secret | Description |
-|---|---|
-| `APPLE_CERTIFICATE` | Base64-encoded Apple Developer ID Application `.p12` certificate |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12` certificate |
-| `APPLE_SIGNING_IDENTITY` | Certificate Common Name used by codesign (e.g. `Developer ID Application: Acme Inc (ABC1234DEF)`) |
-| `APPLE_ID` | Apple ID email address used for notarization (e.g. `dev@example.com`) |
-| `APPLE_ID_PASSWORD` | App-specific password for the Apple ID (generated at appleid.apple.com) |
-| `APPLE_TEAM_ID` | 10-character Apple Developer Team ID (e.g. `ABC1234DEF`) |
 
 ### Windows release path
 
 The Windows release workflow will:
 
-1. Build MSI, NSIS, and updater artifacts via `tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis,updater`
-2. Sign installer artifacts with SignTool when a Windows signing certificate is configured
-3. Sign updater artifacts with the Tauri updater minisign key
-4. Attach the MSI, NSIS installer, updater archive, and updater signature to the GitHub release
-5. Publish release metadata that points Windows clients at the signed updater artifact
+1. Build MSI, NSIS, and updater artifacts for `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`
+2. Authenticate to Azure via GitHub OIDC from the `release` environment
+3. Sign MSI and NSIS installers with Azure Trusted Signing
+4. Verify `Get-AuthenticodeSignature` is `Valid` for every staged `.msi` and `*-setup.exe`
+5. Regenerate Tauri updater signatures after Authenticode signing mutates the installer bytes
+6. Attach versioned installers, `.sig` sidecars, and stable versionless installer aliases to the draft release
 
-The Windows updater minisign keypair is distinct from the macOS updater keypair. See [docs/code-signing-windows.md](docs/code-signing-windows.md) for certificate procurement, SignTool setup, updater key generation, and verification.
+Unsigned Windows installers are allowed only for CI smoke builds, or for an explicit manual dispatch with `allow_unsigned=true` as a non-production exception. Normal tag releases fail if the Azure Trusted Signing variables are missing.
 
-#### Required Windows GitHub Actions secrets
+### Updater metadata
+
+macOS and Windows use one Tauri updater keypair. The public key is committed in `src-tauri/tauri.conf.json`; the private key and passphrase live in GitHub Actions secrets. The finalize job generates one combined `latest.json` and uploads it to:
+
+```text
+https://github.com/indigoai-us/hq-installer/releases/latest/download/latest.json
+```
+
+That manifest contains `darwin-universal`, `darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`, and `windows-aarch64` platform entries.
+
+### Required release configuration
+
+GitHub Actions environment:
+
+| Environment | Purpose |
+|---|---|
+| `release` | Required on the Windows build job so the OIDC subject is `repo:indigoai-us/hq-installer:environment:release` for the Azure federated credential |
+
+Repository variables:
+
+| Variable | Description |
+|---|---|
+| `AZURE_CLIENT_ID` | Azure application/client ID for Trusted Signing OIDC |
+| `AZURE_TENANT_ID` | Azure tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID that owns the Trusted Signing account |
+
+Repository secrets:
 
 | Secret | Description |
 |---|---|
-| `WINDOWS_SIGNING_CERT` | Base64-encoded Authenticode `.pfx` certificate |
-| `WINDOWS_SIGNING_CERT_PASSWORD` | Password for the `.pfx` certificate |
-| `TAURI_SIGNING_PRIVATE_KEY` | Encrypted Tauri updater private key contents for Windows artifacts |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Passphrase for the Windows updater private key |
+| `APPLE_CERTIFICATE` | Base64-encoded Apple Developer ID Application `.p12` certificate |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12` certificate |
+| `APPLE_ID` | Apple ID email address used for notarization |
+| `APPLE_PASSWORD` | App-specific password for the Apple ID |
+| `APPLE_TEAM_ID` | 10-character Apple Developer Team ID |
+| `TAURI_SIGNING_PRIVATE_KEY` | Encrypted Tauri updater private key contents used for both macOS and Windows artifacts |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Passphrase for the Tauri updater private key |
+| `VITE_COGNITO_USER_POOL_ID` | Cognito user pool ID inlined into the Vite bundle |
+| `VITE_COGNITO_CLIENT_ID` | Cognito client ID inlined into the Vite bundle |
+| `VITE_COGNITO_DOMAIN` | Cognito hosted UI domain inlined into the Vite bundle |
+| `HQ_INSTALLER_SENTRY_DSN` | Rust/native Sentry DSN compiled into the Tauri binary |
+| `VITE_HQ_INSTALLER_WEB_SENTRY_DSN` | React/webview Sentry DSN inlined into the Vite bundle |
+| `SENTRY_AUTH_TOKEN` | Token used to create Sentry releases and upload source maps/debug symbols |
 
-### Where to source the certificates
+### Where to source the Apple certificate
 
 Credentials and the `.p12` certificate are stored at `companies/indigo/settings/`. See that directory for the Apple Developer account details and instructions for exporting the certificate from Keychain Access.
 
@@ -158,4 +186,4 @@ To base64-encode the `.p12` for the `APPLE_CERTIFICATE` secret:
 base64 -i DeveloperIDApplication.p12 | pbcopy
 ```
 
-Paste the clipboard output directly into the GitHub secret value. Windows certificate procurement and encoding are covered in [docs/code-signing-windows.md](docs/code-signing-windows.md).
+Paste the clipboard output directly into the GitHub secret value. Windows signing setup is covered in [docs/code-signing-windows.md](docs/code-signing-windows.md).

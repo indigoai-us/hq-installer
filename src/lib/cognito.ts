@@ -3,7 +3,8 @@
 // Authentication itself lives in `google-oauth.ts` (provider sign-in via
 // Cognito Hosted UI + PKCE). This module is responsible for:
 //   - Storing/loading/clearing Cognito tokens in the macOS keychain.
-//   - Writing/reading the shared token file (~/.hq/cognito-tokens.json).
+//   - Writing a short-lived sync-runner handoff (~/.hq/cognito-tokens.json)
+//     that never contains the refresh token.
 //   - Refreshing expired sessions via REFRESH_TOKEN_AUTH.
 //   - Exposing the current authenticated user derived from the stored idToken.
 //   - Global sign-out.
@@ -16,8 +17,7 @@ import {
 } from "@aws-sdk/client-cognito-identity-provider";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  writeTextFile,
-  readTextFile,
+  writeFile,
   rename,
   remove,
   mkdir,
@@ -86,7 +86,7 @@ const KC_SERVICE = "cognito";
 const KC_ACCOUNT = "tokens";
 
 // ---------------------------------------------------------------------------
-// Shared token file (~/.hq/cognito-tokens.json)
+// Short-lived sync-runner handoff (~/.hq/cognito-tokens.json)
 // ---------------------------------------------------------------------------
 
 async function getHomeDirPath(): Promise<string> {
@@ -98,18 +98,17 @@ const HQ_DIR_NAME = ".hq";
 
 interface SharedTokenFile {
   accessToken: string;
-  idToken: string;
-  refreshToken: string;
   expiresAt: number;
   tokenType: "Bearer";
 }
 
 async function writeSharedTokenFile(tokens: CognitoTokens): Promise<void> {
+  let tmpPath: string | null = null;
   try {
     const home = await getHomeDirPath();
     const hqDir = `${home}/${HQ_DIR_NAME}`;
     const tokenPath = `${hqDir}/${TOKEN_FILE_NAME}`;
-    const tmpPath = `${hqDir}/.${TOKEN_FILE_NAME}.tmp.${crypto.randomUUID()}`;
+    tmpPath = `${hqDir}/.${TOKEN_FILE_NAME}.tmp.${crypto.randomUUID()}`;
 
     if (!(await exists(hqDir))) {
       await mkdir(hqDir, { recursive: true });
@@ -117,16 +116,22 @@ async function writeSharedTokenFile(tokens: CognitoTokens): Promise<void> {
 
     const payload: SharedTokenFile = {
       accessToken: tokens.accessToken,
-      idToken: tokens.idToken,
-      refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
       tokenType: "Bearer",
     };
 
-    await writeTextFile(tmpPath, JSON.stringify(payload, null, 2));
+    const bytes = new TextEncoder().encode(JSON.stringify(payload, null, 2));
+    await writeFile(tmpPath, bytes, { mode: 0o600 });
     await rename(tmpPath, tokenPath);
-  } catch {
-    // Best-effort — keychain is the primary store
+  } catch (err) {
+    if (tmpPath) {
+      try {
+        if (await exists(tmpPath)) await remove(tmpPath);
+      } catch (cleanupErr) {
+        console.warn("[cognito] shared token handoff cleanup failed:", cleanupErr);
+      }
+    }
+    console.warn("[cognito] shared token handoff write failed:", err);
   }
 }
 
@@ -137,38 +142,8 @@ async function deleteSharedTokenFile(): Promise<void> {
     if (await exists(tokenPath)) {
       await remove(tokenPath);
     }
-  } catch {
-    // Best-effort — keychain is the primary store
-  }
-}
-
-async function readSharedTokenFile(): Promise<CognitoTokens | null> {
-  try {
-    const home = await getHomeDirPath();
-    const tokenPath = `${home}/${HQ_DIR_NAME}/${TOKEN_FILE_NAME}`;
-
-    if (!(await exists(tokenPath))) return null;
-
-    const raw = await readTextFile(tokenPath);
-    const parsed = JSON.parse(raw) as Partial<SharedTokenFile>;
-
-    if (
-      typeof parsed.accessToken !== "string" ||
-      typeof parsed.idToken !== "string" ||
-      typeof parsed.refreshToken !== "string" ||
-      typeof parsed.expiresAt !== "number"
-    ) {
-      return null;
-    }
-
-    return {
-      accessToken: parsed.accessToken,
-      idToken: parsed.idToken,
-      refreshToken: parsed.refreshToken,
-      expiresAt: parsed.expiresAt,
-    };
-  } catch {
-    return null;
+  } catch (err) {
+    console.warn("[cognito] shared token handoff delete failed:", err);
   }
 }
 
@@ -193,6 +168,16 @@ let cacheWarmed = false;
 // populates `cacheWarmed`, causing two ACL prompts on unsigned dev builds.
 let pendingLoad: Promise<CognitoTokens | null> | null = null;
 
+function markLoaded(tokens: CognitoTokens | null): CognitoTokens | null {
+  cachedTokens = tokens;
+  cacheWarmed = true;
+  return cachedTokens;
+}
+
+function isMissingKeychainEntry(err: unknown): boolean {
+  return err instanceof Error && /not found|no entry|not exist/i.test(err.message);
+}
+
 export async function storeTokens(tokens: CognitoTokens): Promise<void> {
   await invoke("keychain_set", {
     service: KC_SERVICE,
@@ -216,15 +201,13 @@ async function loadTokens(): Promise<CognitoTokens | null> {
 
   pendingLoad = (async () => {
     try {
-      const raw = await invoke<string>("keychain_get", {
+      const raw = await invoke<string | null>("keychain_get", {
         service: KC_SERVICE,
         account: KC_ACCOUNT,
       });
       if (!raw) {
-        const fileFallback = await readSharedTokenFile();
-        cachedTokens = fileFallback;
-        cacheWarmed = true;
-        return fileFallback;
+        await deleteSharedTokenFile();
+        return markLoaded(null);
       }
       const parsed = JSON.parse(raw) as Partial<CognitoTokens>;
       if (
@@ -233,24 +216,24 @@ async function loadTokens(): Promise<CognitoTokens | null> {
         typeof parsed.refreshToken !== "string" ||
         typeof parsed.expiresAt !== "number"
       ) {
-        const fileFallback = await readSharedTokenFile();
-        cachedTokens = fileFallback;
-        cacheWarmed = true;
-        return fileFallback;
+        console.warn("[cognito] keychain token payload is invalid; ignoring it");
+        await deleteSharedTokenFile();
+        return markLoaded(null);
       }
-      cachedTokens = {
+      const tokens = {
         accessToken: parsed.accessToken,
         idToken: parsed.idToken,
         refreshToken: parsed.refreshToken,
         expiresAt: parsed.expiresAt,
       };
-      cacheWarmed = true;
-      return cachedTokens;
-    } catch {
-      const fileFallback = await readSharedTokenFile();
-      cachedTokens = fileFallback;
-      cacheWarmed = true;
-      return fileFallback;
+      await writeSharedTokenFile(tokens);
+      return markLoaded(tokens);
+    } catch (err) {
+      if (!isMissingKeychainEntry(err)) {
+        console.warn("[cognito] keychain token read failed:", err);
+      }
+      await deleteSharedTokenFile();
+      return markLoaded(null);
     } finally {
       pendingLoad = null;
     }

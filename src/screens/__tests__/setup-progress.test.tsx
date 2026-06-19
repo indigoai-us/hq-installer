@@ -1,7 +1,14 @@
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { SetupProgress } from "../setup-progress.js";
+import {
+  __resetSetupProgressSessionForTests,
+  SetupProgress,
+} from "../setup-progress.js";
+import {
+  __resetWizardRouterCompletionForTests,
+  createWizardRouter,
+} from "@/lib/wizard-router";
 
 // ---------------------------------------------------------------------------
 // SetupProgress orchestrator tests — US-004
@@ -242,6 +249,8 @@ function buildInvokeMock() {
 describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetSetupProgressSessionForTests();
+    __resetWizardRouterCompletionForTests();
     listenCallbacks.clear();
 
     setDepsAllOk();
@@ -357,6 +366,40 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       );
     });
 
+    it("treats menubar install failure as non-fatal and still reaches Done", async () => {
+      mockInvoke.mockImplementation(
+        async (command: string): Promise<unknown> => {
+          if (command === "git_init") {
+            return "0123456789abcdef0123456789abcdef01234567";
+          }
+          if (command === "spawn_process") return "handle-ok";
+          if (command === "install_menubar_app") {
+            return { success: false, appPath: null, error: "not supported" };
+          }
+          return undefined;
+        },
+      );
+
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(screen.queryByTestId("retry-button")).toBeNull();
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "menubar",
+        "not supported",
+      );
+      expect(mockRecordStepOk).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "menubar",
+      );
+    });
+
     it("calls personalize() with the Google name (no form)", async () => {
       render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
       await waitFor(() =>
@@ -373,6 +416,55 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
         expect(mockSetIsPersonal).toHaveBeenCalledWith(true),
       );
       expect(mockSetTeam).not.toHaveBeenCalled();
+    });
+
+    it("uses a sanitized basename for qmd collection names from Windows paths", async () => {
+      const onNext = vi.fn();
+      render(
+        <SetupProgress installPath={"C:\\Users\\alice\\hq"} onNext={onNext} />,
+      );
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
+        args: {
+          cmd: "qmd",
+          args: ["collection", "add", ".", "--name", "hq"],
+          cwd: "C:\\Users\\alice\\hq",
+        },
+      });
+    });
+
+    it("does not rerun completed setup on remount for the same install path", async () => {
+      const firstNext = vi.fn();
+      const rendered = render(
+        <SetupProgress installPath="/tmp/hq" onNext={firstNext} />,
+      );
+      await waitFor(() => expect(firstNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+      expect(mockRunDepsInstall).toHaveBeenCalledTimes(1);
+
+      rendered.unmount();
+      render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await Promise.resolve();
+      expect(mockRunDepsInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks setup complete so the router blocks Done to Setup navigation", async () => {
+      const router = createWizardRouter();
+      router.goTo(5);
+      expect(router.canNavigateTo(4)).toBe(true);
+
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+
+      expect(router.canNavigateTo(4)).toBe(false);
     });
   });
 
@@ -538,6 +630,68 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       expect(mockRunDepsInstall).toHaveBeenCalledTimes(1);
       // git_init re-invoked on retry.
       expect(gitCalls).toBe(2);
+    });
+
+    it("converts unexpected stage throws into a failed stage with Retry", async () => {
+      mockRunDepsInstall.mockRejectedValueOnce(
+        new Error("listener registration failed"),
+      );
+
+      render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
+
+      await waitFor(() =>
+        expect(screen.queryByTestId("retry-button")).not.toBeNull(),
+      );
+      expect(screen.getByTestId("status-line")).toHaveTextContent(
+        /listener registration failed/i,
+      );
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "deps",
+        expect.stringContaining("listener registration failed"),
+      );
+    });
+
+    it("cancels foreground child processes on unmount", async () => {
+      mockInvoke.mockImplementation(
+        async (command: string, payload?: unknown): Promise<unknown> => {
+          if (command === "git_init") {
+            return "0123456789abcdef0123456789abcdef01234567";
+          }
+          if (command === "spawn_process") {
+            const cmd = (payload as { args?: { cmd?: string } })?.args?.cmd;
+            if (cmd === "qmd") return "__manual__qmd";
+            return "handle-other";
+          }
+          if (command === "cancel_process") return true;
+          if (command === "install_menubar_app") {
+            return { success: true, appPath: "/x", error: null };
+          }
+          return undefined;
+        },
+      );
+
+      const rendered = render(
+        <SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />,
+      );
+      await waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
+          args: {
+            cmd: "qmd",
+            args: ["collection", "add", ".", "--name", "hq"],
+            cwd: "/tmp/hq",
+          },
+        }),
+      );
+
+      rendered.unmount();
+
+      await waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith("cancel_process", {
+          handle: "__manual__qmd",
+        }),
+      );
     });
   });
 

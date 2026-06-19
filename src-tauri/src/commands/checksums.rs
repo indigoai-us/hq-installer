@@ -25,8 +25,11 @@
 //!      everything else (comments, ordering, whitespace) verbatim.
 
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
@@ -105,13 +108,147 @@ pub fn compute_checksums(install_path: String) -> Result<ChecksumResult, String>
 
     let updated_at = utc_iso8601_now();
     let new_yaml = splice_yaml(&yaml_src, &entries, &updated_at);
-    fs::write(&yaml_path, new_yaml).map_err(|e| format!("write {yaml_path:?}: {e}"))?;
+    write_core_yaml_atomically(&yaml_path, &new_yaml)?;
 
     Ok(ChecksumResult {
         entries,
         missing,
         updated_at,
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Atomic core.yaml replacement
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+}
+
+struct TempFileCleanup {
+    path: PathBuf,
+    active: bool,
+}
+
+impl TempFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, active: true }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        match fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!(
+                "[hq-checksums] WARN: failed to remove temp manifest {}: {e}",
+                self.path.display()
+            ),
+        }
+    }
+}
+
+fn write_core_yaml_atomically(yaml_path: &Path, new_yaml: &str) -> Result<(), String> {
+    let parent = yaml_path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", yaml_path.display()))?;
+    let (tmp_path, mut tmp_file) = create_core_yaml_temp(yaml_path)?;
+    let mut cleanup = TempFileCleanup::new(tmp_path.clone());
+
+    tmp_file
+        .write_all(new_yaml.as_bytes())
+        .map_err(|e| format!("write temp {}: {e}", tmp_path.display()))?;
+    tmp_file
+        .sync_all()
+        .map_err(|e| format!("fsync temp {}: {e}", tmp_path.display()))?;
+    drop(tmp_file);
+
+    atomic_replace(&tmp_path, yaml_path)?;
+    cleanup.disarm();
+    sync_parent_dir(parent)?;
+
+    Ok(())
+}
+
+fn create_core_yaml_temp(target: &Path) -> Result<(PathBuf, fs::File), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", target.display()))?;
+    let name = target
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", target.display()))?
+        .to_string_lossy();
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    for attempt in 0..100u32 {
+        let path = parent.join(format!(".{name}.{pid}.{nanos}.{attempt}.tmp"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("create temp {}: {e}", path.display())),
+        }
+    }
+
+    Err(format!(
+        "could not create a unique temp file beside {}",
+        target.display()
+    ))
+}
+
+fn atomic_replace(src: &Path, dst: &Path) -> Result<(), String> {
+    let src_w = wide_path(src);
+    let dst_w = wide_path(dst);
+    let ok = unsafe {
+        MoveFileExW(
+            src_w.as_ptr(),
+            dst_w.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "atomic rename {} -> {}: {}",
+            src.display(),
+            dst.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn sync_parent_dir(parent: &Path) -> Result<(), String> {
+    let dir = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(parent)
+        .map_err(|e| format!("open parent dir {} for fsync: {e}", parent.display()))?;
+    dir.sync_all()
+        .map_err(|e| format!("fsync parent dir {}: {e}", parent.display()))
+}
+
+fn wide_path(path: &Path) -> Vec<u16> {
+    path.as_os_str().encode_wide().chain([0]).collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -388,6 +525,7 @@ fn utc_iso8601_now() -> String {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     #[test]
@@ -525,148 +663,70 @@ recommended_packages:
         assert!(out.contains("checksums:\n  x: y\n"));
     }
 
-    /// Parity smoke test: run `compute_checksums` against a real HQ
-    /// install path (passed via the `HQ_CHECKSUMS_PARITY_INSTALL` env
-    /// var) and compare each hash to what the bash script produced into
-    /// the same `core/core.yaml`. Skipped by default; opt-in via
-    /// `cargo test parity_against_disk -- --ignored --nocapture`.
-    /// This is the ground-truth check that the Rust port produces
-    /// byte-identical hashes to the upstream `compute-checksums.sh`.
     #[test]
-    #[ignore = "requires HQ_CHECKSUMS_PARITY_INSTALL pointing at a previously-checksummed install path"]
     fn parity_against_disk() {
-        let install_path = match std::env::var("HQ_CHECKSUMS_PARITY_INSTALL") {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!("set HQ_CHECKSUMS_PARITY_INSTALL=<path> to enable");
-                return;
-            }
-        };
+        let tmp = TempDir::new().unwrap();
+        write_synthetic_hq_tree(tmp.path());
 
-        // Snapshot bash-produced checksums BEFORE we overwrite. Parse
-        // the existing `checksums:` block directly — no yq dep in tests.
-        let yaml_path = PathBuf::from(&install_path).join("core").join("core.yaml");
-        let original = fs::read_to_string(&yaml_path).expect("read core.yaml");
-        let mut expected: std::collections::BTreeMap<String, String> = Default::default();
-        let mut in_checksums = false;
-        for raw in original.lines() {
-            let line = raw.trim_end_matches('\r');
-            let trimmed = line.trim_start();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let indent = line.len() - trimmed.len();
-            if indent == 0 {
-                in_checksums = trimmed.starts_with("checksums:");
-                continue;
-            }
-            if !in_checksums {
-                continue;
-            }
-            if let Some(rest) = trimmed.split_once(": ") {
-                expected.insert(rest.0.trim().to_string(), rest.1.trim().to_string());
-            }
-        }
-        assert!(
-            !expected.is_empty(),
-            "no bash-produced checksums to compare against"
+        let result = compute_checksums(tmp.path().to_string_lossy().into_owned())
+            .expect("compute_checksums against synthetic tree");
+        let yaml = fs::read_to_string(tmp.path().join("core/core.yaml")).unwrap();
+
+        assert_eq!(
+            checksums_block(&yaml),
+            "checksums:\n  .claude: 767ab1f339a607f15184e902dae77dd8ea73be33aa9fe4089f9433872e34cb66\n  AGENTS.md: aa5f6c725fc71885509269df579e20f0eb20b640ac4d21bca9926024742fcae5\n  nested: d2c677cf02bdd542dbd7531a736741ff84009b4832c2bc9c1d99f24878d9c40c\n"
         );
-
-        // CRITICAL: the upstream bash algorithm is non-idempotent when
-        // `core/` is a locked path because `core/core.yaml` is INSIDE
-        // `core/` AND `compute-checksums.sh` writes its result back into
-        // `core/core.yaml`. So `dir_sha256("core")` produced under a
-        // freshly-shipped (`checksums: {}`) file differs from one
-        // produced under an already-populated file. To compare our Rust
-        // output to the bash-produced output, we must run the Rust
-        // implementation against the SAME starting state bash had:
-        // checksums cleared.
-        //
-        // We reset via our own splice helper (no shell, no yq) so the
-        // test stays self-contained. Restore on exit no matter what.
-        let restore = original.clone();
-        let blanked = splice_yaml(&original, &[], "1970-01-01T00:00:00Z");
-        fs::write(&yaml_path, &blanked).expect("blank checksums for parity");
-        let result =
-            compute_checksums(install_path.clone()).expect("compute_checksums against real tree");
-        fs::write(&yaml_path, &restore).expect("restore core.yaml");
-
-        // Every bash-produced entry must show up in the Rust output
-        // with the same hex. Don't bail on the first mismatch — print
-        // the whole report so we can see if it's one dir or all of them.
-        // SUBTLETY: skip `core` from comparison. The bash algorithm is
-        // non-idempotent for any locked dir that contains `core.yaml`
-        // (since `compute-checksums.sh` writes ITS RESULT back into
-        // `core.yaml`, so re-running with different `.checksums` content
-        // produces a different dir hash). Reproducing bash's `core` hash
-        // exactly would require byte-perfect reconstruction of the
-        // shipped `core.yaml` state at the moment bash hashed it — not
-        // possible after the file was already rewritten. The other six
-        // locked entries don't contain `core.yaml` and prove the file
-        // walk + sha256 + manifest assembly are byte-correct.
-        let mut mismatches: Vec<(String, String, String)> = Vec::new();
-        for (path, expected_hash) in &expected {
-            if path == "core" {
-                continue;
-            }
-            let got = result
+        assert_eq!(result.missing, vec!["missing.txt"]);
+        assert_eq!(
+            result
                 .entries
                 .iter()
-                .find(|e| &e.path == path)
-                .unwrap_or_else(|| panic!("Rust did not emit a checksum for {path}"));
-            if &got.hash != expected_hash {
-                mismatches.push((path.clone(), expected_hash.clone(), got.hash.clone()));
-            }
-        }
-        if !mismatches.is_empty() {
-            for (path, b, r) in &mismatches {
-                eprintln!("MISMATCH {path}\n  bash: {b}\n  rust: {r}");
-            }
-            // For the first mismatching DIR entry, dump file-list +
-            // per-file hashes so we can spot the offending file.
-            if let Some((path, _, _)) = mismatches.iter().find(|(p, _, _)| {
-                let abs = PathBuf::from(&install_path).join(p);
-                abs.is_dir()
-            }) {
-                let abs = PathBuf::from(&install_path).join(path);
-                eprintln!("--- Rust file list for {path} ---");
-                let mut files: Vec<(String, PathBuf)> = Vec::new();
-                for entry in WalkDir::new(&abs).follow_links(false).into_iter().flatten() {
-                    if !entry.file_type().is_file() {
-                        continue;
-                    }
-                    let rel = entry
-                        .path()
-                        .strip_prefix(&abs)
-                        .unwrap()
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    files.push((rel, entry.path().to_path_buf()));
-                }
-                files.sort_by(|a, b| a.0.cmp(&b.0));
-                eprintln!("Rust file count: {}", files.len());
-                for (rel, _) in files.iter().take(5) {
-                    eprintln!("  first: {rel}");
-                }
-                for (rel, _) in files.iter().rev().take(5) {
-                    eprintln!("  last:  {rel}");
-                }
-            }
-            panic!("{} checksum mismatch(es) — see above", mismatches.len());
-        }
-        // And vice-versa — no extra keys.
-        for got in &result.entries {
-            assert!(
-                expected.contains_key(&got.path),
-                "Rust emitted unexpected key {} not present in bash output",
-                got.path
-            );
-        }
-        eprintln!(
-            "parity OK: {} entries matched, {} missing-from-disk warnings",
-            result.entries.len(),
-            result.missing.len()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![".claude", "AGENTS.md", "nested"]
         );
+        assert!(!yaml.contains("stale: deadbeef"));
+    }
+
+    fn write_synthetic_hq_tree(root: &Path) {
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::create_dir_all(root.join(".claude/prompts")).unwrap();
+        fs::create_dir_all(root.join("nested/sub")).unwrap();
+
+        fs::write(
+            root.join("core/core.yaml"),
+            "version: 1\nupdatedAt: \"1970-01-01T00:00:00Z\"\nrules:\n  locked:\n    - .claude/\n    - AGENTS.md\n    - core/core.yaml\n    - missing.txt\n    - nested/\nchecksums:\n  stale: deadbeef\n",
+        )
+        .unwrap();
+        fs::write(root.join("AGENTS.md"), b"You are HQ.\n").unwrap();
+        fs::write(
+            root.join(".claude/settings.json"),
+            b"{\"theme\":\"light\"}\n",
+        )
+        .unwrap();
+        fs::write(root.join(".claude/prompts/welcome.md"), b"# Welcome\n").unwrap();
+        fs::write(root.join("nested/a.txt"), b"alpha\n").unwrap();
+        fs::write(root.join("nested/sub/b.txt"), b"beta\n").unwrap();
+    }
+
+    fn checksums_block(yaml: &str) -> String {
+        let mut block = String::new();
+        let mut in_checksums = false;
+        for raw in yaml.lines() {
+            let trimmed = raw.trim_start();
+            let indent = raw.len() - trimmed.len();
+            if indent == 0 {
+                if in_checksums && !trimmed.starts_with("checksums:") {
+                    break;
+                }
+                in_checksums = trimmed.starts_with("checksums:");
+            }
+            if in_checksums {
+                block.push_str(raw);
+                block.push('\n');
+            }
+        }
+        block
     }
 
     #[test]

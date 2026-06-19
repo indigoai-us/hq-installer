@@ -8,38 +8,62 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
-use std::io::{Read, Write};
+use std::mem::size_of;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
-#[cfg(windows)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use nix::sys::signal::{self, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
 };
 #[cfg(windows)]
-use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
+use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ};
 #[cfg(windows)]
-use winreg::RegKey;
+use winreg::{RegKey, RegValue};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cancel registry
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Global map from install-handle → cancelled flag.
-static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, bool>>>> =
+/// Global map from install-handle → cancellation state and process-tree kill target.
+static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, CancelState>>>> =
     std::sync::OnceLock::new();
 
-fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, bool>>> {
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    kill_error: Option<String>,
+    #[cfg(unix)]
+    pgid: Option<i32>,
+    #[cfg(windows)]
+    job: Option<Arc<JobHandle>>,
+}
+
+fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, CancelState>>> {
     CANCEL_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
@@ -47,7 +71,10 @@ fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, bool>>> {
 /// Exposed publicly so the test suite can exercise `cancel_install` without
 /// spawning a real Tauri runtime.
 pub fn register_cancel_handle(handle: String) {
-    cancel_registry().lock().unwrap().insert(handle, false);
+    cancel_registry()
+        .lock()
+        .unwrap()
+        .insert(handle, CancelState::default());
 }
 
 fn is_cancelled(handle: &str) -> bool {
@@ -55,12 +82,142 @@ fn is_cancelled(handle: &str) -> bool {
         .lock()
         .unwrap()
         .get(handle)
-        .copied()
+        .map(|state| state.cancelled)
         .unwrap_or(false)
 }
 
 fn deregister_handle(handle: &str) {
     cancel_registry().lock().unwrap().remove(handle);
+}
+
+#[cfg(unix)]
+fn register_process_group(handle: &str, pgid: i32) {
+    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+        state.pgid = Some(pgid);
+    }
+}
+
+#[cfg(windows)]
+fn register_job_handle(handle: &str, job: Arc<JobHandle>) {
+    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+        state.job = Some(job);
+    }
+}
+
+fn record_kill_error(handle: &str, err: String) {
+    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+        state.kill_error = Some(err);
+    }
+}
+
+fn take_kill_error(handle: &str) -> Option<String> {
+    cancel_registry()
+        .lock()
+        .unwrap()
+        .get_mut(handle)
+        .and_then(|state| state.kill_error.take())
+}
+
+#[cfg(unix)]
+fn terminate_process_tree(handle: &str, signal_kind: Signal) -> Result<(), String> {
+    let pgid = cancel_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .and_then(|state| state.pgid);
+    let Some(pgid) = pgid else {
+        return Ok(());
+    };
+
+    match signal::kill(Pid::from_raw(-pgid), signal_kind) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(e) => Err(format!(
+            "failed to send {signal_kind:?} to install process group {pgid}: {e}"
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process_tree(handle: &str) -> Result<(), String> {
+    let job = cancel_registry()
+        .lock()
+        .unwrap()
+        .get(handle)
+        .and_then(|state| state.job.clone());
+    let Some(job) = job else {
+        return Ok(());
+    };
+
+    let result = unsafe { TerminateJobObject(job.0, 1) };
+    if result == 0 {
+        return Err(format!(
+            "TerminateJobObject failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct JobHandle(HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for JobHandle {}
+#[cfg(windows)]
+unsafe impl Sync for JobHandle {}
+
+#[cfg(windows)]
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn create_job_object() -> Result<JobHandle, String> {
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if job.is_null() {
+        return Err(format!(
+            "CreateJobObjectW failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let result = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if result == 0 {
+        let err = std::io::Error::last_os_error();
+        unsafe {
+            CloseHandle(job);
+        }
+        return Err(format!("SetInformationJobObject failed: {err}"));
+    }
+
+    Ok(JobHandle(job))
+}
+
+#[cfg(windows)]
+fn assign_process_to_job(job: HANDLE, process: HANDLE) -> Result<(), String> {
+    let result = unsafe { AssignProcessToJobObject(job, process) };
+    if result == 0 {
+        return Err(format!(
+            "AssignProcessToJobObject failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,6 +600,12 @@ fn parse_node_version(dir_name: &str) -> (u32, u32, u32) {
 /// runtime for npx/qmd/Claude Code, not the newest dist-tag.
 #[cfg(not(windows))]
 const MANAGED_NODE_VERSION: &str = "v22.17.0";
+#[cfg(not(windows))]
+const MANAGED_NODE_SHA256_ARM64: &str =
+    "615dda58b5fb41fad2be43940b6398ca56554cbe05800953afadc724729cb09e";
+#[cfg(not(windows))]
+const MANAGED_NODE_SHA256_X64: &str =
+    "c39c8ec3cdadedfcc75de0cb3305df95ae2aecebc5db8d68a9b67bd74616d2ad";
 
 /// Pinned portable Git from dugite-native (GitHub Desktop's embedded Git).
 /// Self-contained — runs with no Xcode Command Line Tools, Homebrew, or admin.
@@ -460,6 +623,117 @@ const MANAGED_GIT_SHA256_ARM64: &str =
 #[cfg(not(windows))]
 const MANAGED_GIT_SHA256_X64: &str =
     "caf27c36b8834969550535bcd5e58186f970e080d1e175e76d9c1de3aac409ed";
+
+fn unique_sibling_path(target: &Path, suffix: &str) -> Result<PathBuf, String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("target has no parent: {}", target.display()))?;
+    let name = target
+        .file_name()
+        .ok_or_else(|| format!("target has no file name: {}", target.display()))?
+        .to_string_lossy();
+    Ok(parent.join(format!(".{name}.{suffix}.{}", Uuid::new_v4())))
+}
+
+fn atomic_replace_file(staged: &Path, target: &Path) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+
+    if !target.exists() {
+        return std::fs::rename(staged, target).map_err(|e| {
+            format!(
+                "rename {} -> {} failed: {e}",
+                staged.display(),
+                target.display()
+            )
+        });
+    }
+
+    let backup = unique_sibling_path(target, "bak")?;
+    std::fs::rename(target, &backup).map_err(|e| {
+        format!(
+            "backup existing {} -> {} failed: {e}",
+            target.display(),
+            backup.display()
+        )
+    })?;
+
+    match std::fs::rename(staged, target) {
+        Ok(()) => {
+            std::fs::remove_file(&backup)
+                .map_err(|e| format!("remove backup {} failed: {e}", backup.display()))?;
+            Ok(())
+        }
+        Err(rename_err) => {
+            let restore_result = std::fs::rename(&backup, target);
+            Err(match restore_result {
+                Ok(()) => format!(
+                    "rename {} -> {} failed: {rename_err}",
+                    staged.display(),
+                    target.display()
+                ),
+                Err(restore_err) => format!(
+                    "rename {} -> {} failed: {rename_err}; restore {} -> {} failed: {restore_err}",
+                    staged.display(),
+                    target.display(),
+                    backup.display(),
+                    target.display()
+                ),
+            })
+        }
+    }
+}
+
+fn atomic_replace_dir(staged: &Path, target: &Path) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+
+    if !target.exists() {
+        return std::fs::rename(staged, target).map_err(|e| {
+            format!(
+                "rename {} -> {} failed: {e}",
+                staged.display(),
+                target.display()
+            )
+        });
+    }
+
+    let backup = unique_sibling_path(target, "bak")?;
+    std::fs::rename(target, &backup).map_err(|e| {
+        format!(
+            "backup existing {} -> {} failed: {e}",
+            target.display(),
+            backup.display()
+        )
+    })?;
+
+    match std::fs::rename(staged, target) {
+        Ok(()) => {
+            std::fs::remove_dir_all(&backup)
+                .map_err(|e| format!("remove backup {} failed: {e}", backup.display()))?;
+            Ok(())
+        }
+        Err(rename_err) => {
+            let restore_result = std::fs::rename(&backup, target);
+            Err(match restore_result {
+                Ok(()) => format!(
+                    "rename {} -> {} failed: {rename_err}",
+                    staged.display(),
+                    target.display()
+                ),
+                Err(restore_err) => format!(
+                    "rename {} -> {} failed: {rename_err}; restore {} -> {} failed: {restore_err}",
+                    staged.display(),
+                    target.display(),
+                    backup.display(),
+                    target.display()
+                ),
+            })
+        }
+    }
+}
 
 #[cfg(not(windows))]
 fn managed_toolchain_dir_in(home: &std::path::Path) -> PathBuf {
@@ -578,6 +852,15 @@ fn managed_node_url_for(arch: &str) -> Option<String> {
     Some(format!(
         "https://nodejs.org/dist/{MANAGED_NODE_VERSION}/node-{MANAGED_NODE_VERSION}-darwin-{node_arch}.tar.gz"
     ))
+}
+
+#[cfg(not(windows))]
+fn managed_node_sha256_for(arch: &str) -> Option<&'static str> {
+    match arch {
+        "aarch64" => Some(MANAGED_NODE_SHA256_ARM64),
+        "x86_64" => Some(MANAGED_NODE_SHA256_X64),
+        _ => None,
+    }
 }
 
 /// dugite-native publishes per-arch macOS tarballs as `...-macOS-{arm64,x64}`.
@@ -833,12 +1116,22 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 #[tauri::command]
 pub fn cancel_install(handle: String) -> bool {
     let mut reg = cancel_registry().lock().unwrap();
-    if let std::collections::hash_map::Entry::Occupied(mut e) = reg.entry(handle) {
-        e.insert(true);
-        true
-    } else {
-        false
+    let Some(state) = reg.get_mut(&handle) else {
+        return false;
+    };
+    state.cancelled = true;
+    drop(reg);
+
+    #[cfg(unix)]
+    if let Err(e) = terminate_process_tree(&handle, Signal::SIGTERM) {
+        record_kill_error(&handle, e);
     }
+    #[cfg(windows)]
+    if let Err(e) = terminate_process_tree(&handle) {
+        record_kill_error(&handle, e);
+    }
+
+    true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -869,28 +1162,120 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
 
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .env("PATH", extended_search_path())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", program, e))?;
+        .stderr(Stdio::piped());
+    command.process_group(0);
 
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let stderr = child.stderr.take().ok_or("no stderr")?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            deregister_handle(&handle_id);
+            return Err(format!("Failed to spawn '{}': {}", program, e));
+        }
+    };
+    register_process_group(&handle_id, child.id() as i32);
+
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            deregister_handle(&handle_id);
+            return Err("no stdout".to_string());
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            deregister_handle(&handle_id);
+            return Err("no stderr".to_string());
+        }
+    };
+
+    enum ReaderMsg {
+        Stdout(String),
+        Stderr,
+        Done {
+            stream: &'static str,
+            err: Option<String>,
+        },
+    }
 
     // Drain stderr in a background thread — see the function doc above for why.
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+    let stdout_thread = {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut err = None;
+            for line_result in BufReader::new(stdout).lines() {
+                match line_result {
+                    Ok(line) => {
+                        if tx.send(ReaderMsg::Stdout(line)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(ReaderMsg::Done {
+                stream: "stdout",
+                err,
+            });
+        })
+    };
     let stderr_thread = {
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let tx = tx.clone();
         std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line_result in reader.lines() {
-                let Ok(line) = line_result else { break };
-                stderr_lines.lock().unwrap().push(line.clone());
+            let mut err = None;
+            for line_result in BufReader::new(stderr).lines() {
+                match line_result {
+                    Ok(line) => {
+                        stderr_lines.lock().unwrap().push(line.clone());
+                        let _ = app.emit(
+                            "install:progress",
+                            InstallProgress {
+                                handle: handle_id.clone(),
+                                line: line.clone(),
+                                finished: false,
+                                error: None,
+                            },
+                        );
+                        if tx.send(ReaderMsg::Stderr).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(ReaderMsg::Done {
+                stream: "stderr",
+                err,
+            });
+        })
+    };
+    drop(tx);
+
+    let mut done_count = 0;
+    let mut first_stream_err: Option<String> = None;
+    let mut status = None;
+    let mut cancel_started: Option<Instant> = None;
+    let mut sigkill_sent = false;
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(ReaderMsg::Stdout(line)) => {
                 let _ = app.emit(
                     "install:progress",
                     InstallProgress {
@@ -901,44 +1286,107 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
                     },
                 );
             }
-        })
-    };
-
-    let reader = BufReader::new(stdout);
-
-    for line_result in reader.lines() {
-        // Honour cancel.
-        if is_cancelled(&handle_id) {
-            let _ = child.kill();
-            let _ = stderr_thread.join();
-            deregister_handle(&handle_id);
-            let _ = app.emit(
-                "install:progress",
-                InstallProgress {
-                    handle: handle_id.clone(),
-                    line: String::new(),
-                    finished: true,
-                    error: Some("Cancelled by user".to_string()),
-                },
-            );
-            return Err("Cancelled".to_string());
+            Ok(ReaderMsg::Stderr) => {}
+            Ok(ReaderMsg::Done { stream, err }) => {
+                if let Some(e) = err {
+                    if first_stream_err.is_none() {
+                        first_stream_err = Some(format!("{stream}: {e}"));
+                    }
+                }
+                done_count += 1;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        let line = line_result.map_err(|e| e.to_string())?;
+        if is_cancelled(&handle_id) {
+            if cancel_started.is_none() {
+                if let Err(e) = terminate_process_tree(&handle_id, Signal::SIGTERM) {
+                    record_kill_error(&handle_id, e);
+                }
+                cancel_started = Some(Instant::now());
+            } else if !sigkill_sent
+                && cancel_started
+                    .map(|started| started.elapsed() >= Duration::from_secs(2))
+                    .unwrap_or(false)
+            {
+                if let Err(e) = terminate_process_tree(&handle_id, Signal::SIGKILL) {
+                    record_kill_error(&handle_id, e);
+                }
+                sigkill_sent = true;
+            }
+        }
+
+        if status.is_none() {
+            status = child.try_wait().map_err(|e| e.to_string())?;
+        }
+        if status.is_some() && done_count >= 2 {
+            break;
+        }
+        if done_count >= 2 && status.is_none() {
+            status = Some(child.wait().map_err(|e| e.to_string())?);
+            break;
+        }
+    }
+
+    let status = match status {
+        Some(status) => status,
+        None => child.wait().map_err(|e| e.to_string())?,
+    };
+
+    let stdout_join = stdout_thread
+        .join()
+        .map_err(|_| "stdout reader thread panicked".to_string());
+    let stderr_join = stderr_thread
+        .join()
+        .map_err(|_| "stderr reader thread panicked".to_string());
+
+    let was_cancelled = is_cancelled(&handle_id);
+    let kill_error = take_kill_error(&handle_id);
+    deregister_handle(&handle_id);
+
+    if let Err(e) = stdout_join.and(stderr_join) {
         let _ = app.emit(
             "install:progress",
             InstallProgress {
                 handle: handle_id.clone(),
-                line: line.clone(),
-                finished: false,
-                error: None,
+                line: String::new(),
+                finished: true,
+                error: Some(e.clone()),
             },
         );
+        return Err(e);
     }
 
-    let status = child.wait().map_err(|e| e.to_string())?;
-    let _ = stderr_thread.join();
-    deregister_handle(&handle_id);
+    if was_cancelled {
+        let msg = match kill_error {
+            Some(e) => format!("Cancelled by user; {e}"),
+            None => "Cancelled by user".to_string(),
+        };
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                handle: handle_id.clone(),
+                line: String::new(),
+                finished: true,
+                error: Some(msg.clone()),
+            },
+        );
+        return Err(msg);
+    }
+
+    if let Some(err) = first_stream_err {
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                handle: handle_id.clone(),
+                line: String::new(),
+                finished: true,
+                error: Some(err.clone()),
+            },
+        );
+        return Err(err);
+    }
 
     if status.success() {
         let _ = app.emit(
@@ -1083,24 +1531,38 @@ async fn install_node_macos(app: AppHandle) -> Result<String, String> {
         return Ok(format!("node already installed at {}", node_bin.display()));
     }
 
-    let Some(url) = managed_node_url_for(std::env::consts::ARCH) else {
+    let arch = std::env::consts::ARCH;
+    let Some(url) = managed_node_url_for(arch) else {
         let msg = format!(
             "[node] unsupported arch '{}' — cannot install managed Node",
-            std::env::consts::ARCH
+            arch
         );
         emit_preflight_line(&app, &msg);
         return Err(msg);
     };
+    let Some(expected_sha) = managed_node_sha256_for(arch) else {
+        let msg = format!("[node] no pinned checksum for arch '{arch}'");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    };
 
-    if let Err(e) = std::fs::create_dir_all(&node_dir) {
-        let msg = format!("[node] failed to create {}: {e}", node_dir.display());
+    if let Err(e) = std::fs::create_dir_all(&toolchain_dir) {
+        let msg = format!(
+            "[node] failed to create toolchain dir {}: {e}",
+            toolchain_dir.display()
+        );
         emit_preflight_line(&app, &msg);
         return Err(msg);
     }
 
-    let archive = toolchain_dir.join(format!("node-{MANAGED_NODE_VERSION}-darwin.tar.gz"));
+    let archive = toolchain_dir.join(format!(
+        ".node-{MANAGED_NODE_VERSION}-darwin.{}.tar.gz.tmp",
+        Uuid::new_v4()
+    ));
     let archive_str = archive.to_string_lossy().into_owned();
-    let node_dir_str = node_dir.to_string_lossy().into_owned();
+    let staged_dir = toolchain_dir.join(format!(".node-install-{}", Uuid::new_v4()));
+    let staged_bin = staged_dir.join("bin").join("node");
+    let staged_dir_str = staged_dir.to_string_lossy().into_owned();
 
     emit_preflight_line(
         &app,
@@ -1108,9 +1570,34 @@ async fn install_node_macos(app: AppHandle) -> Result<String, String> {
     );
     run_streaming(&app, "/usr/bin/curl", &["-fsSL", "-o", &archive_str, &url]).await?;
 
+    let check_path = toolchain_dir.join(format!(".node-{MANAGED_NODE_VERSION}.sha256"));
+    let check_str = check_path.to_string_lossy().into_owned();
+    if let Err(e) = std::fs::write(&check_path, format!("{expected_sha}  {archive_str}\n")) {
+        let _ = std::fs::remove_file(&archive);
+        let msg = format!("[node] failed to write checksum file: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    emit_preflight_line(&app, "[node] verifying checksum");
+    if let Err(e) = run_streaming(&app, "/usr/bin/shasum", &["-a", "256", "-c", &check_str]).await {
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_file(&check_path);
+        let msg = format!("[node] checksum verification failed: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    let _ = std::fs::remove_file(&check_path);
+
+    if let Err(e) = std::fs::create_dir_all(&staged_dir) {
+        let _ = std::fs::remove_file(&archive);
+        let msg = format!("[node] failed to create staging dir: {e}");
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+
     emit_preflight_line(
         &app,
-        &format!("[node] extracting to {}", node_dir.display()),
+        &format!("[node] extracting to {}", staged_dir.display()),
     );
     run_streaming(
         &app,
@@ -1119,21 +1606,43 @@ async fn install_node_macos(app: AppHandle) -> Result<String, String> {
             "-xzf",
             &archive_str,
             "-C",
-            &node_dir_str,
+            &staged_dir_str,
             "--strip-components",
             "1",
         ],
     )
     .await?;
+    let _ = std::fs::remove_file(&archive);
 
-    if !node_bin.exists() {
+    if !staged_bin.exists() {
+        let _ = std::fs::remove_dir_all(&staged_dir);
         let msg = format!(
             "[node] install completed but node binary was not found at {}",
-            node_bin.display()
+            staged_bin.display()
         );
         emit_preflight_line(&app, &msg);
         return Err(msg);
     }
+
+    let output = Command::new(&staged_bin)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("[node] failed to run staged node --version: {e}"))?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || version != MANAGED_NODE_VERSION {
+        let _ = std::fs::remove_dir_all(&staged_dir);
+        let msg = format!(
+            "[node] staged node version check failed: expected {MANAGED_NODE_VERSION}, got '{version}'"
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+
+    atomic_replace_dir(&staged_dir, &node_dir).map_err(|e| {
+        let msg = format!("[node] failed to activate staged Node install: {e}");
+        emit_preflight_line(&app, &msg);
+        msg
+    })?;
 
     Ok(format!("node installed at {}", node_bin.display()))
 }
@@ -1267,6 +1776,21 @@ async fn install_gh_macos(app: AppHandle) -> Result<String, String> {
 /// installer releases so support reproductions stay deterministic.
 #[cfg(not(windows))]
 const YQ_BINARY_VERSION: &str = "v4.53.2";
+#[cfg(not(windows))]
+const YQ_BINARY_SHA256_AMD64: &str =
+    "616b0a0f6a5b79d746f05a169c2b9bb40dee00c605ef165b9a1c1681bba738ac";
+#[cfg(not(windows))]
+const YQ_BINARY_SHA256_ARM64: &str =
+    "541ba2287560df70f561955e2d7f7e1cd00cf2a15a884f6b5c87a4bfa887bc07";
+
+#[cfg(not(windows))]
+fn yq_binary_sha256_for(arch: &str) -> Option<&'static str> {
+    match arch {
+        "amd64" => Some(YQ_BINARY_SHA256_AMD64),
+        "arm64" => Some(YQ_BINARY_SHA256_ARM64),
+        _ => None,
+    }
+}
 
 /// Install yq.
 ///
@@ -1336,6 +1860,11 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
             return Err(msg);
         }
     };
+    let Some(expected_sha) = yq_binary_sha256_for(arch) else {
+        let msg = format!("[yq] no pinned checksum for arch '{arch}'");
+        emit_preflight_line(app, &msg);
+        return Err(msg);
+    };
 
     let url = format!(
         "https://github.com/mikefarah/yq/releases/download/{YQ_BINARY_VERSION}/yq_darwin_{arch}"
@@ -1348,6 +1877,7 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
     };
     let bin_dir = home.join(".local").join("bin");
     let target = bin_dir.join("yq");
+    let staged = bin_dir.join(format!(".yq.{}.tmp", Uuid::new_v4()));
 
     if let Err(e) = std::fs::create_dir_all(&bin_dir) {
         let msg = format!("[yq] failed to create {}: {e}", bin_dir.display());
@@ -1357,18 +1887,62 @@ async fn install_yq_via_binary(app: &AppHandle) -> Result<String, String> {
 
     emit_preflight_line(
         app,
-        &format!("[yq] downloading {url} → {}", target.display()),
+        &format!("[yq] downloading {url} → {}", staged.display()),
     );
 
-    let target_str = target.to_string_lossy().into_owned();
+    let staged_str = staged.to_string_lossy().into_owned();
 
     // curl flags: -f fails on HTTP error (so a 404 surfaces instead of
     // writing an HTML error page to disk and chmod'ing it +x), -sS keeps
     // the progress bar quiet but still emits errors to stderr (which
     // `run_streaming` captures), -L follows redirects (GitHub redirects
     // release assets to S3).
-    run_streaming(app, "curl", &["-fsSL", "-o", &target_str, &url]).await?;
-    run_streaming(app, "chmod", &["+x", &target_str]).await?;
+    run_streaming(app, "curl", &["-fsSL", "-o", &staged_str, &url]).await?;
+
+    let check_path = bin_dir.join(format!(".yq-{YQ_BINARY_VERSION}.sha256"));
+    let check_str = check_path.to_string_lossy().into_owned();
+    if let Err(e) = std::fs::write(&check_path, format!("{expected_sha}  {staged_str}\n")) {
+        let _ = std::fs::remove_file(&staged);
+        let msg = format!("[yq] failed to write checksum file: {e}");
+        emit_preflight_line(app, &msg);
+        return Err(msg);
+    }
+    emit_preflight_line(app, "[yq] verifying checksum");
+    if let Err(e) = run_streaming(app, "/usr/bin/shasum", &["-a", "256", "-c", &check_str]).await {
+        let _ = std::fs::remove_file(&staged);
+        let _ = std::fs::remove_file(&check_path);
+        let msg = format!("[yq] checksum verification failed: {e}");
+        emit_preflight_line(app, &msg);
+        return Err(msg);
+    }
+    let _ = std::fs::remove_file(&check_path);
+
+    run_streaming(app, "chmod", &["+x", &staged_str]).await?;
+
+    let output = Command::new(&staged)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("[yq] failed to run staged yq --version: {e}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() || !combined.contains(YQ_BINARY_VERSION) {
+        let _ = std::fs::remove_file(&staged);
+        let msg = format!(
+            "[yq] staged yq version check failed: expected {YQ_BINARY_VERSION}, got '{}'",
+            combined.lines().next().unwrap_or("").trim()
+        );
+        emit_preflight_line(app, &msg);
+        return Err(msg);
+    }
+
+    atomic_replace_file(&staged, &target).map_err(|e| {
+        let msg = format!("[yq] failed to activate staged binary: {e}");
+        emit_preflight_line(app, &msg);
+        msg
+    })?;
 
     Ok(format!("yq installed at {}", target.display()))
 }
@@ -1571,11 +2145,90 @@ pub async fn install_hq_cli(app: AppHandle) -> Result<String, String> {
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const WINDOWS_MANAGED_NODE_VERSION: &str = "v22.12.0";
+#[cfg(windows)]
+const WINDOWS_MANAGED_NODE_SHA256_X64: &str =
+    "2b8f2256382f97ad51e29ff71f702961af466c4616393f767455501e6aece9b8";
+#[cfg(windows)]
+const WINDOWS_MANAGED_NODE_SHA256_ARM64: &str =
+    "17401720af48976e3f67c41e8968a135fb49ca1f88103a92e0e8c70605763854";
+#[cfg(windows)]
+const WINDOWS_YQ_VERSION: &str = "v4.53.2";
+#[cfg(windows)]
+const WINDOWS_YQ_SHA256_AMD64: &str =
+    "2aee32f1de46a20672f48c25df3018839798bd509143f2ce05fdab1550ff5592";
+#[cfg(windows)]
+const WINDOWS_YQ_SHA256_ARM64: &str =
+    "448208550332ca33ef816e4cee49fc1e79987b8a08a451c6ae529703c8cfc8a9";
+#[cfg(windows)]
+const RSYNC_BUNDLE_SHA256: &str =
+    "0e1d90ab60c2fd6c24debe6b59bd4b23ea65009a408976f94b916dcad8332f1d";
 
 #[cfg(windows)]
 fn debug_log(msg: &str) {
     if is_deps_debug_enabled() {
         eprintln!("[hq-deps] {msg}");
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+struct DownloadedAsset {
+    status: u16,
+    bytes: Vec<u8>,
+}
+
+#[cfg(windows)]
+fn require_http_success(status: u16, label: &str) -> Result<(), String> {
+    if (200..=299).contains(&status) {
+        Ok(())
+    } else {
+        Err(format!("{label} download returned HTTP status {status}"))
+    }
+}
+
+#[cfg(windows)]
+fn fetch_asset_with<F>(url: &str, label: &str, fetch: F) -> Result<Vec<u8>, String>
+where
+    F: FnOnce(&str) -> Result<DownloadedAsset, String>,
+{
+    let asset = fetch(url)?;
+    require_http_success(asset.status, label)?;
+    Ok(asset.bytes)
+}
+
+#[cfg(windows)]
+fn download_bytes_checked(url: &str, label: &str) -> Result<Vec<u8>, String> {
+    fetch_asset_with(url, label, |url| {
+        let response = reqwest::blocking::get(url)
+            .map_err(|e| format!("Failed to fetch {label}: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("{label} download returned error: {e}"))?;
+        let status = response.status().as_u16();
+        let bytes = response
+            .bytes()
+            .map_err(|e| format!("Failed to read {label} response: {e}"))?
+            .to_vec();
+        Ok(DownloadedAsset { status, bytes })
+    })
+}
+
+#[cfg(windows)]
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(windows)]
+fn verify_sha256_bytes(label: &str, bytes: &[u8], expected: &str) -> Result<(), String> {
+    let actual = sha256_hex(bytes);
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} checksum mismatch: expected {expected}, got {actual}"
+        ))
     }
 }
 
@@ -1737,6 +2390,75 @@ pub fn extended_search_path() -> String {
 /// Append `new_dir` to the user's persistent PATH (HKCU\Environment\Path)
 /// and broadcast WM_SETTINGCHANGE so new shells pick it up without logout.
 #[cfg(windows)]
+#[derive(Clone)]
+struct UserPathValue {
+    value: String,
+    value_type: winreg::enums::RegType,
+}
+
+#[cfg(windows)]
+fn decode_registry_string(raw: &RegValue, name: &str) -> Result<String, String> {
+    if raw.vtype != REG_SZ && raw.vtype != REG_EXPAND_SZ {
+        return Err(format!(
+            "HKCU\\Environment\\{name} has unsupported registry type {:?}",
+            raw.vtype
+        ));
+    }
+    if raw.bytes.len() % 2 != 0 {
+        return Err(format!(
+            "HKCU\\Environment\\{name} has invalid UTF-16 byte length {}",
+            raw.bytes.len()
+        ));
+    }
+
+    let mut units = Vec::with_capacity(raw.bytes.len() / 2);
+    for chunk in raw.bytes.chunks_exact(2) {
+        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    while units.last() == Some(&0) {
+        units.pop();
+    }
+    String::from_utf16(&units)
+        .map_err(|e| format!("HKCU\\Environment\\{name} is not valid UTF-16: {e}"))
+}
+
+#[cfg(windows)]
+fn encode_registry_string(value: &str, value_type: winreg::enums::RegType) -> RegValue {
+    let mut bytes = Vec::with_capacity((value.len() + 1) * 2);
+    for unit in value.encode_utf16().chain(std::iter::once(0)) {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    RegValue {
+        bytes,
+        vtype: value_type,
+    }
+}
+
+#[cfg(windows)]
+fn read_user_path_value(env: &RegKey) -> Result<UserPathValue, String> {
+    match env.get_raw_value("Path") {
+        Ok(raw) => Ok(UserPathValue {
+            value: decode_registry_string(&raw, "Path")?,
+            value_type: raw.vtype,
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UserPathValue {
+            value: String::new(),
+            value_type: REG_EXPAND_SZ,
+        }),
+        Err(e) => Err(format!("HKCU\\Environment\\Path read failed: {e}")),
+    }
+}
+
+#[cfg(windows)]
+fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), String> {
+    env.set_raw_value(
+        "Path",
+        &encode_registry_string(&value.value, value.value_type.clone()),
+    )
+    .map_err(|e| format!("HKCU\\Environment\\Path write failed: {e}"))
+}
+
+#[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
     let dir_str = new_dir.to_string_lossy().to_string();
 
@@ -1745,7 +2467,8 @@ pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
         .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
         .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
 
-    let current: String = env.get_value("Path").unwrap_or_default();
+    let mut current_value = read_user_path_value(&env)?;
+    let current = current_value.value.clone();
 
     let already_present = current
         .split(';')
@@ -1765,8 +2488,8 @@ pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
         format!("{current};{dir_str}")
     };
 
-    env.set_value("Path", &updated)
-        .map_err(|e| format!("HKCU\\Environment\\Path write failed: {e}"))?;
+    current_value.value = updated;
+    write_user_path_value(&env, &current_value)?;
 
     broadcast_environment_change();
     debug_log(&format!(
@@ -1785,7 +2508,8 @@ pub fn remove_user_path(dir: &Path) -> Result<(), String> {
         .open_subkey_with_flags("Environment", KEY_READ | KEY_SET_VALUE)
         .map_err(|e| format!("HKCU\\Environment open failed: {e}"))?;
 
-    let current: String = env.get_value("Path").unwrap_or_default();
+    let mut current_value = read_user_path_value(&env)?;
+    let current = current_value.value.clone();
     let parts: Vec<&str> = current
         .split(';')
         .filter(|entry| !entry.eq_ignore_ascii_case(&dir_str))
@@ -1796,8 +2520,8 @@ pub fn remove_user_path(dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    env.set_value("Path", &updated)
-        .map_err(|e| format!("HKCU\\Environment\\Path write failed: {e}"))?;
+    current_value.value = updated;
+    write_user_path_value(&env, &current_value)?;
     broadcast_environment_change();
     Ok(())
 }
@@ -1919,31 +2643,156 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
 
     let search_path = extended_search_path();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let resolved = which::which_in(program, Some(&search_path), &cwd)
-        .map_err(|_| format!("'{}' not found on PATH", program))?;
+    let resolved = match which::which_in(program, Some(&search_path), &cwd) {
+        Ok(path) => path,
+        Err(_) => {
+            deregister_handle(&handle_id);
+            return Err(format!("'{}' not found on PATH", program));
+        }
+    };
 
-    let mut child = Command::new(&resolved)
+    let job = match create_job_object() {
+        Ok(job) => Arc::new(job),
+        Err(e) => {
+            deregister_handle(&handle_id);
+            return Err(e);
+        }
+    };
+
+    let mut command = Command::new(&resolved);
+    command
         .args(args)
         .env("PATH", &search_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", program, e))?;
+        .creation_flags(CREATE_NO_WINDOW);
 
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let stderr = child.stderr.take().ok_or("no stderr")?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            deregister_handle(&handle_id);
+            return Err(format!("Failed to spawn '{}': {}", program, e));
+        }
+    };
+
+    if let Err(e) = assign_process_to_job(job.0, child.as_raw_handle() as HANDLE) {
+        let kill_result = child.kill().map_err(|kill_err| {
+            format!("failed to kill untracked child after job assignment failure: {kill_err}")
+        });
+        let wait_result = child.wait().map_err(|wait_err| {
+            format!("failed to wait untracked child after job assignment failure: {wait_err}")
+        });
+        deregister_handle(&handle_id);
+        if let Err(kill_err) = kill_result {
+            return Err(format!("{e}; {kill_err}"));
+        }
+        if let Err(wait_err) = wait_result {
+            return Err(format!("{e}; {wait_err}"));
+        }
+        return Err(e);
+    }
+    register_job_handle(&handle_id, job.clone());
+    if is_cancelled(&handle_id) {
+        if let Err(e) = terminate_process_tree(&handle_id) {
+            record_kill_error(&handle_id, e);
+        }
+    }
+
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            deregister_handle(&handle_id);
+            return Err("no stdout".to_string());
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            deregister_handle(&handle_id);
+            return Err("no stderr".to_string());
+        }
+    };
+
+    enum ReaderMsg {
+        Stdout(String),
+        Stderr,
+        Done {
+            stream: &'static str,
+            err: Option<String>,
+        },
+    }
 
     let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+    let stdout_thread = {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut err = None;
+            for line_result in BufReader::new(stdout).lines() {
+                match line_result {
+                    Ok(line) => {
+                        if tx.send(ReaderMsg::Stdout(line)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(ReaderMsg::Done {
+                stream: "stdout",
+                err,
+            });
+        })
+    };
     let stderr_thread = {
         let app = app.clone();
         let handle_id = handle_id.clone();
         let stderr_lines = Arc::clone(&stderr_lines);
+        let tx = tx.clone();
         std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line_result in reader.lines() {
-                let Ok(line) = line_result else { break };
-                stderr_lines.lock().unwrap().push(line.clone());
+            let mut err = None;
+            for line_result in BufReader::new(stderr).lines() {
+                match line_result {
+                    Ok(line) => {
+                        stderr_lines.lock().unwrap().push(line.clone());
+                        let _ = app.emit(
+                            "install:progress",
+                            InstallProgress {
+                                handle: handle_id.clone(),
+                                line: line.clone(),
+                                finished: false,
+                                error: None,
+                            },
+                        );
+                        if tx.send(ReaderMsg::Stderr).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(ReaderMsg::Done {
+                stream: "stderr",
+                err,
+            });
+        })
+    };
+    drop(tx);
+
+    let mut done_count = 0;
+    let mut first_stream_err: Option<String> = None;
+    let mut status = None;
+    let mut cancel_signal_sent = false;
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(ReaderMsg::Stdout(line)) => {
                 let _ = app.emit(
                     "install:progress",
                     InstallProgress {
@@ -1954,42 +2803,98 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
                     },
                 );
             }
-        })
-    };
-
-    let reader = BufReader::new(stdout);
-    for line_result in reader.lines() {
-        if is_cancelled(&handle_id) {
-            let _ = child.kill();
-            let _ = stderr_thread.join();
-            deregister_handle(&handle_id);
-            let _ = app.emit(
-                "install:progress",
-                InstallProgress {
-                    handle: handle_id.clone(),
-                    line: String::new(),
-                    finished: true,
-                    error: Some("Cancelled by user".to_string()),
-                },
-            );
-            return Err("Cancelled".to_string());
+            Ok(ReaderMsg::Stderr) => {}
+            Ok(ReaderMsg::Done { stream, err }) => {
+                if let Some(e) = err {
+                    if first_stream_err.is_none() {
+                        first_stream_err = Some(format!("{stream}: {e}"));
+                    }
+                }
+                done_count += 1;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        let line = line_result.map_err(|e| e.to_string())?;
+        if is_cancelled(&handle_id) {
+            if !cancel_signal_sent {
+                if let Err(e) = terminate_process_tree(&handle_id) {
+                    record_kill_error(&handle_id, e);
+                }
+                cancel_signal_sent = true;
+            }
+        }
+
+        if status.is_none() {
+            status = child.try_wait().map_err(|e| e.to_string())?;
+        }
+        if status.is_some() && done_count >= 2 {
+            break;
+        }
+        if done_count >= 2 && status.is_none() {
+            status = Some(child.wait().map_err(|e| e.to_string())?);
+            break;
+        }
+    }
+
+    let status = match status {
+        Some(status) => status,
+        None => child.wait().map_err(|e| e.to_string())?,
+    };
+
+    let stdout_join = stdout_thread
+        .join()
+        .map_err(|_| "stdout reader thread panicked".to_string());
+    let stderr_join = stderr_thread
+        .join()
+        .map_err(|_| "stderr reader thread panicked".to_string());
+
+    let was_cancelled = is_cancelled(&handle_id);
+    let kill_error = take_kill_error(&handle_id);
+    deregister_handle(&handle_id);
+
+    if let Err(e) = stdout_join.and(stderr_join) {
         let _ = app.emit(
             "install:progress",
             InstallProgress {
                 handle: handle_id.clone(),
-                line: line.clone(),
-                finished: false,
-                error: None,
+                line: String::new(),
+                finished: true,
+                error: Some(e.clone()),
             },
         );
+        return Err(e);
     }
 
-    let status = child.wait().map_err(|e| e.to_string())?;
-    let _ = stderr_thread.join();
-    deregister_handle(&handle_id);
+    if was_cancelled {
+        let msg = match kill_error {
+            Some(e) => format!("Cancelled by user; {e}"),
+            None => "Cancelled by user".to_string(),
+        };
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                handle: handle_id.clone(),
+                line: String::new(),
+                finished: true,
+                error: Some(msg.clone()),
+            },
+        );
+        return Err(msg);
+    }
+
+    if let Some(err) = first_stream_err {
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                handle: handle_id.clone(),
+                line: String::new(),
+                finished: true,
+                error: Some(err.clone()),
+            },
+        );
+        return Err(err);
+    }
 
     if status.success() {
         let _ = app.emit(
@@ -2089,6 +2994,148 @@ fn append_user_path_for_node() -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn windows_managed_node_sha256_for(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x64" => Some(WINDOWS_MANAGED_NODE_SHA256_X64),
+        "arm64" => Some(WINDOWS_MANAGED_NODE_SHA256_ARM64),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn zip_entry_relative_to_root(
+    enclosed: &Path,
+    expected_root: &str,
+    raw_name: &str,
+) -> Result<Option<PathBuf>, String> {
+    let mut comps = enclosed.components();
+    let Some(first) = comps.next() else {
+        return Ok(None);
+    };
+    match first {
+        std::path::Component::Normal(root) if root == std::ffi::OsStr::new(expected_root) => {}
+        _ => {
+            return Err(format!(
+                "zip entry outside expected root '{expected_root}': {raw_name}"
+            ))
+        }
+    }
+
+    let mut rel = PathBuf::new();
+    for comp in comps {
+        match comp {
+            std::path::Component::Normal(part) => rel.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::ParentDir => {
+                return Err(format!("zip entry has unsafe component: {raw_name}"));
+            }
+        }
+    }
+
+    if rel.as_os_str().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rel))
+    }
+}
+
+#[cfg(windows)]
+fn zip_raw_name_has_unsafe_component(raw_name: &str) -> bool {
+    Path::new(raw_name).components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::Prefix(_)
+                | std::path::Component::RootDir
+                | std::path::Component::ParentDir
+        )
+    })
+}
+
+#[cfg(windows)]
+fn validate_managed_node_dir(node_dir: &Path) -> Result<(), String> {
+    for leaf in ["node.exe", "npm.cmd", "npx.cmd"] {
+        let path = node_dir.join(leaf);
+        if !path.is_file() {
+            return Err(format!(
+                "managed Node missing required file {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn extract_managed_node_zip(
+    bytes: &[u8],
+    version: &str,
+    arch: &str,
+    staged_node_dir: &Path,
+) -> Result<(), String> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to open Node zip: {e}"))?;
+
+    let archive_root = format!("node-{version}-win-{arch}");
+    std::fs::create_dir_all(staged_node_dir)
+        .map_err(|e| format!("mkdir {}: {e}", staged_node_dir.display()))?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("node zip entry {i}: {e}"))?;
+        let raw_name = entry.name().to_string();
+        if zip_raw_name_has_unsafe_component(&raw_name) {
+            return Err(format!("node zip entry has unsafe path: {raw_name}"));
+        }
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("node zip entry has unsafe path: {raw_name}"))?
+            .to_path_buf();
+        let Some(rel) = zip_entry_relative_to_root(&enclosed, &archive_root, &raw_name)? else {
+            continue;
+        };
+        let out_path = staged_node_dir.join(&rel);
+        if !out_path.starts_with(staged_node_dir) {
+            return Err(format!("node zip entry escapes staging dir: {raw_name}"));
+        }
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|e| format!("mkdir {}: {e}", out_path.display()))?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir parent {}: {e}", parent.display()))?;
+        }
+        let mut out =
+            std::fs::File::create(&out_path).map_err(|e| format!("create {out_path:?}: {e}"))?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| format!("extract {out_path:?}: {e}"))?;
+    }
+
+    validate_managed_node_dir(staged_node_dir)
+}
+
+#[cfg(windows)]
+fn ensure_node_version(node_exe: &Path, expected_version: &str) -> Result<(), String> {
+    let output = Command::new(node_exe)
+        .arg("--version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("failed to run {} --version: {e}", node_exe.display()))?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() && version == expected_version {
+        Ok(())
+    } else {
+        Err(format!(
+            "managed Node version check failed: expected {expected_version}, got '{version}'"
+        ))
+    }
+}
+
+#[cfg(windows)]
 async fn install_managed_node(app: &AppHandle) -> Result<String, String> {
     let arch = managed_node_arch().ok_or_else(|| {
         format!(
@@ -2096,59 +3143,35 @@ async fn install_managed_node(app: &AppHandle) -> Result<String, String> {
             std::env::consts::ARCH
         )
     })?;
-    let version = "v22.12.0";
+    let version = WINDOWS_MANAGED_NODE_VERSION;
+    let expected_sha = windows_managed_node_sha256_for(arch)
+        .ok_or_else(|| format!("No pinned Node checksum for Windows arch {arch}"))?;
     let url = format!("https://nodejs.org/dist/{version}/node-{version}-win-{arch}.zip");
 
     emit_progress(app, &format!("Downloading {url}"));
     let url_for_dl = url.clone();
-    let bytes = tokio::task::spawn_blocking(move || {
-        reqwest::blocking::get(&url_for_dl)
-            .map_err(|e| format!("Failed to fetch {url_for_dl}: {e}"))?
-            .bytes()
-            .map_err(|e| format!("Failed to read response body: {e}"))
-    })
-    .await
-    .map_err(|e| format!("node download task join failed: {e}"))??;
+    let bytes =
+        tokio::task::spawn_blocking(move || download_bytes_checked(&url_for_dl, "Node zip"))
+            .await
+            .map_err(|e| format!("node download task join failed: {e}"))??;
     emit_progress(app, &format!("Downloaded {} bytes", bytes.len()));
+    verify_sha256_bytes("Node zip", &bytes, expected_sha)?;
 
     let target = managed_toolchain_dir();
     std::fs::create_dir_all(&target).map_err(|e| format!("Failed to mkdir {target:?}: {e}"))?;
 
-    emit_progress(app, &format!("Extracting Node into {target:?}..."));
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to open zip: {e}"))?;
-
-    let archive_root = format!("node-{version}-win-{arch}/");
     let node_dir = managed_node_dir();
-    std::fs::create_dir_all(&node_dir).map_err(|e| format!("mkdir {node_dir:?}: {e}"))?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| format!("zip entry {i}: {e}"))?;
-        let name = entry.name().to_string();
-        let stripped = name.strip_prefix(&archive_root).unwrap_or(&name);
-        if stripped.is_empty() {
-            continue;
-        }
-        let out_path = node_dir.join(stripped);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out_path).map_err(|e| format!("mkdir {out_path:?}: {e}"))?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("mkdir parent {parent:?}: {e}"))?;
-            }
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| format!("read zip entry {name}: {e}"))?;
-            std::fs::File::create(&out_path)
-                .and_then(|mut f| f.write_all(&buf))
-                .map_err(|e| format!("write {out_path:?}: {e}"))?;
-        }
+    let staged_node_dir = target.join(format!(".node-install-{}", Uuid::new_v4()));
+    emit_progress(app, &format!("Extracting Node into {staged_node_dir:?}..."));
+    if let Err(e) = extract_managed_node_zip(&bytes, version, arch, &staged_node_dir) {
+        let _ = std::fs::remove_dir_all(&staged_node_dir);
+        return Err(e);
     }
+    if let Err(e) = ensure_node_version(&staged_node_dir.join("node.exe"), version) {
+        let _ = std::fs::remove_dir_all(&staged_node_dir);
+        return Err(e);
+    }
+    atomic_replace_dir(&staged_node_dir, &node_dir)?;
 
     append_user_path(&node_dir)?;
     append_user_path(&managed_npm_bin())?;
@@ -2237,9 +3260,9 @@ async fn install_gh_windows(app: AppHandle) -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_yq_windows(app: AppHandle) -> Result<String, String> {
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
+    let (arch, expected_sha) = match std::env::consts::ARCH {
+        "x86_64" => ("amd64", WINDOWS_YQ_SHA256_AMD64),
+        "aarch64" => ("arm64", WINDOWS_YQ_SHA256_ARM64),
         _ => {
             return Err(format!(
                 "Unsupported architecture for yq install: {}",
@@ -2247,29 +3270,70 @@ async fn install_yq_windows(app: AppHandle) -> Result<String, String> {
             ))
         }
     };
-    let version = "v4.44.5";
     let url = format!(
-        "https://github.com/mikefarah/yq/releases/download/{version}/yq_windows_{arch}.exe"
+        "https://github.com/mikefarah/yq/releases/download/{WINDOWS_YQ_VERSION}/yq_windows_{arch}.exe"
     );
 
     emit_progress(&app, &format!("Downloading {url}..."));
     let url_owned = url.clone();
-    let bytes = tokio::task::spawn_blocking(move || {
-        reqwest::blocking::get(&url_owned)
-            .map_err(|e| format!("Failed to fetch yq: {e}"))?
-            .bytes()
-            .map_err(|e| format!("Failed to read yq response: {e}"))
-    })
-    .await
-    .map_err(|e| format!("yq download task join failed: {e}"))??;
+    let bytes = tokio::task::spawn_blocking(move || download_bytes_checked(&url_owned, "yq"))
+        .await
+        .map_err(|e| format!("yq download task join failed: {e}"))??;
 
     let bin_dir = managed_toolchain_dir().join("bin");
-    std::fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to mkdir {bin_dir:?}: {e}"))?;
     let out = bin_dir.join("yq.exe");
-    std::fs::write(&out, &bytes).map_err(|e| format!("Failed to write yq: {e}"))?;
+    install_yq_windows_from_bytes(&bytes, expected_sha, &out, |staged| {
+        ensure_yq_version(staged, WINDOWS_YQ_VERSION)
+    })?;
 
     append_user_path(&bin_dir)?;
     Ok(format!("yq installed at {out:?}"))
+}
+
+#[cfg(windows)]
+fn ensure_yq_version(yq_exe: &Path, expected_version: &str) -> Result<(), String> {
+    let output = Command::new(yq_exe)
+        .arg("--version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("failed to run {} --version: {e}", yq_exe.display()))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success() && combined.contains(expected_version) {
+        Ok(())
+    } else {
+        Err(format!(
+            "yq version check failed: expected {expected_version}, got '{}'",
+            combined.lines().next().unwrap_or("").trim()
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn install_yq_windows_from_bytes<F>(
+    bytes: &[u8],
+    expected_sha: &str,
+    target: &Path,
+    version_check: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
+    verify_sha256_bytes("yq", bytes, expected_sha)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("yq target has no parent: {}", target.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("Failed to mkdir {parent:?}: {e}"))?;
+    let staged = parent.join(format!(".yq.{}.tmp", Uuid::new_v4()));
+    std::fs::write(&staged, bytes).map_err(|e| format!("Failed to write staged yq: {e}"))?;
+    if let Err(e) = version_check(&staged) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+    atomic_replace_file(&staged, target)
 }
 
 #[cfg(windows)]
@@ -2293,18 +3357,6 @@ async fn install_claude_code_windows(app: AppHandle) -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
-    let prefix = managed_npm_prefix();
-    for leaf in ["qmd", "qmd.cmd", "qmd.ps1"] {
-        let p = prefix.join(leaf);
-        if p.exists() {
-            let _ = std::fs::remove_file(&p);
-        }
-    }
-    let tobilu = prefix.join("node_modules").join("@tobilu");
-    if tobilu.exists() {
-        let _ = std::fs::remove_dir_all(&tobilu);
-    }
-
     emit_progress(&app, "Installing qmd via npm (@tobilu/qmd)...");
     let result = run_streaming(
         &app,
@@ -2322,9 +3374,7 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
     .await?;
     append_user_path(&managed_npm_bin())?;
 
-    if let Err(e) = write_qmd_bash_shim() {
-        eprintln!("[hq-deps] WARN: failed to rewrite qmd.cmd as bash shim: {e}");
-    }
+    write_qmd_bash_shim()?;
 
     Ok(result)
 }
@@ -2332,6 +3382,11 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
 #[cfg(windows)]
 fn write_qmd_bash_shim() -> Result<(), String> {
     let prefix = managed_npm_prefix();
+    write_qmd_bash_shim_in(&prefix)
+}
+
+#[cfg(windows)]
+fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
     let bin_candidates = [
         prefix
             .join("node_modules")
@@ -2371,9 +3426,7 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
     let probe = check_dep_impl("rsync", None);
     if probe.installed && !managed_rsync.exists() {
         emit_progress(&app, "rsync already installed");
-        if let Err(e) = write_rsync_shim() {
-            eprintln!("[hq-deps] WARN: failed to (re)write rsync shim: {e}");
-        }
+        write_rsync_shim()?;
         return Ok("rsync already present; path shim refreshed".to_string());
     }
 
@@ -2384,21 +3437,37 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
     std::fs::create_dir_all(&bin_dir).map_err(|e| format!("Failed to mkdir {bin_dir:?}: {e}"))?;
 
     let url_for_dl = url.clone();
-    let bytes = tokio::task::spawn_blocking(move || {
-        reqwest::blocking::get(&url_for_dl)
-            .map_err(|e| format!("Failed to fetch rsync bundle: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("rsync bundle download returned error: {e}"))?
-            .bytes()
-            .map_err(|e| format!("Failed to read rsync bundle: {e}"))
-    })
-    .await
-    .map_err(|e| format!("rsync download task join failed: {e}"))??;
+    let bytes =
+        tokio::task::spawn_blocking(move || download_bytes_checked(&url_for_dl, "rsync bundle"))
+            .await
+            .map_err(|e| format!("rsync download task join failed: {e}"))??;
+    verify_sha256_bytes("rsync bundle", &bytes, RSYNC_BUNDLE_SHA256)?;
 
     emit_progress(&app, "Extracting rsync bundle...");
+    let staged_bin = managed_toolchain_dir().join(format!(".rsync-bin-{}", Uuid::new_v4()));
+    if let Err(e) = extract_rsync_zip_to_bin(&bytes, &staged_bin) {
+        let _ = std::fs::remove_dir_all(&staged_bin);
+        return Err(e);
+    }
+    if let Err(e) = ensure_rsync_version(&staged_bin.join("rsync.exe")) {
+        let _ = std::fs::remove_dir_all(&staged_bin);
+        return Err(e);
+    }
+    activate_staged_bin_files(&staged_bin, &bin_dir)?;
+
+    append_user_path(&bin_dir)?;
+
+    write_rsync_shim()?;
+
+    Ok(format!("rsync extracted to {bin_dir:?}; path shim wired"))
+}
+
+#[cfg(windows)]
+fn extract_rsync_zip_to_bin(bytes: &[u8], staged_bin: &Path) -> Result<(), String> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid rsync zip: {e}"))?;
+    std::fs::create_dir_all(staged_bin).map_err(|e| format!("mkdir {staged_bin:?}: {e}"))?;
 
     let mut extracted_rsync_exe = false;
     for i in 0..archive.len() {
@@ -2408,9 +3477,13 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
         if entry.is_dir() {
             continue;
         }
+        let raw_name = entry.name().to_string();
+        if zip_raw_name_has_unsafe_component(&raw_name) {
+            return Err(format!("rsync zip entry has unsafe path: {raw_name}"));
+        }
         let rel_name = entry
             .enclosed_name()
-            .ok_or_else(|| format!("rsync zip entry has unsafe path: {}", entry.name()))?
+            .ok_or_else(|| format!("rsync zip entry has unsafe path: {raw_name}"))?
             .to_path_buf();
 
         let comps: Vec<_> = rel_name.components().collect();
@@ -2424,7 +3497,10 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
         let std::path::Component::Normal(leaf) = comps[bi + 1] else {
             continue;
         };
-        let dest = bin_dir.join(leaf);
+        let dest = staged_bin.join(leaf);
+        if !dest.starts_with(staged_bin) {
+            return Err(format!("rsync zip entry escapes staging dir: {raw_name}"));
+        }
         let mut out = std::fs::File::create(&dest).map_err(|e| format!("create {dest:?}: {e}"))?;
         std::io::copy(&mut entry, &mut out).map_err(|e| format!("extract {dest:?}: {e}"))?;
         if leaf.eq_ignore_ascii_case("rsync.exe") {
@@ -2432,25 +3508,64 @@ pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
         }
     }
 
-    if !extracted_rsync_exe {
-        return Err(
+    if extracted_rsync_exe {
+        Ok(())
+    } else {
+        Err(
             "rsync bundle did not contain bin/rsync.exe - set HQ_RSYNC_URL to a different mirror"
                 .to_string(),
-        );
+        )
     }
+}
 
-    append_user_path(&bin_dir)?;
-
-    if let Err(e) = write_rsync_shim() {
-        eprintln!("[hq-deps] WARN: failed to write rsync shim: {e}");
+#[cfg(windows)]
+fn activate_staged_bin_files(staged_bin: &Path, bin_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(bin_dir).map_err(|e| format!("mkdir {bin_dir:?}: {e}"))?;
+    for entry in std::fs::read_dir(staged_bin).map_err(|e| format!("read {staged_bin:?}: {e}"))? {
+        let entry = entry.map_err(|e| format!("read staged rsync entry: {e}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("stat staged rsync entry {:?}: {e}", entry.path()))?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let dest = bin_dir.join(entry.file_name());
+        atomic_replace_file(&entry.path(), &dest)?;
     }
+    std::fs::remove_dir_all(staged_bin)
+        .map_err(|e| format!("remove staged rsync dir {staged_bin:?}: {e}"))
+}
 
-    Ok(format!("rsync extracted to {bin_dir:?}; path shim wired"))
+#[cfg(windows)]
+fn ensure_rsync_version(rsync_exe: &Path) -> Result<(), String> {
+    let output = Command::new(rsync_exe)
+        .arg("--version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("failed to run {} --version: {e}", rsync_exe.display()))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success() && combined.to_ascii_lowercase().contains("rsync") {
+        Ok(())
+    } else {
+        Err(format!(
+            "rsync version check failed: '{}'",
+            combined.lines().next().unwrap_or("").trim()
+        ))
+    }
 }
 
 #[cfg(windows)]
 fn write_rsync_shim() -> Result<(), String> {
     let bin_dir = managed_npm_bin();
+    write_rsync_shim_in(&bin_dir)
+}
+
+#[cfg(windows)]
+fn write_rsync_shim_in(bin_dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(&bin_dir).map_err(|e| format!("mkdir {bin_dir:?}: {e}"))?;
 
     let cmd_path = bin_dir.join("rsync.cmd");
@@ -2499,6 +3614,11 @@ exit $LASTEXITCODE
 #[cfg(windows)]
 fn write_shasum_shim() -> Result<(), String> {
     let bin_dir = managed_toolchain_dir().join("bin");
+    write_shasum_shim_in(&bin_dir)
+}
+
+#[cfg(windows)]
+fn write_shasum_shim_in(bin_dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(&bin_dir).map_err(|e| format!("mkdir {bin_dir:?}: {e}"))?;
 
     let shim_path = bin_dir.join("shasum");
@@ -2556,9 +3676,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
     .await?;
     append_user_path(&managed_npm_bin())?;
 
-    if let Err(e) = patch_hq_cli_pack_install_rsync() {
-        eprintln!("[hq-deps] WARN: hq-cli rsync patch failed: {e}");
-    }
+    patch_hq_cli_pack_install_rsync()?;
 
     Ok(result_inner)
 }
@@ -2572,7 +3690,11 @@ fn patch_hq_cli_pack_install_rsync() -> Result<(), String> {
         .join("dist")
         .join("commands")
         .join("pack-install.js");
+    patch_hq_cli_pack_install_rsync_at(&target)
+}
 
+#[cfg(windows)]
+fn patch_hq_cli_pack_install_rsync_at(target: &Path) -> Result<(), String> {
     if !target.exists() {
         return Err(format!("pack-install.js not found at {target:?}"));
     }
@@ -2625,6 +3747,185 @@ fn patch_hq_cli_pack_install_rsync() -> Result<(), String> {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+    use std::io::Write as _;
+
+    fn zip_fixture(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, bytes) in entries {
+            if name.ends_with('/') {
+                writer.add_directory(*name, options).unwrap();
+            } else {
+                writer.start_file(*name, options).unwrap();
+                writer.write_all(bytes).unwrap();
+            }
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn managed_node_zip_extracts_expected_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = format!("node-{WINDOWS_MANAGED_NODE_VERSION}-win-x64");
+        let node = format!("{root}/node.exe");
+        let npm = format!("{root}/npm.cmd");
+        let npx = format!("{root}/npx.cmd");
+        let bytes = zip_fixture(&[
+            (&node, b"node"),
+            (&npm, b"npm"),
+            (&npx, b"npx"),
+            (&format!("{root}/README.md"), b"readme"),
+        ]);
+
+        extract_managed_node_zip(&bytes, WINDOWS_MANAGED_NODE_VERSION, "x64", tmp.path())
+            .expect("node zip should extract");
+
+        assert_eq!(std::fs::read(tmp.path().join("node.exe")).unwrap(), b"node");
+        assert_eq!(std::fs::read(tmp.path().join("npm.cmd")).unwrap(), b"npm");
+        assert_eq!(std::fs::read(tmp.path().join("npx.cmd")).unwrap(), b"npx");
+        assert_eq!(
+            std::fs::read(tmp.path().join("README.md")).unwrap(),
+            b"readme"
+        );
+    }
+
+    #[test]
+    fn managed_node_zip_rejects_unsafe_or_wrong_root_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = format!("node-{WINDOWS_MANAGED_NODE_VERSION}-win-x64");
+        let unsafe_name = format!("{root}/../evil.exe");
+        let unsafe_zip = zip_fixture(&[(&unsafe_name, b"evil")]);
+        let err =
+            extract_managed_node_zip(&unsafe_zip, WINDOWS_MANAGED_NODE_VERSION, "x64", tmp.path())
+                .unwrap_err();
+        assert!(err.contains("unsafe path"), "{err}");
+
+        let wrong_root = zip_fixture(&[
+            ("node-wrong-win-x64/node.exe", b"node"),
+            ("node-wrong-win-x64/npm.cmd", b"npm"),
+            ("node-wrong-win-x64/npx.cmd", b"npx"),
+        ]);
+        let err =
+            extract_managed_node_zip(&wrong_root, WINDOWS_MANAGED_NODE_VERSION, "x64", tmp.path())
+                .unwrap_err();
+        assert!(err.contains("outside expected root"), "{err}");
+    }
+
+    #[test]
+    fn yq_download_status_and_staged_write_are_hermetic() {
+        let err = fetch_asset_with("https://example.invalid/yq", "yq", |_| {
+            Ok(DownloadedAsset {
+                status: 404,
+                bytes: b"not found".to_vec(),
+            })
+        })
+        .unwrap_err();
+        assert!(err.contains("HTTP status 404"), "{err}");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("yq.exe");
+        std::fs::write(&target, b"old").unwrap();
+        let bytes = b"fixture-yq";
+        let sha = sha256_hex(bytes);
+        install_yq_windows_from_bytes(bytes, &sha, &target, |staged| {
+            assert!(staged.exists());
+            assert_eq!(std::fs::read(staged).unwrap(), bytes);
+            Ok(())
+        })
+        .expect("verified yq bytes should install");
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+
+        let err =
+            install_yq_windows_from_bytes(b"tampered", &sha, &target, |_| Ok(())).unwrap_err();
+        assert!(err.contains("checksum mismatch"), "{err}");
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    }
+
+    #[test]
+    fn rsync_zip_extracts_bin_and_rejects_bad_archives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = zip_fixture(&[
+            ("portable-rsync/bin/rsync.exe", b"rsync"),
+            ("portable-rsync/bin/ssh.exe", b"ssh"),
+            ("portable-rsync/docs/readme.txt", b"ignored"),
+        ]);
+        extract_rsync_zip_to_bin(&bytes, tmp.path()).expect("rsync zip should extract");
+        assert_eq!(
+            std::fs::read(tmp.path().join("rsync.exe")).unwrap(),
+            b"rsync"
+        );
+        assert_eq!(std::fs::read(tmp.path().join("ssh.exe")).unwrap(), b"ssh");
+        assert!(!tmp.path().join("readme.txt").exists());
+
+        let unsafe_zip = zip_fixture(&[("../evil.exe", b"evil")]);
+        let err = extract_rsync_zip_to_bin(&unsafe_zip, tmp.path()).unwrap_err();
+        assert!(err.contains("unsafe path"), "{err}");
+
+        let missing = zip_fixture(&[("portable-rsync/bin/ssh.exe", b"ssh")]);
+        let err = extract_rsync_zip_to_bin(&missing, tmp.path()).unwrap_err();
+        assert!(err.contains("bin/rsync.exe"), "{err}");
+    }
+
+    #[test]
+    fn shim_writers_emit_expected_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qmd_prefix = tmp.path().join("npm-prefix");
+        let qmd_bin = qmd_prefix
+            .join("node_modules")
+            .join("@tobilu")
+            .join("qmd")
+            .join("qmd");
+        std::fs::create_dir_all(qmd_bin.parent().unwrap()).unwrap();
+        std::fs::write(&qmd_bin, b"").unwrap();
+        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd shim should write");
+        let qmd_cmd = std::fs::read_to_string(qmd_prefix.join("qmd.cmd")).unwrap();
+        assert!(qmd_cmd.contains("bash \"%~dp0node_modules\\@tobilu\\qmd\\qmd\" %*"));
+
+        let npm_bin = tmp.path().join("npm-bin");
+        write_rsync_shim_in(&npm_bin).expect("rsync shims should write");
+        assert!(npm_bin.join("rsync.cmd").is_file());
+        let ps1 = std::fs::read_to_string(npm_bin.join("rsync.ps1")).unwrap();
+        assert!(ps1.contains("/cygdrive/$drive/$rest"));
+
+        let tool_bin = tmp.path().join("tool-bin");
+        write_shasum_shim_in(&tool_bin).expect("shasum shim should write");
+        let shasum = std::fs::read_to_string(tool_bin.join("shasum")).unwrap();
+        assert!(shasum.contains("exec sha256sum"));
+    }
+
+    #[test]
+    fn hq_cli_pack_install_patch_rewrites_rsync_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pack-install.js");
+        let source = "import fs from 'fs';\nimport path from 'path';\nfunction copy(srcSlashed, destSlashed) {\n    execFileSync('rsync', [\n        '-a',\n        '--exclude=.git',\n        '--exclude=node_modules',\n        '--exclude=.DS_Store',\n        srcSlashed,\n        destSlashed,\n    ], { stdio: 'inherit' });\n}\n";
+        std::fs::write(&target, source).unwrap();
+
+        patch_hq_cli_pack_install_rsync_at(&target).expect("patch should apply");
+        patch_hq_cli_pack_install_rsync_at(&target).expect("patch should be idempotent");
+
+        let patched = std::fs::read_to_string(&target).unwrap();
+        assert!(patched.contains("hq-installer: rsync -> fs.cpSync patch applied"));
+        assert!(patched.contains("fs.cpSync(srcSlashed, destSlashed"));
+        assert!(!patched.contains("execFileSync('rsync'"));
+        assert_eq!(
+            patched
+                .matches("hq-installer: rsync -> fs.cpSync patch applied")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn registry_path_decode_rejects_non_string_values() {
+        let raw = RegValue {
+            bytes: vec![1, 2, 3, 4],
+            vtype: winreg::enums::REG_BINARY,
+        };
+        let err = decode_registry_string(&raw, "Path").unwrap_err();
+        assert!(err.contains("unsupported registry type"), "{err}");
+    }
 
     #[test]
     fn managed_toolchain_dir_under_localappdata() {

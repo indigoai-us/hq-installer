@@ -53,6 +53,8 @@ pub struct MenubarInstallProgress {
 #[serde(rename_all = "camelCase")]
 pub struct MenubarInstallResult {
     pub success: bool,
+    pub skipped: bool,
+    pub reason: Option<String>,
     pub app_path: Option<String>,
     pub error: Option<String>,
 }
@@ -300,7 +302,7 @@ fn mount_dmg(app: &AppHandle, dmg_path: &Path) -> Result<String, String> {
         .ok_or("DMG path contains non-UTF-8 characters")?;
 
     let output = Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-noverify", "-noautoopen", dmg_str])
+        .args(["attach", "-nobrowse", "-noautoopen", dmg_str])
         .output()
         .map_err(|e| format!("Failed to spawn hdiutil attach: {}", e))?;
 
@@ -523,6 +525,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
             emit_progress(&app, "error", 0, &msg);
             return Ok(MenubarInstallResult {
                 success: false,
+                skipped: false,
+                reason: None,
                 app_path: None,
                 error: Some(msg),
             });
@@ -539,6 +543,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
         cleanup_dmg(&dmg_path);
         return Ok(MenubarInstallResult {
             success: false,
+            skipped: false,
+            reason: None,
             app_path: None,
             error: Some(e),
         });
@@ -552,6 +558,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
             cleanup_dmg(&dmg_path);
             return Ok(MenubarInstallResult {
                 success: false,
+                skipped: false,
+                reason: None,
                 app_path: None,
                 error: Some(e),
             });
@@ -567,6 +575,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
             cleanup_dmg(&dmg_path);
             return Ok(MenubarInstallResult {
                 success: false,
+                skipped: false,
+                reason: None,
                 app_path: None,
                 error: Some(e),
             });
@@ -581,6 +591,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
 
     Ok(MenubarInstallResult {
         success: true,
+        skipped: false,
+        reason: None,
         app_path: Some(installed_path.to_string_lossy().into_owned()),
         error: None,
     })
@@ -753,9 +765,27 @@ pub fn launch_menubar_app() -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn windows_menubar_not_available_result() -> MenubarInstallResult {
+    MenubarInstallResult {
+        success: false,
+        skipped: true,
+        reason: Some("not_available_on_windows".to_string()),
+        app_path: None,
+        error: Some(
+            "Automatic HQ Sync install is not available on Windows yet; skipped optional menubar setup."
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(windows)]
 #[tauri::command]
 pub async fn install_menubar_app(_app: AppHandle) -> Result<MenubarInstallResult, String> {
-    Err("Automatic HQ Sync install isn't wired on Windows yet — download it from the releases page (follow-on to the Windows support V1).".to_string())
+    // Contract: Windows V1 does not install HQ Sync automatically. Return a
+    // successful IPC call with `skipped=true` instead of Err so the renderer can
+    // treat the optional menubar stage as non-fatal while still showing the
+    // explicit not-available reason.
+    Ok(windows_menubar_not_available_result())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -792,6 +822,20 @@ mod windows_tests {
             assert!(status.exe_path.is_none());
             assert!(status.version.is_none());
         }
+    }
+
+    #[test]
+    fn windows_install_menubar_result_is_structured_skip() {
+        let result = windows_menubar_not_available_result();
+        assert!(!result.success);
+        assert!(result.skipped);
+        assert_eq!(result.reason.as_deref(), Some("not_available_on_windows"));
+        assert!(result.app_path.is_none());
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("skipped optional menubar setup"));
     }
 }
 

@@ -45,6 +45,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
+  writeFile: vi.fn(async (path: string, data: Uint8Array) => {
+    fakeFs.set(path, new TextDecoder().decode(data));
+  }),
   writeTextFile: vi.fn(async (path: string, content: string) => {
     fakeFs.set(path, content);
   }),
@@ -378,13 +381,13 @@ describe("refreshSession", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Shared token file — write on store, read as fallback on load
+// Shared token file — short-lived sync handoff only; never keychain fallback
 // ---------------------------------------------------------------------------
 
 describe("shared token file", () => {
   const tokenFilePath = `${FAKE_HOME}/.hq/cognito-tokens.json`;
 
-  it("storeTokens writes to ~/.hq/cognito-tokens.json with canonical schema", async () => {
+  it("storeTokens writes an access-token-only handoff with canonical schema", async () => {
     const tokens = makeTokens({
       accessToken: "acc-shared",
       idToken: makeIdToken("sub-shared", "shared@example.com"),
@@ -397,11 +400,25 @@ describe("shared token file", () => {
     expect(fakeFs.has(tokenFilePath)).toBe(true);
     const written = JSON.parse(fakeFs.get(tokenFilePath)!);
     expect(written.accessToken).toBe("acc-shared");
-    expect(written.idToken).toBe(tokens.idToken);
-    expect(written.refreshToken).toBe("ref-shared");
     expect(written.expiresAt).toBe(1700000000000);
     expect(typeof written.expiresAt).toBe("number");
     expect(written.tokenType).toBe("Bearer");
+    expect(written).not.toHaveProperty("refreshToken");
+    expect(written).not.toHaveProperty("idToken");
+  });
+
+  it("creates the handoff temp file with 0600 permissions", async () => {
+    const { writeFile: mockWriteFile } = await import("@tauri-apps/plugin-fs");
+    const tokens = makeTokens();
+
+    await storeTokens(tokens);
+
+    const calls = vi.mocked(mockWriteFile).mock.calls;
+    expect(calls).toHaveLength(1);
+    const [path, data, options] = calls[0];
+    expect(String(path)).toMatch(/\/\.cognito-tokens\.json\.tmp\./);
+    expect(ArrayBuffer.isView(data)).toBe(true);
+    expect(options).toEqual({ mode: 0o600 });
   });
 
   it("storeTokens uses atomic rename (no .tmp file remains)", async () => {
@@ -413,9 +430,9 @@ describe("shared token file", () => {
     expect(fakeFs.has(tokenFilePath)).toBe(true);
   });
 
-  it("loadTokens falls back to shared token file when keychain is empty", async () => {
-    // No keychain data — keychain_get will throw "not found"
-    // Seed the shared token file directly
+  it("loadTokens does not use the shared token file as a keychain fallback", async () => {
+    // No keychain data — keychain_get will throw "not found".
+    // Seed the old full-token schema directly; it must not restore a session.
     const fileTokens = {
       accessToken: "file-acc",
       idToken: makeIdToken("sub-file", "file@example.com"),
@@ -427,9 +444,8 @@ describe("shared token file", () => {
 
     const user = await getCurrentUser();
 
-    expect(user).not.toBeNull();
-    expect(user!.email).toBe("file@example.com");
-    expect(user!.tokens.accessToken).toBe("file-acc");
+    expect(user).toBeNull();
+    expect(fakeFs.has(tokenFilePath)).toBe(false);
   });
 
   it("loadTokens returns null when both keychain and file are unavailable", async () => {

@@ -1,3 +1,4 @@
+pub mod ai_tools;
 pub mod deps;
 pub mod directory;
 pub mod fs;

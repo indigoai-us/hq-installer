@@ -1,14 +1,14 @@
 // 11-summary.tsx — US-018 (revised 2026-04-29)
-// Final summary screen — Claude Desktop is the recommended way to open HQ;
-// Claude Code (Terminal) is offered as a secondary text link.
+// Final summary screen — supported AI coding tools gate the launch CTA.
+// Claude Desktop is preferred when present; otherwise Claude Code (Terminal)
+// is offered as the launch path.
 //
 // Branching:
-//   - Claude Desktop installed → "Launch Claude Desktop" + post-launch
-//     instructions to point Claude Code at the HQ folder.
-//   - Not installed             → CTA to download from claude.ai/download +
-//     same instructions for after install.
+//   - Any supported AI tool installed → launch CTA.
+//   - None installed                  → download Claude + subscription note,
+//     polling until a tool appears.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { WizardFooterSlot } from "@/components/WizardFooter";
@@ -28,6 +28,26 @@ import {
  *  but I'm not sure how to point Claude Code at a folder" cases. */
 const CLAUDE_DESKTOP_QUICKSTART_URL =
   "https://code.claude.com/docs/en/desktop-quickstart";
+
+const AI_TOOLS_POLL_MS = 3000;
+
+interface AiTools {
+  claude_cli: boolean;
+  claude_desktop: boolean;
+  codex_cli: boolean;
+  codex_desktop: boolean;
+  grok_cli: boolean;
+  any: boolean;
+}
+
+const NO_AI_TOOLS: AiTools = {
+  claude_cli: false,
+  claude_desktop: false,
+  codex_cli: false,
+  codex_desktop: false,
+  grok_cli: false,
+  any: false,
+};
 
 // ---------------------------------------------------------------------------
 // Props
@@ -56,10 +76,29 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   const [importPromptCopied, setImportPromptCopied] = useState(false);
   const [installerImport, setInstallerImport] =
     useState<InstallerImportBreadcrumb | null>(null);
+  const detectorMountedRef = useRef(false);
+  const detectorProbeInFlightRef = useRef(false);
   // null while we're still probing — render a neutral placeholder until known.
-  const [desktopInstalled, setDesktopInstalled] = useState<boolean | null>(null);
+  const [aiTools, setAiTools] = useState<AiTools | null>(null);
 
-  // ── Telemetry + manifest finalize + Claude-installed probe on mount ─────
+  const probeAiTools = useCallback(async () => {
+    if (detectorProbeInFlightRef.current) return;
+    detectorProbeInFlightRef.current = true;
+    try {
+      const tools = await invoke<AiTools>("check_ai_tools");
+      if (detectorMountedRef.current) {
+        setAiTools(tools);
+      }
+    } catch {
+      if (detectorMountedRef.current) {
+        setAiTools(NO_AI_TOOLS);
+      }
+    } finally {
+      detectorProbeInFlightRef.current = false;
+    }
+  }, []);
+
+  // ── Telemetry + manifest finalize on mount ──────────────────────────────
   useEffect(() => {
     if (wizardState.installPath) {
       (async () => {
@@ -89,18 +128,24 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
     } else {
       setInstallerImport(null);
     }
-    // Probe whether Claude Desktop is installed so we can render the right
-    // CTA. Default to "not installed" on probe failure — the download link is
-    // a safe fallback if the check itself errors.
-    (async () => {
-      try {
-        const present = await invoke<boolean>("claude_desktop_installed");
-        setDesktopInstalled(present);
-      } catch {
-        setDesktopInstalled(false);
-      }
-    })();
   }, [wizardState.telemetryEnabled, wizardState.installPath]);
+
+  // ── Supported AI tool detection + polling while absent ──────────────────
+  useEffect(() => {
+    detectorMountedRef.current = true;
+    void probeAiTools();
+    return () => {
+      detectorMountedRef.current = false;
+    };
+  }, [probeAiTools]);
+
+  useEffect(() => {
+    if (aiTools?.any !== false) return;
+    const intervalId = window.setInterval(() => {
+      void probeAiTools();
+    }, AI_TOOLS_POLL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [aiTools?.any, probeAiTools]);
 
   // ── Handlers ────────────────────────────────────────────────────────────
 
@@ -122,7 +167,18 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
       // If the failure is because Claude Desktop isn't installed, flip the
       // UI to the download CTA so the user has a clear next step.
       if (/Unable to find application/i.test(msg)) {
-        setDesktopInstalled(false);
+        setAiTools((previous) => {
+          const base = previous ?? NO_AI_TOOLS;
+          const next = { ...base, claude_desktop: false };
+          return {
+            ...next,
+            any:
+              next.claude_cli ||
+              next.codex_cli ||
+              next.codex_desktop ||
+              next.grok_cli,
+          };
+        });
       }
     } finally {
       setLaunchingDesktop(false);
@@ -182,14 +238,16 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   const showClaudeImportCard =
     typeof installerImport?.totalClaudeArtifacts === "number" &&
     installerImport.totalClaudeArtifacts > 0;
+  const aiToolsDetected = aiTools?.any === true;
+  const claudeDesktopAvailable = aiTools?.claude_desktop === true;
 
   return (
     <div className="flex flex-col gap-6 max-w-lg">
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-medium text-white">HQ is ready</h1>
         <p className="text-sm font-light text-zinc-400">
-          Your workspace is installed and synced — open it in Claude Desktop to
-          get started.
+          Your workspace is installed and synced — open it with a supported AI
+          coding tool to get started.
         </p>
       </div>
 
@@ -224,18 +282,52 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         </div>
       </div>
 
-      {/* Open in Claude Desktop — primary CTA */}
+      {/* Open HQ — primary CTA */}
       <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-4">
         <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
-          Open in Claude Desktop
+          Open HQ
         </p>
 
-        <ol className="flex flex-col gap-2 text-sm text-zinc-300 list-decimal list-inside">
-          <li>Launch Claude Desktop.</li>
-          <li>
-            Open <span className="font-medium">Claude Code</span>, choose the
-            local filesystem, and select your HQ folder:
-            <div className="mt-2 flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
+        {aiTools === null && (
+          <p className="text-sm text-zinc-300">
+            Checking for a supported AI coding tool…
+          </p>
+        )}
+
+        {aiTools?.any === false && (
+          <p className="text-sm text-zinc-300">
+            No supported AI tool detected. Download Claude below; this screen
+            will update automatically after a tool is installed.
+          </p>
+        )}
+
+        {aiToolsDetected && claudeDesktopAvailable && (
+          <ol className="flex flex-col gap-2 text-sm text-zinc-300 list-decimal list-inside">
+            <li>Launch Claude Desktop.</li>
+            <li>
+              Open <span className="font-medium">Claude Code</span>, choose the
+              local filesystem, and select your HQ folder:
+              <div className="mt-2 flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
+                <span className="text-xs font-mono text-zinc-200 break-all flex-1">
+                  {wizardState.installPath ?? "—"}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyPath}
+                  disabled={!wizardState.installPath}
+                  className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors disabled:opacity-40"
+                >
+                  {pathCopied ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </li>
+          </ol>
+        )}
+
+        {aiToolsDetected && !claudeDesktopAvailable && (
+          <div className="flex flex-col gap-2 text-sm text-zinc-300">
+            <p>Open Claude Code in Terminal from your HQ folder:</p>
+            <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
               <span className="text-xs font-mono text-zinc-200 break-all flex-1">
                 {wizardState.installPath ?? "—"}
               </span>
@@ -248,10 +340,10 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
                 {pathCopied ? "Copied" : "Copy"}
               </button>
             </div>
-          </li>
-        </ol>
+          </div>
+        )}
 
-        {desktopInstalled === true && (
+        {claudeDesktopAvailable && (
           <p className="text-xs text-zinc-500">
             Need help?{" "}
             <button
@@ -261,12 +353,6 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             >
               Claude Desktop quickstart
             </button>
-          </p>
-        )}
-
-        {desktopInstalled === false && (
-          <p className="text-xs text-zinc-400">
-            Don't have Claude Desktop yet? Download it below.
           </p>
         )}
       </div>
@@ -314,8 +400,8 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         </div>
       )}
 
-      {/* Secondary: Claude Code in Terminal — text link */}
-      <div className="flex flex-col gap-2">
+      {aiToolsDetected && claudeDesktopAvailable && (
+        /* Secondary: Claude Code in Terminal — text link */
         <p className="text-xs text-zinc-500">
           Prefer the terminal?{" "}
           <button
@@ -327,19 +413,19 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             {launchingCode ? "Opening…" : "Open Claude Code in Terminal"}
           </button>
         </p>
+      )}
 
-        {launchError && (
-          <div
-            role="alert"
-            className="text-xs text-zinc-400 bg-white/5 border border-white/10 rounded-xl px-3 py-2"
-          >
-            {launchError}
-          </div>
-        )}
-      </div>
+      {launchError && (
+        <div
+          role="alert"
+          className="text-xs text-zinc-400 bg-white/5 border border-white/10 rounded-xl px-3 py-2"
+        >
+          {launchError}
+        </div>
+      )}
 
       <WizardFooterSlot>
-        {desktopInstalled === true && (
+        {aiToolsDetected && claudeDesktopAvailable && (
           <button
             type="button"
             onClick={handleLaunchDesktop}
@@ -349,18 +435,33 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             {launchingDesktop ? "Opening…" : "Launch Claude Desktop"}
           </button>
         )}
-        {desktopInstalled === false && (
+        {aiToolsDetected && !claudeDesktopAvailable && (
           <button
             type="button"
-            onClick={handleDownloadClaude}
-            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+            onClick={handleLaunchClaudeCode}
+            disabled={launchingCode || !wizardState.installPath}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Download Claude Desktop
+            {launchingCode ? "Opening…" : "Open Claude Code in Terminal"}
           </button>
         )}
-        {desktopInstalled === null && (
+        {aiTools?.any === false && (
+          <div className="flex flex-col items-end gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadClaude}
+              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+            >
+              Download Claude
+            </button>
+            <p className="text-xs text-zinc-400">
+              A Claude subscription is required to use HQ.
+            </p>
+          </div>
+        )}
+        {aiTools === null && (
           <div className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-500">
-            Checking for Claude Desktop…
+            Checking…
           </div>
         )}
       </WizardFooterSlot>

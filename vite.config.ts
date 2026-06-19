@@ -44,6 +44,12 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}", "__tests__/**/*.test.{ts,tsx}"],
+    include: [
+      "src/**/*.test.{ts,tsx}",
+      "__tests__/**/*.test.{ts,tsx}",
+      // Release-tooling scripts (e.g. build-latest-json) live outside src/ and
+      // set their own per-file `// @vitest-environment node`.
+      "scripts/**/*.test.{ts,tsx}",
+    ],
   },
 });

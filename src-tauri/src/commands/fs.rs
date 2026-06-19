@@ -318,17 +318,217 @@ fn copy_file_fallback(target: &Path, link_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("copy {abs_target:?} → {link_path:?} failed: {e}"))
 }
 
+fn has_unsafe_relative_prefix(raw: &str) -> bool {
+    raw.starts_with('/')
+        || raw.starts_with('\\')
+        || raw.starts_with("//")
+        || raw.starts_with("\\\\")
+        || raw
+            .as_bytes()
+            .get(0..2)
+            .map(|b| b[0].is_ascii_alphabetic() && b[1] == b':')
+            .unwrap_or(false)
+}
+
+fn normalize_trusted_path(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.contains('\0') {
+        return None;
+    }
+
+    let normalized = raw.replace('\\', "/");
+    let mut prefix = "";
+    let mut rest = normalized.as_str();
+    let bytes = normalized.as_bytes();
+
+    let drive_prefix = bytes
+        .get(0..2)
+        .filter(|b| b[0].is_ascii_alphabetic() && b[1] == b':')
+        .map(|_| &normalized[..2]);
+
+    if let Some(drive) = drive_prefix {
+        prefix = drive;
+        rest = &normalized[2..];
+        if let Some(stripped) = rest.strip_prefix('/') {
+            rest = stripped;
+        }
+    } else if normalized.starts_with("//") {
+        prefix = "//";
+        rest = normalized.trim_start_matches('/');
+    } else if normalized.starts_with('/') {
+        prefix = "/";
+        rest = normalized.trim_start_matches('/');
+    }
+
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in rest.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            parts.pop()?;
+        } else {
+            parts.push(seg);
+        }
+    }
+
+    Some(match prefix {
+        "/" => {
+            if parts.is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{}", parts.join("/"))
+            }
+        }
+        "//" => format!("//{}", parts.join("/")),
+        "" => parts.join("/"),
+        drive => {
+            if parts.is_empty() {
+                format!("{}/", drive.to_ascii_uppercase())
+            } else {
+                format!("{}/{}", drive.to_ascii_uppercase(), parts.join("/"))
+            }
+        }
+    })
+}
+
+fn is_path_within_root(path: &str, root: &str) -> bool {
+    let case_insensitive = root.starts_with("//")
+        || root
+            .as_bytes()
+            .get(0..3)
+            .map(|b| b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/')
+            .unwrap_or(false);
+    let candidate = if case_insensitive {
+        path.to_ascii_lowercase()
+    } else {
+        path.to_string()
+    };
+    let base = if case_insensitive {
+        root.to_ascii_lowercase()
+    } else {
+        root.to_string()
+    };
+
+    if base.ends_with('/') {
+        candidate.starts_with(&base)
+    } else {
+        candidate == base || candidate.starts_with(&format!("{base}/"))
+    }
+}
+
+fn normalized_parent(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    let idx = trimmed.rfind('/')?;
+    if idx == 0 {
+        Some("/".to_string())
+    } else if idx == 2 && trimmed.as_bytes().get(1) == Some(&b':') {
+        Some(format!("{}/", &trimmed[..2]))
+    } else {
+        Some(trimmed[..idx].to_string())
+    }
+}
+
+fn relative_segments_under_root(path: &str, root: &str) -> Option<Vec<String>> {
+    if path == root {
+        return Some(Vec::new());
+    }
+    let prefix = if root.ends_with('/') {
+        root.to_string()
+    } else {
+        format!("{root}/")
+    };
+    path.strip_prefix(&prefix).map(|suffix| {
+        suffix
+            .split('/')
+            .filter(|seg| !seg.is_empty())
+            .map(ToString::to_string)
+            .collect()
+    })
+}
+
+fn validate_symlink_request(
+    target: &str,
+    link_path: &str,
+    root: Option<&str>,
+) -> Result<(), String> {
+    if target.is_empty() || target.contains('\0') {
+        return Err("Refusing to create symlink with an empty or invalid target".to_string());
+    }
+    if has_unsafe_relative_prefix(target) || target.contains(':') {
+        return Err(format!(
+            "Refusing to create symlink with absolute or prefixed target: {target:?}"
+        ));
+    }
+
+    let normalized_target = target.replace('\\', "/");
+
+    let Some(root) = root else {
+        if normalized_target
+            .split('/')
+            .any(|seg| !seg.is_empty() && seg == "..")
+        {
+            return Err(
+                "Refusing to create symlink with parent traversal without an install root"
+                    .to_string(),
+            );
+        }
+        return Ok(());
+    };
+
+    let root = normalize_trusted_path(root).ok_or_else(|| {
+        "Refusing to create symlink because the install root is invalid".to_string()
+    })?;
+    let link_path = normalize_trusted_path(link_path)
+        .ok_or_else(|| "Refusing to create symlink because the link path is invalid".to_string())?;
+    if !is_path_within_root(&link_path, &root) {
+        return Err(format!(
+            "Refusing to create symlink outside install root: {link_path:?}"
+        ));
+    }
+
+    let link_parent = normalized_parent(&link_path)
+        .ok_or_else(|| "Refusing to create symlink without a parent path".to_string())?;
+    if !is_path_within_root(&link_parent, &root) {
+        return Err(format!(
+            "Refusing to create symlink whose parent escapes install root: {link_parent:?}"
+        ));
+    }
+
+    let mut target_segments =
+        relative_segments_under_root(&link_parent, &root).ok_or_else(|| {
+            "Refusing to create symlink because the parent is outside the install root".to_string()
+        })?;
+
+    for seg in normalized_target.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            target_segments.pop().ok_or_else(|| {
+                format!("Refusing to create symlink target that escapes install root: {target:?}")
+            })?;
+        } else {
+            target_segments.push(seg.to_string());
+        }
+    }
+
+    Ok(())
+}
+
 /// Tauri command: create a symbolic link at `link_path` pointing to `target`.
 ///
 /// Invoked by template-fetcher.ts for tar entries with typeflag '2'. The
 /// template ships git symlinks (mode 120000) like `AGENTS.md → .claude/CLAUDE.md`
 /// — Tauri's plugin-fs doesn't expose `symlink` from JS, so we route through
-/// Rust. POSIX symlinks can point at relative or absolute paths, missing
-/// targets, or paths outside the parent dir; we don't validate the target —
-/// downstream tooling that walks symlinks is responsible for refusing
-/// dangerous ones.
+/// Rust. The JS extractor validates tar metadata first; this command repeats
+/// the target/root check defensively before touching the filesystem.
 #[tauri::command]
-pub fn create_symlink(target: String, link_path: String) -> Result<(), String> {
+pub fn create_symlink(
+    target: String,
+    link_path: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    validate_symlink_request(&target, &link_path, root.as_deref())?;
     create_symlink_impl(Path::new(&target), Path::new(&link_path))
 }
 
@@ -351,6 +551,61 @@ pub fn open_developer_settings() -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("failed to open Developer Mode settings: {e}"))
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn symlink_validation_allows_template_parent_links_with_root() {
+        validate_symlink_request(
+            "../.claude/output-style.md",
+            "/tmp/hq/.codex/output-style.md",
+            Some("/tmp/hq"),
+        )
+        .expect("in-root parent traversal should be allowed");
+
+        validate_symlink_request(
+            "../../.obsidian",
+            "/tmp/hq/companies/_template/.obsidian",
+            Some("/tmp/hq"),
+        )
+        .expect("template links may walk back to the install root");
+    }
+
+    #[test]
+    fn symlink_validation_rejects_targets_that_escape_root() {
+        let err = validate_symlink_request("../.ssh", "/tmp/hq/.ssh", Some("/tmp/hq"))
+            .expect_err("root escape must be rejected");
+        assert!(err.contains("escapes install root"), "got: {err}");
+    }
+
+    #[test]
+    fn symlink_validation_rejects_absolute_and_drive_targets() {
+        for target in ["/tmp/outside", r"\tmp\outside", r"C:\Users\alice\evil"] {
+            let err = validate_symlink_request(target, "/tmp/hq/link", Some("/tmp/hq"))
+                .expect_err("absolute target must be rejected");
+            assert!(
+                err.contains("absolute") || err.contains("prefixed"),
+                "got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn symlink_validation_rejects_link_paths_outside_root() {
+        let err = validate_symlink_request("inside", "/tmp/outside/link", Some("/tmp/hq"))
+            .expect_err("link path outside root must be rejected");
+        assert!(err.contains("outside install root"), "got: {err}");
+    }
+
+    #[test]
+    fn symlink_validation_without_root_rejects_parent_traversal() {
+        let err = validate_symlink_request("../target", "/tmp/hq/link", None)
+            .expect_err("parent traversal without a root must be rejected");
+        assert!(err.contains("without an install root"), "got: {err}");
+    }
 }
 
 #[cfg(all(test, unix))]

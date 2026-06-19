@@ -7,17 +7,27 @@
  * paths into sibling tmpdirs:
  *
  *   Path A — canonical:  system `tar -xzf` (what `create-hq` uses)
- *   Path B — installer:  the pure-TS tar parser replicated from template-fetcher.ts
+ *   Path B — installer:  the production extraction seam from template-fetcher.ts
  *
- * The resulting directory trees are compared as sorted file lists + SHA-256
- * content hashes. Paths matching entries in allowed-diffs.json are excluded.
- * Any unexpected diff fails the test with a precise path-level report.
+ * The resulting directory trees are compared as sorted file/symlink lists,
+ * file mode bits, symlink targets, and SHA-256 content hashes. Paths matching
+ * entries in allowed-diffs.json are excluded. Any unexpected diff fails the
+ * test with a precise path-level report.
  *
  * Runs nightly — see .github/workflows/regression.yml. Can also be triggered
  * on demand: pnpm vitest run --config vitest.config.regression.ts
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from "vitest";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import {
@@ -27,12 +37,75 @@ import {
   writeFile,
   readFile,
   readdir,
-  stat,
+  lstat,
+  readlink,
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { gunzipSync } from "fflate";
+import { gzipSync } from "fflate";
 import allowedDiffs from "./allowed-diffs.json" with { type: "json" };
+
+vi.mock("../../src/lib/client-info", () => ({
+  CLIENT_HEADERS: {
+    "User-Agent": "hq-installer-regression/test",
+    "x-hq-client-name": "hq-installer-regression",
+    "x-hq-client-version": "test",
+  },
+}));
+
+vi.mock("@tauri-apps/plugin-http", () => ({
+  fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+    globalThis.fetch(input, init),
+}));
+
+vi.mock("@tauri-apps/plugin-fs", async () => {
+  const fs = await import("node:fs/promises");
+  const nodePath = await import("node:path");
+  return {
+    mkdir: (pathName: string, opts?: { recursive?: boolean }) =>
+      fs.mkdir(pathName, { recursive: opts?.recursive }),
+    writeFile: async (
+      pathName: string,
+      data: Uint8Array,
+      opts?: { mode?: number },
+    ) => {
+      await fs.mkdir(nodePath.dirname(pathName), { recursive: true });
+      await fs.writeFile(pathName, data);
+      if (typeof opts?.mode === "number") {
+        await fs.chmod(pathName, opts.mode & 0o777);
+      }
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/core", async () => {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  return {
+    invoke: async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd !== "create_symlink") {
+        throw new Error(`Unexpected invoke in parity test: ${cmd}`);
+      }
+      const target = String(args?.target ?? "");
+      const linkPath = String(args?.linkPath ?? "");
+      await fs.mkdir(path.dirname(linkPath), { recursive: true });
+      await fs.rm(linkPath, { recursive: true, force: true });
+
+      const resolvedTarget = path.resolve(path.dirname(linkPath), target);
+      const targetIsDir = await fs
+        .lstat(resolvedTarget)
+        .then((st) => st.isDirectory())
+        .catch(() => false);
+      const symlinkType =
+        targetIsDir && process.platform === "win32" ? "junction" : undefined;
+      const symlinkTarget = symlinkType === "junction" ? resolvedTarget : target;
+      await fs.symlink(symlinkTarget, linkPath, symlinkType);
+    },
+  };
+});
+
+import { __templateFetcherTestHooks } from "../../src/lib/template-fetcher.js";
+import { resolveLocalPath } from "../../src/lib/s3-sync.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -110,6 +183,91 @@ async function downloadTarball(
 }
 
 // ---------------------------------------------------------------------------
+// Minimal tar fixture builder for extraction-safety tests
+// ---------------------------------------------------------------------------
+
+type TarEntryInput =
+  | { name: string; content: string; mode?: number; linkname?: undefined }
+  | { name: string; content?: undefined; mode?: number; linkname: string }
+  | { name: string; content?: undefined; mode?: number; linkname?: undefined };
+
+function buildTarBuffer(entries: TarEntryInput[]): Uint8Array {
+  const blocks: Uint8Array[] = [];
+  const encoder = new TextEncoder();
+
+  const writeOctal = (value: number, width: number): Uint8Array =>
+    encoder.encode(value.toString(8).padStart(width - 1, "0") + "\0");
+
+  const writeHeader = (
+    entry: TarEntryInput,
+    size: number,
+    typeflag: "0" | "2" | "5",
+  ): Uint8Array => {
+    const header = new Uint8Array(512);
+    header.set(encoder.encode(entry.name.slice(0, 100)), 0);
+    header.set(writeOctal(entry.mode ?? (typeflag === "5" ? 0o755 : 0o644), 8), 100);
+    header.set(writeOctal(0, 8), 108);
+    header.set(writeOctal(0, 8), 116);
+    header.set(writeOctal(size, 12), 124);
+    header.set(writeOctal(Math.floor(Date.now() / 1000), 12), 136);
+    header[156] = typeflag.charCodeAt(0);
+
+    if ("linkname" in entry && entry.linkname !== undefined) {
+      header.set(encoder.encode(entry.linkname.slice(0, 100)), 157);
+    }
+
+    header.set(encoder.encode("ustar\0"), 257);
+    header.set(encoder.encode("00"), 263);
+
+    let checksum = 0;
+    for (let i = 0; i < 512; i++) {
+      checksum += i >= 148 && i < 156 ? 32 : header[i];
+    }
+    header.set(encoder.encode(checksum.toString(8).padStart(6, "0") + "\0 "), 148);
+    return header;
+  };
+
+  for (const entry of entries) {
+    if ("linkname" in entry && entry.linkname !== undefined) {
+      blocks.push(writeHeader(entry, 0, "2"));
+      continue;
+    }
+
+    if (entry.name.endsWith("/")) {
+      blocks.push(writeHeader(entry, 0, "5"));
+      continue;
+    }
+
+    const data = encoder.encode(entry.content ?? "");
+    blocks.push(writeHeader(entry, data.length, "0"));
+    const paddedSize = Math.ceil(data.length / 512) * 512;
+    const paddedData = new Uint8Array(paddedSize);
+    paddedData.set(data, 0);
+    blocks.push(paddedData);
+  }
+
+  blocks.push(new Uint8Array(512));
+  blocks.push(new Uint8Array(512));
+
+  const total = blocks.reduce((n, block) => n + block.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const block of blocks) {
+    out.set(block, offset);
+    offset += block.length;
+  }
+  return out;
+}
+
+function buildGitHubTarGz(entries: TarEntryInput[]): Uint8Array {
+  const prefixed = entries.map((entry) => ({
+    ...entry,
+    name: `indigoai-us-hq-core-abc123/${entry.name}`,
+  }));
+  return gzipSync(buildTarBuffer(prefixed));
+}
+
+// ---------------------------------------------------------------------------
 // Path A — canonical: extract using system `tar`
 // ---------------------------------------------------------------------------
 
@@ -132,179 +290,24 @@ async function extractWithSystemTar(
 }
 
 // ---------------------------------------------------------------------------
-// Path B — installer: replicate the pure-TS tar parser from template-fetcher.ts
-//
-// This is an intentional copy of the production parser. If the two diverge,
-// the unit tests for template-fetcher.ts will catch it first; this test catches
-// drift at the directory-tree level (new files, corrupt content, etc.).
+// Path B — installer: drive the real template-fetcher extraction seam
 // ---------------------------------------------------------------------------
-
-interface TarEntry {
-  name: string;
-  typeflag: string;
-  size: number;
-  data: Uint8Array;
-}
-
-function parseTar(buf: Uint8Array): TarEntry[] {
-  const entries: TarEntry[] = [];
-  let pos = 0;
-
-  const readString = (start: number, len: number): string => {
-    let end = start;
-    while (end < start + len && buf[end] !== 0) end++;
-    return new TextDecoder().decode(buf.slice(start, end));
-  };
-
-  const readOctal = (start: number, len: number): number => {
-    const str = readString(start, len).trim();
-    return str ? parseInt(str, 8) : 0;
-  };
-
-  let pendingLongName: string | null = null;
-
-  while (pos + 512 <= buf.length) {
-    let allZero = true;
-    for (let i = 0; i < 512; i++) {
-      if (buf[pos + i] !== 0) {
-        allZero = false;
-        break;
-      }
-    }
-    if (allZero) break;
-
-    const headerStart = pos;
-    const name = readString(headerStart, 100);
-    const size = readOctal(headerStart + 124, 12);
-    const typeflag = String.fromCharCode(buf[headerStart + 156]);
-
-    // GNU long-name extension: type 'L' = long filename, 'K' = long link name
-    if (typeflag === "L" || typeflag === "K") {
-      pos += 512;
-      const nameBytes = buf.slice(pos, pos + size);
-      pendingLongName = new TextDecoder()
-        .decode(nameBytes)
-        .replace(/\0/g, "");
-      pos += Math.ceil(size / 512) * 512;
-      continue;
-    }
-
-    // PAX extended headers: 'g' = global (skip), 'x' = local (parse path)
-    if (typeflag === "g") {
-      pos += 512;
-      pos += Math.ceil(size / 512) * 512;
-      continue;
-    }
-    if (typeflag === "x") {
-      pos += 512;
-      const paxData = new TextDecoder().decode(buf.slice(pos, pos + size));
-      pos += Math.ceil(size / 512) * 512;
-      const pathMatch = paxData.match(/\d+ path=([^\n]+)/);
-      if (pathMatch) {
-        pendingLongName = pathMatch[1];
-      }
-      continue;
-    }
-
-    pos += 512;
-
-    // USTAR prefix field (bytes 345–499): combine with name when no GNU/PAX
-    // long-name override is pending and the tar uses the USTAR split.
-    const magic = readString(headerStart + 257, 6);
-    const usesUstar = magic.startsWith("ustar");
-    const ustarPrefix = usesUstar ? readString(headerStart + 345, 155) : "";
-    const baseName = ustarPrefix ? `${ustarPrefix}/${name}` : name;
-
-    const actualName = pendingLongName ?? baseName;
-    pendingLongName = null;
-
-    const dataBlocks = Math.ceil(size / 512) * 512;
-    const data = buf.slice(pos, pos + size);
-    pos += dataBlocks;
-
-    if (actualName) {
-      entries.push({ name: actualName, typeflag, size, data });
-    }
-  }
-
-  return entries;
-}
-
-function stripTopLevelDir(entryName: string): string {
-  const slash = entryName.indexOf("/");
-  if (slash === -1) return entryName;
-  return entryName.slice(slash + 1);
-}
-
-function safeJoin(targetDir: string, relative: string): string | null {
-  const segments = relative.split("/");
-  const safe: string[] = [];
-  for (const seg of segments) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") return null;
-    safe.push(seg);
-  }
-  if (safe.length === 0) return null;
-  return `${targetDir}/${safe.join("/")}`;
-}
 
 async function extractWithInstallerLogic(
   compressedBytes: Uint8Array,
   targetDir: string,
 ): Promise<void> {
-  let tarBytes: Uint8Array;
-  try {
-    tarBytes = gunzipSync(compressedBytes);
-  } catch (err) {
-    throw new Error(`Failed to decompress tarball: ${String(err)}`);
-  }
-
-  const entries = parseTar(tarBytes);
-
-  for (const entry of entries) {
-    const relative = stripTopLevelDir(entry.name);
-    if (!relative || relative === "./" || relative.endsWith("/")) {
-      if (relative && relative !== "./") {
-        const dirPath = safeJoin(targetDir, relative.replace(/\/+$/, ""));
-        if (!dirPath) continue;
-        await mkdir(dirPath, { recursive: true });
-      }
-      continue;
-    }
-
-    const isDir = entry.typeflag === "5";
-    if (isDir) {
-      const dirPath = safeJoin(targetDir, relative);
-      if (!dirPath) continue;
-      await mkdir(dirPath, { recursive: true });
-      continue;
-    }
-
-    const filePath = safeJoin(targetDir, relative);
-    if (!filePath) continue;
-
-    const lastSlash = filePath.lastIndexOf("/");
-    if (lastSlash > 0) {
-      const parentDir = filePath.slice(0, lastSlash);
-      await mkdir(parentDir, { recursive: true });
-    }
-
-    await writeFile(filePath, entry.data);
-  }
+  await __templateFetcherTestHooks.extractTarball(compressedBytes, targetDir);
 }
 
 // ---------------------------------------------------------------------------
 // File tree walker
 // ---------------------------------------------------------------------------
 
-// Walk dir and return a map of relativePath -> SHA-256 content hash.
-//
-// NOTE: executable bits are intentionally NOT included in the fingerprint.
-// Tauri plugin-fs writeFile does not expose a mode parameter, so the
-// installer always creates files with the platform default umask. Executable
-// scripts in the HQ template will lose their +x bit after installer
-// extraction — this is a known, accepted difference tracked in
-// allowed-diffs.json under "knownLimitations".
+// Walk dir and return a map of relativePath -> metadata/content fingerprint.
+// Files include mode bits and SHA-256 content hashes. Symlinks include their
+// literal link target. This keeps the regression harness aligned with the
+// installer, which now preserves executable bits and creates symlinks.
 async function buildFileTree(
   dir: string,
   base: string = dir,
@@ -316,14 +319,17 @@ async function buildFileTree(
     for (const entry of entries) {
       const fullPath = join(current, entry.name);
       const relPath = fullPath.slice(base.length + 1); // strip leading dir
-      if (entry.isDirectory()) {
+      if (entry.isSymbolicLink()) {
+        const target = await readlink(fullPath);
+        tree.set(relPath, `symlink:${target}`);
+      } else if (entry.isDirectory()) {
         await walk(fullPath);
       } else if (entry.isFile()) {
         const content = await readFile(fullPath);
         const hash = createHash("sha256").update(content).digest("hex");
-        tree.set(relPath, hash);
+        const mode = (await lstat(fullPath)).mode & 0o777;
+        tree.set(relPath, `file:${mode.toString(8).padStart(4, "0")}:${hash}`);
       }
-      // Symlinks: skip — git archive rarely emits them in template content
     }
   }
 
@@ -401,7 +407,7 @@ function isAllowedDiff(relPath: string): boolean {
 // ---------------------------------------------------------------------------
 
 interface DiffEntry {
-  type: "only-in-canonical" | "only-in-installer" | "content-mismatch";
+  type: "only-in-canonical" | "only-in-installer" | "metadata-mismatch";
   path: string;
   canonical?: string;
   installer?: string;
@@ -420,7 +426,7 @@ function computeDiff(
       diffs.push({ type: "only-in-canonical", path: relPath, canonical: hash });
     } else if (installer.get(relPath) !== hash) {
       diffs.push({
-        type: "content-mismatch",
+        type: "metadata-mismatch",
         path: relPath,
         canonical: hash,
         installer: installer.get(relPath),
@@ -447,12 +453,77 @@ function formatDiffReport(diffs: DiffEntry[]): string {
           return `  MISSING_IN_INSTALLER  ${d.path}`;
         case "only-in-installer":
           return `  EXTRA_IN_INSTALLER    ${d.path}`;
-        case "content-mismatch":
-          return `  CONTENT_MISMATCH      ${d.path}\n    canonical: ${d.canonical}\n    installer: ${d.installer}`;
+        case "metadata-mismatch":
+          return `  METADATA_MISMATCH     ${d.path}\n    canonical: ${d.canonical}\n    installer: ${d.installer}`;
       }
     })
     .join("\n");
 }
+
+describe("extraction path safety guards", () => {
+  let tmpDir: string;
+  let targetDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "hq-extract-safety-"));
+    targetDir = join(tmpDir, "target");
+    await mkdir(targetDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (tmpDir) {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects Windows backslash traversal and drive-prefixed archive paths", async () => {
+    const tarball = buildGitHubTarGz([
+      { name: "safe.txt", content: "safe", mode: 0o755 },
+      { name: "..\\outside.txt", content: "blocked" },
+      { name: "C:\\Users\\alice\\evil.txt", content: "blocked" },
+      { name: "nested/..\\evil.txt", content: "blocked" },
+    ]);
+
+    await extractWithInstallerLogic(tarball, targetDir);
+
+    const tree = await buildFileTree(targetDir);
+    expect([...tree.keys()]).toEqual(["safe.txt"]);
+    expect(tree.get("safe.txt")).toMatch(/^file:0755:/);
+  });
+
+  it("does not create escaping symlink targets or write through created symlink parents", async () => {
+    const outsideDir = join(tmpDir, "outside");
+    await mkdir(outsideDir, { recursive: true });
+
+    const tarball = buildGitHubTarGz([
+      { name: "escape", linkname: "../outside" },
+      { name: "escape/payload.txt", content: "outside write must not happen" },
+      { name: "safe-link", linkname: "." },
+      { name: "safe-link/blocked.txt", content: "must not write through link" },
+    ]);
+
+    await extractWithInstallerLogic(tarball, targetDir);
+
+    await expect(readFile(join(outsideDir, "payload.txt"))).rejects.toThrow();
+    await expect(readFile(join(targetDir, "blocked.txt"))).rejects.toThrow();
+    await expect(readFile(join(targetDir, "safe-link", "blocked.txt"))).rejects.toThrow();
+    expect((await lstat(join(targetDir, "safe-link"))).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe("S3 local path safety guards", () => {
+  it("rejects Windows traversal, drive prefixes, and mixed separators", () => {
+    for (const key of [
+      "..\\outside.txt",
+      "C:\\Users\\alice\\evil.txt",
+      "nested/..\\evil.txt",
+    ]) {
+      expect(
+        resolveLocalPath("C:\\Users\\alice\\hq", key, "companies/indigo"),
+      ).toBeNull();
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Test suite

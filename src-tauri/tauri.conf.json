@@ -87,7 +87,7 @@
       ]
     },
     "fs": {
-      "requireLiteralLeadingDot": false
+      "requireLiteralLeadingDot": true
     }
   }
 }

@@ -36,6 +36,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
 #[cfg(windows)]
 use super::deps::extended_search_path;
@@ -148,10 +150,36 @@ fn assign_process_to_job(job: HANDLE, process: HANDLE) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn terminate_job(job: HANDLE) {
-    unsafe {
-        TerminateJobObject(job, 1);
+fn terminate_job(job: HANDLE) -> Result<(), String> {
+    let result = unsafe { TerminateJobObject(job, 1) };
+    if result == 0 {
+        return Err(format!(
+            "TerminateJobObject failed: error code {}",
+            std::io::Error::last_os_error()
+        ));
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) -> Result<(), String> {
+    let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if process.is_null() {
+        return Err(format!(
+            "OpenProcess({pid}) failed: error code {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let result = unsafe { TerminateProcess(process, 1) };
+    let err = std::io::Error::last_os_error();
+    unsafe {
+        CloseHandle(process);
+    }
+    if result == 0 {
+        return Err(format!("TerminateProcess({pid}) failed: error code {err}"));
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,6 +289,22 @@ fn mark_cancelled(handle: &str) -> bool {
     }
 }
 
+struct ProcessRegistrationGuard<'a> {
+    handle: &'a str,
+}
+
+impl Drop for ProcessRegistrationGuard<'_> {
+    fn drop(&mut self) {
+        deregister_process(self.handle);
+    }
+}
+
+impl<'a> ProcessRegistrationGuard<'a> {
+    fn new(handle: &'a str) -> Self {
+        Self { handle }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Event enum (testable without Tauri)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,6 +356,8 @@ pub fn run_process_impl<F>(
 where
     F: FnMut(ProcessEvent),
 {
+    let _registration_guard = ProcessRegistrationGuard::new(handle);
+
     // Resolve the cmd via the caller-supplied search path. `which_in` accepts
     // an absolute path too and returns it unchanged, so this is a no-op when
     // the caller passes a full path.
@@ -523,6 +569,8 @@ pub fn run_process_impl<F>(
 where
     F: FnMut(ProcessEvent),
 {
+    let _registration_guard = ProcessRegistrationGuard::new(handle);
+
     let cwd_for_which: PathBuf = spawn
         .cwd
         .as_ref()
@@ -597,6 +645,18 @@ where
         eprintln!("[hq-process] WARN: AssignProcessToJobObject failed for handle={handle}: {e}");
     } else {
         register_job(handle, job.clone());
+        if is_cancelled(handle) {
+            if let Err(e) = terminate_job(job.0) {
+                eprintln!(
+                    "[hq-process] WARN: cancel after job registration failed for handle={handle}: {e}"
+                );
+                if let Err(fallback) = terminate_process(pid) {
+                    eprintln!(
+                        "[hq-process] WARN: fallback TerminateProcess failed for handle={handle}, pid={pid}: {fallback}"
+                    );
+                }
+            }
+        }
     }
 
     let stdout = child.stdout.take().expect("stdout pipe");
@@ -755,12 +815,29 @@ pub fn cancel_process_impl(handle: &str, _sigkill_delay: Duration) -> bool {
         return false;
     }
 
-    if lookup_pid(handle).is_none() {
-        return true;
+    let pid = match lookup_pid(handle) {
+        Some(pid) => pid,
+        None => return true,
+    };
+
+    let mut terminated = false;
+    if let Some(job) = lookup_job(handle) {
+        match terminate_job(job.0) {
+            Ok(()) => terminated = true,
+            Err(e) => {
+                eprintln!(
+                    "[hq-process] WARN: TerminateJobObject failed for handle={handle}, pid={pid}: {e}"
+                );
+            }
+        }
     }
 
-    if let Some(job) = lookup_job(handle) {
-        terminate_job(job.0);
+    if !terminated {
+        if let Err(e) = terminate_process(pid) {
+            eprintln!(
+                "[hq-process] WARN: TerminateProcess fallback failed for handle={handle}, pid={pid}: {e}"
+            );
+        }
     }
 
     true
@@ -838,7 +915,8 @@ fn spawn_process_shared(app: AppHandle, args: SpawnArgs) -> Result<String, Strin
             }
         });
 
-        if let Err(_e) = result {
+        if let Err(e) = result {
+            eprintln!("[hq-process] process failed for handle={handle_bg}: {e}");
             // `run_process_impl` already deregistered; emit error exit.
             let _ = app.emit(
                 &format!("process://{}/exit", handle_bg),
@@ -898,6 +976,117 @@ pub fn cancel_process(handle: String) -> bool {
     #[cfg(windows)]
     {
         cancel_process_windows(handle)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    const TEST_SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+    #[test]
+    fn spawn_failure_deregisters_pre_registered_handle() {
+        let tmp = TempDir::new().unwrap();
+        let bad_cwd = tmp.path().join("not-a-dir");
+        fs::write(&bad_cwd, b"not a directory").unwrap();
+
+        let handle = format!("test-{}", Uuid::new_v4());
+        pre_register_handle(&handle);
+
+        let args = SpawnArgs {
+            cmd: "echo".into(),
+            args: vec!["hello".into()],
+            cwd: Some(bad_cwd.to_string_lossy().into_owned()),
+            env: None,
+        };
+
+        let err = run_process_impl(&handle, &args, TEST_SYSTEM_PATH, |_| {})
+            .expect_err("spawn should fail when cwd is not a directory");
+        assert!(err.contains("spawn 'echo'"), "unexpected error: {err}");
+        assert!(
+            !is_registered(&handle),
+            "pre-registered handle should be removed on spawn failure"
+        );
+    }
+
+    #[test]
+    fn cancel_process_terminates_unix_process_group() {
+        let tmp = TempDir::new().unwrap();
+        let pidfile = tmp.path().join("child.pid");
+        let script = tmp.path().join("spawn-child.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nsleep 30 &\necho $! > '{}'\nwait\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let handle = format!("test-pgid-{}", Uuid::new_v4());
+        let thread_handle = handle.clone();
+        let args = SpawnArgs {
+            cmd: script.to_string_lossy().into_owned(),
+            args: vec![],
+            cwd: None,
+            env: None,
+        };
+
+        let runner = thread::spawn(move || {
+            let _ = run_process_impl(&thread_handle, &args, TEST_SYSTEM_PATH, |_| {});
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !pidfile.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "child pidfile was not written before timeout"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            lookup_pid(&handle).is_some(),
+            "shell process should be registered before cancellation"
+        );
+        let child_pid: i32 = fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+
+        assert!(cancel_process_impl(&handle, Duration::from_millis(250)));
+        runner.join().expect("runner should not panic");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let alive = Command::new("kill")
+                .args(["-0", &child_pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = Command::new("kill")
+                    .args(["-TERM", &child_pid.to_string()])
+                    .stderr(Stdio::null())
+                    .status();
+                panic!("child process {child_pid} survived process-group cancellation");
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 

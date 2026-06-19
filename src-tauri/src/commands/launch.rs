@@ -6,13 +6,49 @@
 //! connect their HQ folder via the app's "Connect Folder" UI.
 
 #[cfg(windows)]
-use std::path::PathBuf;
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
+#[cfg(windows)]
+use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(windows)]
+use std::ptr;
 
 #[cfg(windows)]
 use winreg::enums::*;
 #[cfg(windows)]
 use winreg::RegKey;
+
+#[cfg(windows)]
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+#[cfg(windows)]
+const SW_SHOWNORMAL: i32 = 1;
+#[cfg(windows)]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(windows)]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+#[cfg(windows)]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: isize,
+        lpOperation: *const u16,
+        lpFile: *const u16,
+        lpParameters: *const u16,
+        lpDirectory: *const u16,
+        nShowCmd: i32,
+    ) -> isize;
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn MoveFileExW(lpExistingFileName: *const u16, lpNewFileName: *const u16, dwFlags: u32) -> i32;
+}
 
 /// PowerShell single-quote escaping: ' → ''. Apply BEFORE wrapping the
 /// resulting string in single quotes when handing a literal string to
@@ -21,6 +57,155 @@ use winreg::RegKey;
 #[cfg(windows)]
 fn powershell_single_quote_escape(s: &str) -> String {
     s.replace('\'', "''")
+}
+
+#[cfg(windows)]
+fn os_str_to_wide_null(value: &OsStr) -> Vec<u16> {
+    value.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn str_to_wide_null(value: &str) -> Vec<u16> {
+    os_str_to_wide_null(OsStr::new(value))
+}
+
+#[cfg(windows)]
+fn path_to_wide_null(value: &Path) -> Vec<u16> {
+    os_str_to_wide_null(value.as_os_str())
+}
+
+#[cfg(windows)]
+fn shell_execute_open_wide(file: &[u16], label: &str) -> Result<(), String> {
+    let operation = str_to_wide_null("open");
+    let result = unsafe {
+        ShellExecuteW(
+            0,
+            operation.as_ptr(),
+            file.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result <= 32 {
+        return Err(format!("ShellExecuteW failed for {label} (code {result})"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn shell_execute_open_str(target: &str, label: &str) -> Result<(), String> {
+    let file = str_to_wide_null(target);
+    shell_execute_open_wide(&file, label)
+}
+
+#[cfg(windows)]
+fn shell_execute_open_path(target: &Path) -> Result<(), String> {
+    let file = path_to_wide_null(target);
+    shell_execute_open_wide(&file, &target.display().to_string())
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, dest: &Path) -> Result<(), String> {
+    let source_wide = path_to_wide_null(source);
+    let dest_wide = path_to_wide_null(dest);
+    let ok = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            dest_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "replace {} with {}: {}",
+            dest.display(),
+            source.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+fn is_hex_digit(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
+fn is_allowed_claude_url_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'-' | b'.'
+                | b'_'
+                | b'~'
+                | b':'
+                | b'/'
+                | b'?'
+                | b'#'
+                | b'['
+                | b']'
+                | b'@'
+                | b'!'
+                | b'$'
+                | b'&'
+                | b'('
+                | b')'
+                | b'*'
+                | b'+'
+                | b','
+                | b';'
+                | b'='
+        )
+}
+
+fn validate_claude_deep_link(url: &str) -> Result<(), String> {
+    if !url.starts_with("claude://") {
+        return Err(format!("refusing to open non-claude scheme: {}", url));
+    }
+    if url.len() == "claude://".len() {
+        return Err("refusing to open empty claude:// URL".to_string());
+    }
+
+    let bytes = url.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if !(0x21..=0x7e).contains(&byte) {
+            return Err(format!(
+                "refusing to open claude:// URL with whitespace/control byte at offset {i}"
+            ));
+        }
+        match byte {
+            b'"' | b'\'' | b'`' | b'<' | b'>' | b'\\' | b'|' => {
+                return Err(format!(
+                    "refusing to open claude:// URL with disallowed character {:?}",
+                    byte as char
+                ));
+            }
+            b'%' => {
+                if i + 2 >= bytes.len()
+                    || !is_hex_digit(bytes[i + 1])
+                    || !is_hex_digit(bytes[i + 2])
+                {
+                    return Err(
+                        "refusing to open claude:// URL with malformed percent escape".to_string(),
+                    );
+                }
+                i += 3;
+                continue;
+            }
+            _ if is_allowed_claude_url_byte(byte) => {}
+            _ => {
+                return Err(format!(
+                    "refusing to open claude:// URL with disallowed character {:?}",
+                    byte as char
+                ));
+            }
+        }
+        i += 1;
+    }
+
+    Ok(())
 }
 
 /// Open macOS Terminal, cd into `path`, and auto-run `claude`.
@@ -80,63 +265,43 @@ end tell"#,
 /// or stripped enterprise images), falls back to a plain PowerShell window
 /// via `powershell -NoExit -Command "cd '<path>'; claude"`.
 ///
-/// We invoke through `cmd /c start ""` rather than spawning the terminal
-/// directly: `start` returns immediately without waiting for the spawned
-/// process, which means the wizard's "Launch Claude Code" button doesn't
-/// hang while the user works in the new terminal.
+/// The terminal process is spawned directly with a new console. User paths are
+/// never routed through `cmd.exe`, so shell metacharacters in the install path
+/// cannot become a second command.
 #[cfg(windows)]
 #[tauri::command]
 pub fn launch_claude_code(path: String) -> Result<(), String> {
     let escaped = powershell_single_quote_escape(&path);
 
-    // First try wt.exe. The `start` shim returns 0 even if the target
-    // can't be found (start is async by design), so we explicitly check
-    // for wt.exe's presence first.
-    let wt_present = which::which("wt").is_ok() || which::which("wt.exe").is_ok();
-
-    let status = if wt_present {
+    if let Ok(wt_path) = which::which("wt.exe").or_else(|_| which::which("wt")) {
         // wt.exe -d '<path>' powershell -NoExit -Command claude
         // The -d flag tells Windows Terminal to cd into the directory
         // before running the command — equivalent to mac's `osascript`
         // do-script "cd <path> && claude" combo.
-        Command::new("cmd")
+        Command::new(wt_path)
             .args([
-                "/c",
-                "start",
-                "",
-                "wt.exe",
                 "-d",
                 &path,
-                "powershell",
+                "powershell.exe",
+                "-NoProfile",
                 "-NoExit",
                 "-Command",
                 "claude",
             ])
-            .status()
-            .map_err(|e| format!("Failed to spawn wt.exe via cmd: {e}"))?
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to spawn Windows Terminal: {e}"))?;
     } else {
         // Plain PowerShell fallback.
-        // cd '<escaped>'; claude   — inside double quotes for cmd /c start.
-        let ps_cmd = format!("cd '{escaped}'; claude");
-        Command::new("cmd")
-            .args([
-                "/c",
-                "start",
-                "",
-                "powershell",
-                "-NoExit",
-                "-Command",
-                &ps_cmd,
-            ])
-            .status()
-            .map_err(|e| format!("Failed to spawn PowerShell via cmd: {e}"))?
-    };
-
-    if !status.success() {
-        return Err(format!(
-            "Terminal launch failed (exit {})",
-            status.code().unwrap_or(-1)
-        ));
+        // Set-Location -LiteralPath '<escaped>'; claude
+        let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; claude");
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-NoExit", "-Command", &ps_cmd])
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to spawn PowerShell: {e}"))?;
     }
     Ok(())
 }
@@ -264,8 +429,7 @@ fn claude_desktop_candidates() -> Vec<PathBuf> {
 /// link when Claude isn't installed yet — avoids the jarring `open -a Claude`
 /// "Unable to find application" error mid-flow.
 #[cfg(not(windows))]
-#[tauri::command]
-pub fn claude_desktop_installed() -> bool {
+pub fn is_claude_desktop_installed() -> bool {
     let system_path = std::path::PathBuf::from("/Applications/Claude.app");
     if system_path.exists() {
         return true;
@@ -279,17 +443,28 @@ pub fn claude_desktop_installed() -> bool {
     false
 }
 
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn claude_desktop_installed() -> bool {
+    is_claude_desktop_installed()
+}
+
 /// Returns true when Claude Desktop is installed. Source of truth is
 /// the `claude://` protocol handler registration (works for Squirrel,
 /// MSIX, custom). Falls back to known install-path probing if the
 /// registry says nothing.
 #[cfg(windows)]
-#[tauri::command]
-pub fn claude_desktop_installed() -> bool {
+pub fn is_claude_desktop_installed() -> bool {
     if claude_desktop_path_from_registry().is_some() {
         return true;
     }
     claude_desktop_candidates().iter().any(|p| p.exists())
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn claude_desktop_installed() -> bool {
+    is_claude_desktop_installed()
 }
 
 /// Forward a `claude://…` deep link to macOS `open`.
@@ -303,9 +478,7 @@ pub fn claude_desktop_installed() -> bool {
 #[cfg(not(windows))]
 #[tauri::command]
 pub fn open_claude_code_link(url: String) -> Result<(), String> {
-    if !url.starts_with("claude://") {
-        return Err(format!("refusing to open non-claude scheme: {}", url));
-    }
+    validate_claude_deep_link(&url)?;
 
     let output = Command::new("open")
         .arg(&url)
@@ -330,29 +503,15 @@ pub fn open_claude_code_link(url: String) -> Result<(), String> {
 
 /// Forward a `claude://...` deep link to the Windows protocol handler.
 ///
-/// `cmd /c start "" "<url>"` — start uses ShellExecute under the hood,
-/// which dispatches the custom scheme to whatever's registered under
-/// HKCU\Software\Classes\claude (Claude Desktop's installer registers
-/// itself there at install time).
+/// Uses ShellExecuteW directly, which dispatches the custom scheme to
+/// whatever is registered under HKCU\Software\Classes\claude (Claude
+/// Desktop's installer registers itself there at install time). The URL is
+/// validated first and is never passed through `cmd.exe`.
 #[cfg(windows)]
 #[tauri::command]
 pub fn open_claude_code_link(url: String) -> Result<(), String> {
-    if !url.starts_with("claude://") {
-        return Err(format!("refusing to open non-claude scheme: {}", url));
-    }
-
-    let status = Command::new("cmd")
-        .args(["/c", "start", "", &url])
-        .status()
-        .map_err(|e| format!("Failed to spawn cmd /c start: {e}"))?;
-
-    if !status.success() {
-        return Err(format!(
-            "ShellExecute for {url} failed (exit {})",
-            status.code().unwrap_or(-1)
-        ));
-    }
-    Ok(())
+    validate_claude_deep_link(&url)?;
+    shell_execute_open_str(&url, "claude:// URL")
 }
 
 /// Launch the Claude Desktop macOS app via `open -a Claude`.
@@ -384,8 +543,7 @@ pub fn launch_claude_desktop() -> Result<(), String> {
     Ok(())
 }
 
-/// Launch the Claude Desktop Windows app via `cmd /c start "" <path>`,
-/// which hands off to ShellExecute and returns immediately.
+/// Launch the Claude Desktop Windows app through ShellExecuteW.
 ///
 /// Prefers the registry-resolved `claude://` handler exe (any install
 /// flavor — Squirrel, MSIX, custom). Falls back to the hard-coded
@@ -402,20 +560,7 @@ pub fn launch_claude_desktop() -> Result<(), String> {
                 .to_string()
         })?;
 
-    let target_str = target.to_string_lossy().to_string();
-
-    let status = Command::new("cmd")
-        .args(["/c", "start", "", &target_str])
-        .status()
-        .map_err(|e| format!("Failed to spawn cmd /c start: {e}"))?;
-
-    if !status.success() {
-        return Err(format!(
-            "ShellExecute via `start` failed (exit {})",
-            status.code().unwrap_or(-1)
-        ));
-    }
-    Ok(())
+    shell_execute_open_path(&target)
 }
 
 /// Add `hq_path` to Claude Desktop's
@@ -489,14 +634,59 @@ pub fn add_claude_trusted_folder(hq_path: String) -> Result<(), String> {
         arr.push(serde_json::Value::String(hq_path.clone()));
     }
 
-    // Atomic write: serialize → temp file → rename. matches the rest of
-    // the wizard's file-write style (see fs.rs, menubar.rs).
+    // Atomic write: serialize -> temp file -> replace existing config. Windows
+    // `std::fs::rename` cannot overwrite an existing destination, so use the
+    // Win32 replace-capable move while keeping the temp file in the same dir.
     let tmp_path = config_path.with_extension("json.tmp");
     let serialized = serde_json::to_string_pretty(&root).map_err(|e| format!("serialize: {e}"))?;
     std::fs::write(&tmp_path, serialized).map_err(|e| format!("write tmp: {e}"))?;
-    std::fs::rename(&tmp_path, &config_path).map_err(|e| format!("rename: {e}"))?;
+    replace_file(&tmp_path, &config_path)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod url_validation_tests {
+    use super::*;
+
+    #[test]
+    fn claude_deep_link_validator_accepts_query_ampersands_and_percent_encoding() {
+        validate_claude_deep_link(
+            "claude://open?source=hq-installer&folder=C%3A%5CUsers%5Calice%5Chq",
+        )
+        .expect("valid claude URL should pass");
+    }
+
+    #[test]
+    fn claude_deep_link_validator_rejects_non_claude_scheme() {
+        let err = validate_claude_deep_link("https://example.com").unwrap_err();
+        assert!(err.contains("non-claude scheme"));
+    }
+
+    #[test]
+    fn claude_deep_link_validator_rejects_cmd_metacharacters_and_quotes() {
+        for url in [
+            "claude://open|calc",
+            "claude://open with space",
+            "claude://open\"quoted",
+            "claude://open'quoted",
+        ] {
+            assert!(
+                validate_claude_deep_link(url).is_err(),
+                "{url} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_deep_link_validator_rejects_malformed_percent_escape() {
+        for url in ["claude://open%", "claude://open%2", "claude://open%ZZ"] {
+            assert!(
+                validate_claude_deep_link(url).is_err(),
+                "{url} should be rejected"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -525,6 +715,20 @@ mod tests {
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(err.contains("refusing to open non-claude scheme"));
+    }
+
+    #[test]
+    fn replace_file_overwrites_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("claude_desktop_config.json.tmp");
+        let dest = dir.path().join("claude_desktop_config.json");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&dest, "old").unwrap();
+
+        replace_file(&source, &dest).expect("replace should succeed");
+
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "new");
+        assert!(!source.exists());
     }
 
     #[test]
