@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(windows))]
+use std::time::Instant;
 
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -2404,7 +2406,7 @@ fn decode_registry_string(raw: &RegValue, name: &str) -> Result<String, String> 
             raw.vtype
         ));
     }
-    if raw.bytes.len() % 2 != 0 {
+    if !raw.bytes.len().is_multiple_of(2) {
         return Err(format!(
             "HKCU\\Environment\\{name} has invalid UTF-16 byte length {}",
             raw.bytes.len()
@@ -2816,13 +2818,11 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        if is_cancelled(&handle_id) {
-            if !cancel_signal_sent {
-                if let Err(e) = terminate_process_tree(&handle_id) {
-                    record_kill_error(&handle_id, e);
-                }
-                cancel_signal_sent = true;
+        if is_cancelled(&handle_id) && !cancel_signal_sent {
+            if let Err(e) = terminate_process_tree(&handle_id) {
+                record_kill_error(&handle_id, e);
             }
+            cancel_signal_sent = true;
         }
 
         if status.is_none() {
@@ -3566,7 +3566,7 @@ fn write_rsync_shim() -> Result<(), String> {
 
 #[cfg(windows)]
 fn write_rsync_shim_in(bin_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(&bin_dir).map_err(|e| format!("mkdir {bin_dir:?}: {e}"))?;
+    std::fs::create_dir_all(bin_dir).map_err(|e| format!("mkdir {bin_dir:?}: {e}"))?;
 
     let cmd_path = bin_dir.join("rsync.cmd");
     let ps1_path = bin_dir.join("rsync.ps1");
@@ -3619,7 +3619,7 @@ fn write_shasum_shim() -> Result<(), String> {
 
 #[cfg(windows)]
 fn write_shasum_shim_in(bin_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(&bin_dir).map_err(|e| format!("mkdir {bin_dir:?}: {e}"))?;
+    std::fs::create_dir_all(bin_dir).map_err(|e| format!("mkdir {bin_dir:?}: {e}"))?;
 
     let shim_path = bin_dir.join("shasum");
     let shim_body = "#!/usr/bin/env bash\n\
@@ -3699,7 +3699,7 @@ fn patch_hq_cli_pack_install_rsync_at(target: &Path) -> Result<(), String> {
         return Err(format!("pack-install.js not found at {target:?}"));
     }
 
-    let content = std::fs::read_to_string(&target).map_err(|e| format!("read {target:?}: {e}"))?;
+    let content = std::fs::read_to_string(target).map_err(|e| format!("read {target:?}: {e}"))?;
 
     const MARKER: &str = "/* hq-installer: rsync -> fs.cpSync patch applied */";
     if content.contains(MARKER) {
@@ -3740,7 +3740,7 @@ fn patch_hq_cli_pack_install_rsync_at(target: &Path) -> Result<(), String> {
             .to_string());
     }
 
-    std::fs::write(&target, patched).map_err(|e| format!("write {target:?}: {e}"))?;
+    std::fs::write(target, patched).map_err(|e| format!("write {target:?}: {e}"))?;
     Ok(())
 }
 
