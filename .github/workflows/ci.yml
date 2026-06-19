@@ -134,7 +134,7 @@ jobs:
         working-directory: src-tauri
 
   frontend-windows:
-    name: Frontend (typecheck + lint + test)
+    name: Frontend (typecheck + lint + test) — Windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +151,7 @@ jobs:
       - run: pnpm test
 
   rust-windows:
-    name: Rust (fmt + check + clippy + test)
+    name: Rust (fmt + check + clippy + test) — Windows
     runs-on: windows-latest
     needs: [frontend-windows]
     steps:
