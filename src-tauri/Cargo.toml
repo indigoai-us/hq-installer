@@ -1,6 +1,6 @@
 [package]
 name = "hq-installer"
-version = "0.8.1"
+version = "0.9.0"
 description = "HQ native installer"
 authors = []
 edition = "2021"
