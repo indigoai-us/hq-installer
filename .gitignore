@@ -31,3 +31,4 @@ playwright-report/
 # Local builds (produced by scripts/build-local.sh for VM testing)
 dist-local/
 .vercel
+.claude/scheduled_tasks.lock

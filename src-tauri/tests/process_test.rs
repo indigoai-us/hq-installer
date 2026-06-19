@@ -1,3 +1,6 @@
+// Exercises the Unix process path (pgid, SIGTERM/SIGKILL, os::unix perms); the
+// Windows process impl uses Job Objects and is covered separately. Skip on Windows.
+#![cfg(unix)]
 //! Acceptance tests for US-007: process.rs — streamed subprocess with cancellation.
 
 #[cfg(test)]

@@ -96,3 +96,47 @@ pub fn keychain_get(service: String, account: String) -> Result<Option<String>, 
 pub fn keychain_delete(service: String, account: String) -> Result<(), String> {
     keychain_delete_impl(&service, &account)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Windows smoke tests — exercise the real Credential Manager backend
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These are full round-trip tests that hit the OS keystore. They're gated
+// to Windows + serial execution because Credential Manager state is process-
+// global and concurrent test runs will collide.
+
+#[cfg(all(test, windows))]
+mod windows_smoke {
+    use super::*;
+    use uuid::Uuid;
+
+    /// PRD US-005 acceptance: store + retrieve + delete a token via Windows
+    /// Credential Manager and verify it round-trips.
+    #[test]
+    fn round_trip_set_get_delete_windows_credential_manager() {
+        let service = format!("test-cognito-{}", Uuid::new_v4());
+        let account = "test-user@indigo.ai";
+        let secret = "fake-cognito-id-token-abc123";
+
+        // Store.
+        keychain_set_impl(&service, account, secret).expect("set should succeed");
+
+        // Retrieve.
+        let retrieved = keychain_get_impl(&service, account).expect("get should succeed");
+        assert_eq!(
+            retrieved.as_deref(),
+            Some(secret),
+            "stored secret should round-trip"
+        );
+
+        // Delete.
+        keychain_delete_impl(&service, account).expect("delete should succeed");
+
+        // Verify gone.
+        let after = keychain_get_impl(&service, account).expect("get-after-delete OK");
+        assert!(after.is_none(), "secret should be gone after delete");
+
+        // Delete again — must be idempotent.
+        keychain_delete_impl(&service, account).expect("second delete should succeed (idempotent)");
+    }
+}

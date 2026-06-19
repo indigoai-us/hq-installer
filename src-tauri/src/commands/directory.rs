@@ -23,17 +23,28 @@ use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
 
+fn home_base() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        std::env::var("HOME").ok().map(PathBuf::from)
+    }
+    #[cfg(windows)]
+    {
+        dirs::home_dir()
+    }
+}
+
 /// Expand a leading `~/` or bare `~` into `$HOME`. Falls back to the literal
 /// string if `$HOME` is not set, which on macOS effectively never happens.
 fn expand_tilde(s: &str) -> PathBuf {
     if s == "~" {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home);
+        if let Some(home) = home_base() {
+            return home;
         }
     }
     if let Some(rest) = s.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
+        if let Some(home) = home_base() {
+            return home.join(rest);
         }
     }
     PathBuf::from(s)
@@ -181,6 +192,10 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+    // The tests below mutate the process-global `HOME` env var; serialize them so
+    // parallel test threads don't race on it (Rust runs tests multi-threaded).
+    #[cfg(unix)]
+    use serial_test::serial;
 
     #[test]
     fn detect_hq_missing_path_returns_exists_false() {
@@ -217,11 +232,22 @@ mod tests {
         assert!(r.is_hq);
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial]
     fn expand_tilde_handles_prefix() {
         std::env::set_var("HOME", "/Users/test");
         assert_eq!(expand_tilde("~/hq"), PathBuf::from("/Users/test/hq"));
         assert_eq!(expand_tilde("~"), PathBuf::from("/Users/test"));
+        assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_tilde_handles_prefix_windows() {
+        let home = dirs::home_dir().expect("home dir resolvable in test env");
+        assert_eq!(expand_tilde("~/hq"), home.join("hq"));
+        assert_eq!(expand_tilde("~"), home);
         assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
     }
 
@@ -274,7 +300,9 @@ mod tests {
         assert!(err.contains("does not exist"));
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial]
     fn resolve_hq_path_creates_directory_and_returns_absolute_path() {
         let tmp = tempdir().unwrap();
         std::env::set_var("HOME", tmp.path().as_os_str());
@@ -288,7 +316,9 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial]
     fn resolve_hq_path_is_idempotent_when_directory_already_exists() {
         let tmp = tempdir().unwrap();
         std::env::set_var("HOME", tmp.path().as_os_str());
@@ -299,7 +329,9 @@ mod tests {
         assert!(result.is_ok(), "should not error if ~/hq already exists");
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial]
     fn resolve_hq_path_auto_grafts_existing_hq_tree() {
         let tmp = tempdir().unwrap();
         std::env::set_var("HOME", tmp.path().as_os_str());

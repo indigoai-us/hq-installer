@@ -2,6 +2,19 @@ import { render, screen } from "@testing-library/react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { WizardShell } from "../WizardShell.js";
 
+// CustomTitlebar (rendered inside WizardShell) calls getCurrentWindow() from
+// the Tauri window API once it detects a Tauri environment. Stub it so the
+// Tauri-env render path doesn't throw on the unmocked native binding.
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isMaximized: vi.fn().mockResolvedValue(false),
+    onResized: vi.fn().mockResolvedValue(() => {}),
+    minimize: vi.fn().mockResolvedValue(undefined),
+    toggleMaximize: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
 // ---------------------------------------------------------------------------
 // WizardShell component tests — US-005 5-step contract
 //
@@ -61,15 +74,22 @@ describe("WizardShell", () => {
       expect(hasBannerRole || hasTitlebarTestId).toBe(true);
     });
 
-    it("ONLY the dedicated titlebar strip has data-tauri-drag-region (main container does NOT)", () => {
+    it("data-tauri-drag-region is confined to the titlebar strip (main container does NOT carry it)", () => {
       const { container } = render(
         <WizardShell currentStep={1}>
           <div>content</div>
         </WizardShell>,
       );
-      // There must be exactly one element with data-tauri-drag-region
+      // The CustomTitlebar may mark several sub-regions draggable on Windows.
+      // The invariant is that EVERY draggable element lives inside the
+      // titlebar banner, and nothing in the body/main area is draggable.
+      const titlebar = container.querySelector('[data-testid="titlebar"]');
+      expect(titlebar).not.toBeNull();
       const dragEls = container.querySelectorAll("[data-tauri-drag-region]");
-      expect(dragEls.length).toBe(1);
+      expect(dragEls.length).toBeGreaterThanOrEqual(1);
+      for (const el of dragEls) {
+        expect(el === titlebar || titlebar!.contains(el)).toBe(true);
+      }
     });
 
     it("main container / overlay panel does NOT have data-tauri-drag-region", () => {
