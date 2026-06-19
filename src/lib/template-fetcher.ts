@@ -40,15 +40,16 @@ const PROGRESS_THROTTLE_MS = 16;
  * Override for the source the template is fetched from.
  *
  * Default callers leave this `undefined` and pick up `indigoai-us/hq-core`
- * via the latest stable release (with branch-HEAD fallback). When the
- * App-menu "Use Staging Channel" toggle is enabled, `07-template.tsx`
+ * via the latest stable release. When the
+ * App-menu "Use Staging Channel" toggle is enabled, `06-directory.tsx`
  * passes `{ repo: "indigoai-us/hq-core-staging", ref: "main" }` so the
  * fetcher pulls staging's `main` branch directly via `/tarball/main`,
  * bypassing the release lookup entirely.
  *
  * When `ref` is set, the release/HEAD-fallback path is skipped and the
- * returned `version` is the ref itself ("main"). When `ref` is omitted,
- * the existing latest-release-then-HEAD dance runs against `repo`.
+ * returned `version` is the ref itself ("main"). Production builds only
+ * accept mutable refs for the explicit staging source; default production
+ * installs require an immutable GitHub release.
  */
 export interface TemplateSource {
   /** GitHub `owner/repo` slug. Default: `indigoai-us/hq-core`. */
@@ -63,6 +64,12 @@ export interface TemplateSource {
    * persists it.
    */
   authToken?: string;
+  /**
+   * Explicit opt-in for mutable branch/ref tarballs outside the staging source.
+   * Intended for dev/test builds only; production release tarballs should be
+   * immutable GitHub releases.
+   */
+  allowMutableRef?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,33 +443,135 @@ function parseTar(buf: Uint8Array): TarEntry[] {
  *   indigoai-us-hq-core-abc123/README.md       →  "README.md"          (keep)
  *   indigoai-us-hq-core-abc123/                →  null (the wrapper itself)
  */
+function firstPathSeparatorIndex(path: string): number {
+  const slash = path.indexOf("/");
+  const backslash = path.indexOf("\\");
+  if (slash === -1) return backslash;
+  if (backslash === -1) return slash;
+  return Math.min(slash, backslash);
+}
+
 function mapEntryToTemplatePath(entryName: string): string | null {
-  const firstSlash = entryName.indexOf("/");
-  if (firstSlash === -1) return null; // top-level dir entry with no inner path
-  const afterRoot = entryName.slice(firstSlash + 1);
+  const firstSeparator = firstPathSeparatorIndex(entryName);
+  if (firstSeparator === -1) return null; // top-level dir entry with no inner path
+  const afterRoot = entryName.slice(firstSeparator + 1);
   if (!afterRoot) return null;
   return afterRoot;
 }
 
 /**
  * Resolve an untrusted relative path against targetDir, guarding against
- * path-traversal attacks (e.g. entries containing "..").
+ * path-traversal attacks (e.g. entries containing ".." or Windows "\").
  * Returns null if the resolved path would escape targetDir.
  */
 function safeJoin(targetDir: string, relative: string): string | null {
-  // Normalise the relative portion by collapsing any ".." segments
-  const segments = relative.split("/");
+  const safeRelative = normalizeSafeRelativePath(relative);
+  if (!safeRelative) return null;
+
+  const root = normalizeTrustedPath(targetDir);
+  if (!root) return null;
+
+  const trimmedRoot = targetDir.replace(/[\\/]+$/, "");
+  const joined = normalizeTrustedPath(`${trimmedRoot || targetDir}/${safeRelative}`);
+  if (!joined || !isPathWithinRoot(joined, root)) return null;
+
+  return joined;
+}
+
+function normalizeSafeRelativePath(relative: string): string | null {
+  if (!relative || relative.includes("\0")) return null;
+  if (hasUnsafePathPrefix(relative) || relative.includes(":")) return null;
+
   const safe: string[] = [];
-  for (const seg of segments) {
+  for (const seg of relative.replace(/\\/g, "/").split("/")) {
     if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      // Attempted traversal — reject the whole entry
-      return null;
-    }
+    if (seg === "..") return null;
     safe.push(seg);
   }
-  if (safe.length === 0) return null;
-  return `${targetDir}/${safe.join("/")}`;
+
+  return safe.length > 0 ? safe.join("/") : null;
+}
+
+function hasUnsafePathPrefix(path: string): boolean {
+  return (
+    path.startsWith("/") ||
+    path.startsWith("\\") ||
+    path.startsWith("//") ||
+    path.startsWith("\\\\") ||
+    /^[A-Za-z]:/.test(path)
+  );
+}
+
+function normalizeTrustedPath(path: string): string | null {
+  if (!path || path.includes("\0")) return null;
+
+  const normalized = path.replace(/\\/g, "/");
+  const driveMatch = normalized.match(/^([A-Za-z]:)\/?/);
+  let prefix = "";
+  let rest = normalized;
+
+  if (driveMatch) {
+    prefix = driveMatch[1].toUpperCase();
+    rest = normalized.slice(driveMatch[0].length);
+  } else if (normalized.startsWith("//")) {
+    prefix = "//";
+    rest = normalized.replace(/^\/+/, "");
+  } else if (normalized.startsWith("/")) {
+    prefix = "/";
+    rest = normalized.replace(/^\/+/, "");
+  }
+
+  const parts: string[] = [];
+  for (const seg of rest.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else {
+      parts.push(seg);
+    }
+  }
+
+  if (prefix === "/") return parts.length > 0 ? `/${parts.join("/")}` : "/";
+  if (prefix === "//") return `//${parts.join("/")}`;
+  if (prefix) return parts.length > 0 ? `${prefix}/${parts.join("/")}` : `${prefix}/`;
+  return parts.join("/");
+}
+
+function isPathWithinRoot(path: string, root: string): boolean {
+  const caseInsensitive = /^[A-Za-z]:\//.test(root) || root.startsWith("//");
+  const candidate = caseInsensitive ? path.toLowerCase() : path;
+  const base = caseInsensitive ? root.toLowerCase() : root;
+
+  if (base.endsWith("/")) return candidate.startsWith(base);
+  return candidate === base || candidate.startsWith(`${base}/`);
+}
+
+function isSafeSymlinkTarget(linkRelative: string, linkTarget: string): boolean {
+  if (!linkTarget || linkTarget.includes("\0")) return false;
+  if (hasUnsafePathPrefix(linkTarget) || linkTarget.includes(":")) return false;
+
+  const stack = linkRelative.split("/").slice(0, -1);
+  for (const seg of linkTarget.replace(/\\/g, "/").split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (stack.length === 0) return false;
+      stack.pop();
+    } else {
+      stack.push(seg);
+    }
+  }
+
+  return true;
+}
+
+function isUnderKnownSymlink(relative: string, symlinkRelatives: Set<string>): boolean {
+  for (const linkRelative of symlinkRelatives) {
+    if (relative === linkRelative || relative.startsWith(`${linkRelative}/`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function extractTarball(
@@ -487,16 +596,31 @@ async function extractTarball(
   // 3. Write each entry via Tauri plugin-fs. hq-core is a standalone template
   //    repo, so we strip only the tarball wrapper (indigoai-us-hq-core-<sha>/)
   //    and extract everything inside it.
+  const symlinkRelatives = new Set<string>();
   for (const entry of entries) {
     const relative = mapEntryToTemplatePath(entry.name);
     if (relative === null) continue; // tarball wrapper — drop
-    const trimmed = relative.replace(/\/+$/, "");
+    const trimmed = relative.replace(/[\\/]+$/, "");
     if (!trimmed || trimmed === ".") continue;
 
-    const isDir = entry.typeflag === "5" || entry.name.endsWith("/");
+    const normalizedRelative = normalizeSafeRelativePath(trimmed);
+    if (!normalizedRelative) {
+      console.warn(`Skipping unsafe template archive path: ${relative}`);
+      continue;
+    }
+
+    const isDir = entry.typeflag === "5" || /[\\/]$/.test(entry.name);
     const isSymlink = entry.typeflag === "2";
-    const destPath = safeJoin(targetDir, trimmed);
-    if (!destPath) continue; // path traversal attempt — skip
+    const destPath = safeJoin(targetDir, normalizedRelative);
+    if (!destPath) {
+      console.warn(`Skipping template archive path outside install root: ${relative}`);
+      continue;
+    }
+
+    if (isUnderKnownSymlink(normalizedRelative, symlinkRelatives)) {
+      console.warn(`Skipping template archive entry through symlink parent: ${relative}`);
+      continue;
+    }
 
     if (isDir) {
       await mkdir(destPath, { recursive: true });
@@ -507,19 +631,27 @@ async function extractTarball(
       // Symlinks have size=0 and no data block — the link target is in the
       // tar header's `linkname` field (extracted by parseTar). Route to the
       // Rust `create_symlink` command since Tauri's plugin-fs doesn't expose
-      // `symlink` from JS. We do NOT validate the target string here — POSIX
-      // symlinks can point at relative paths, absolute paths, or non-existent
-      // files, and the template legitimately uses all three (`AGENTS.md →
-      // .claude/CLAUDE.md`, `.codex/output-style.md → ../.claude/...`).
+      // `symlink` from JS. The target is untrusted archive metadata: reject
+      // absolute/drive/UNC targets and any relative target that lexically
+      // escapes the install root from the link's parent directory.
       if (!entry.linkname) {
         // Defensive: a typeflag-2 entry without a linkname is malformed.
         // Skip rather than create a broken empty symlink.
+        console.warn(`Skipping malformed template symlink without target: ${relative}`);
+        continue;
+      }
+      if (!isSafeSymlinkTarget(normalizedRelative, entry.linkname)) {
+        console.warn(
+          `Skipping unsafe template symlink target for ${relative}: ${entry.linkname}`,
+        );
         continue;
       }
       await invoke("create_symlink", {
         target: entry.linkname,
         linkPath: destPath,
+        root: targetDir,
       });
+      symlinkRelatives.add(normalizedRelative);
       continue;
     }
 
@@ -537,6 +669,22 @@ async function extractTarball(
   }
 }
 
+export const __templateFetcherTestHooks = {
+  extractTarball,
+};
+
+function mutableTemplateRefsAllowed(source?: TemplateSource): boolean {
+  return (
+    source?.allowMutableRef === true ||
+    import.meta.env.DEV === true ||
+    import.meta.env.VITE_HQ_ALLOW_MUTABLE_TEMPLATE_SOURCE === "true"
+  );
+}
+
+function isStagingRef(repo: string, source?: TemplateSource): boolean {
+  return Boolean(source?.ref) && repo === "indigoai-us/hq-core-staging";
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -547,8 +695,9 @@ async function extractTarball(
  * Strategy (mirrors `packages/create-hq/src/fetch-template.ts`):
  *
  *   1. If `source.ref` is given → force `/tarball/{ref}` against `source.repo`
- *      and skip the release lookup entirely. This is the path the "Use
- *      Staging Channel" App-menu toggle takes (repo=hq-core-staging, ref=main).
+ *      and skip the release lookup entirely. Production only allows this for
+ *      the explicit staging source; dev/test builds may opt into other mutable
+ *      refs via `allowMutableRef` or `VITE_HQ_ALLOW_MUTABLE_TEMPLATE_SOURCE`.
  *      `version` is the ref itself.
  *   2. Else if `tag` is given → fetch the tagged release. No fallback: the
  *      caller asked for a specific version, so "release not found" is a real
@@ -556,12 +705,14 @@ async function extractTarball(
  *   3. Else → try the latest stable release of `source.repo` (default
  *      `indigoai-us/hq-core`).
  *      - If one exists, use its `tarball_url`.
- *      - If the repo has no stable release yet, fall back to the branch
- *        snapshot endpoint (`/tarball/HEAD`). This is what `gh api
- *        repos/.../tarball/HEAD` does under the hood, and it's how create-hq
- *        kept working during periods where `indigoai-us/hq-core` had no releases.
+ *      - If the repo has no stable release yet, dev/test builds may fall back
+ *        to `/tarball/HEAD`; production fails closed instead of installing an
+ *        unpinned branch snapshot.
  *
  * Extraction strips only the GitHub tarball wrapper — see `mapEntryToTemplatePath`.
+ *
+ * TODO: verify release tarball signatures and commit pins once the release
+ * pipeline publishes a signed manifest and installer-trusted release keys.
  *
  * @param targetDir - Absolute path where the template should be extracted
  * @param tag - Optional: pin to a specific release tag. Ignored when `source.ref` is set.
@@ -590,8 +741,15 @@ export async function fetchAndExtract(
   let tarballUrl: string;
 
   if (source?.ref) {
-    // Forced ref — bypass releases entirely. Used by the staging toggle to
-    // pin to `main` HEAD of hq-core-staging without needing a published release.
+    // Forced mutable refs are only allowed for the explicit staging source or
+    // dev/test overrides. Production default installs must resolve to a
+    // release tarball instead of a branch HEAD.
+    if (!isStagingRef(repo, source) && !mutableTemplateRefsAllowed(source)) {
+      throw new TemplateFetchError(
+        "Mutable template refs are disabled for production installs",
+        false,
+      );
+    }
     version = source.ref;
     tarballUrl = branchTarballUrl(repo, source.ref);
   } else if (tag) {
@@ -604,9 +762,14 @@ export async function fetchAndExtract(
       version = release.tag_name;
       tarballUrl = release.tarball_url;
     } else {
-      // No published releases yet — fall back to branch snapshot.
-      // We don't know a version in this case; "HEAD" is honest about it
-      // and mirrors what `create-hq` returns when it hits the same path.
+      if (!mutableTemplateRefsAllowed(source)) {
+        throw new TemplateFetchError(
+          "No stable hq-core release found; production HEAD fallback is disabled",
+          false,
+        );
+      }
+      // Dev/test escape hatch only. We don't know a version in this case;
+      // "HEAD" is honest about it and mirrors create-hq's historical fallback.
       version = "HEAD";
       tarballUrl = branchTarballUrl(repo, "HEAD");
     }

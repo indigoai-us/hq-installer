@@ -1,3 +1,4 @@
+pub mod ai_tools;
 pub mod deps;
 pub mod directory;
 pub mod fs;
@@ -9,3 +10,8 @@ pub mod menubar;
 pub mod oauth;
 pub mod process;
 pub mod staging;
+
+#[cfg(windows)]
+pub mod checksums;
+#[cfg(windows)]
+pub mod long_paths;

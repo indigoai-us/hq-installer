@@ -1,3 +1,6 @@
+// These exercise macOS/Unix-only deps internals (Homebrew, shell-profile PATH,
+// managed toolchain) that are `#[cfg(not(windows))]`; skip the whole crate on Windows.
+#![cfg(unix)]
 //! Acceptance tests for US-003: Rust deps.rs probe and install commands.
 //!
 //! Tests use `check_dep_in` (a thin wrapper around the public `check_dep`

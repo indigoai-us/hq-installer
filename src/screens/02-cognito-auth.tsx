@@ -13,7 +13,7 @@
 //   6. Store tokens in the macOS keychain via the existing helpers.
 //   7. Advance the wizard.
 
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openInBrowser } from "@tauri-apps/plugin-shell";
 import { getUserFromTokens, storeTokens } from "@/lib/cognito";
@@ -48,6 +48,19 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
   // ref to swallow that stale rejection so it doesn't overwrite the new
   // attempt's loading/error state.
   const currentCallRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      currentCallRef.current += 1;
+    };
+  }, []);
+
+  function isCurrentCall(call: number): boolean {
+    return mountedRef.current && call === currentCallRef.current;
+  }
 
   async function handleSignIn(provider: SignInProvider) {
     const myCall = ++currentCallRef.current;
@@ -75,15 +88,15 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       await openInBrowser(authorizeUrl);
 
       const { code } = await listenerPromise;
-      if (myCall !== currentCallRef.current) return;
+      if (!isCurrentCall(myCall)) return;
       const tokens = await exchangeCodeForTokens({
         config,
         code,
         verifier: pkce.verifier,
       });
-      if (myCall !== currentCallRef.current) return;
+      if (!isCurrentCall(myCall)) return;
       await storeTokens(tokens);
-      if (myCall !== currentCallRef.current) return;
+      if (!isCurrentCall(myCall)) return;
       // Pre-populate wizard state with the Cognito email so Step 10 (Summary)
       // can display it even if the user skips git-init or doesn't change the email.
       // Best-effort — a decode failure must never block sign-in advancement.
@@ -95,7 +108,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       } catch (err) {
         console.warn("[oauth] could not decode idToken for wizard pre-fill:", err);
       }
-      if (myCall !== currentCallRef.current) return;
+      if (!isCurrentCall(myCall)) return;
       // Fire-and-forget: postOptIn handles retries + local cache internally.
       // We do not await it so the wizard advances without blocking on network.
       postOptIn({
@@ -106,7 +119,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
     } catch (err) {
       // Swallow errors that belong to a superseded attempt — the fresh call
       // owns the UI now.
-      if (myCall !== currentCallRef.current) return;
+      if (!isCurrentCall(myCall)) return;
       const msg =
         err instanceof Error
           ? err.message
@@ -117,7 +130,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
       console.error("[oauth] sign-in failed:", err);
       setError(msg || "Sign-in failed");
     } finally {
-      if (myCall === currentCallRef.current) setLoadingProvider(null);
+      if (isCurrentCall(myCall)) setLoadingProvider(null);
     }
   }
 
@@ -143,7 +156,7 @@ export function CognitoAuth({ onNext }: CognitoAuthScreenProps) {
             key={provider.key}
             type="button"
             onClick={() => handleSignIn(provider.key)}
-            disabled={loadingProvider !== null}
+            disabled={loadingProvider !== null && loadingProvider !== provider.key}
             className="flex items-center justify-center gap-3 rounded-full py-2.5 text-sm font-medium bg-white text-black hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
           >
             {provider.key === "Google" ? <GoogleGlyph /> : <MicrosoftGlyph />}

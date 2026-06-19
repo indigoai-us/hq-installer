@@ -1,1 +1,18 @@
-pnpm exec lint-staged && pnpm lint && pnpm typecheck && pnpm test && ( cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test )
+# Pre-commit gate — runs the full quality bar before any commit lands.
+#
+# Husky executes hooks via sh on all platforms (Git Bash's sh.exe on
+# Windows), so POSIX-style chaining works here. We split into one command
+# per line so a failure pinpoints the failing gate without parsing a
+# multi-stage `&&` chain. `set -e` ensures any non-zero exit aborts.
+
+set -e
+
+pnpm exec lint-staged
+pnpm lint
+pnpm typecheck
+pnpm test
+
+cd src-tauri
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test

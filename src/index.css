@@ -213,3 +213,28 @@ body {
     color: inherit;
   }
 }
+
+/* Zinc-themed scrollbars (WebKit + Firefox). WebView2 defaults to Edge's
+ * light chunky bars, which clash with the dark UI. Applied globally so
+ * nested scrollers (log panels, install cards) match the shell. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(161, 161, 170, 0.35) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.35);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(212, 212, 216, 0.55);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

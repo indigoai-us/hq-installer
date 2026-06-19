@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -223,6 +223,52 @@ describe("CognitoAuth screen — provider OAuth", () => {
     });
     expect(onNext).not.toHaveBeenCalled();
     expect(mockStoreTokens).not.toHaveBeenCalled();
+  });
+
+  it("keeps the active provider button enabled as a retry/reopen action", async () => {
+    const user = userEvent.setup();
+    mockInvoke.mockReturnValue(new Promise(() => {}));
+
+    render(<CognitoAuth onNext={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    const google = screen.getByRole("button", {
+      name: /reopen google sign-in/i,
+    }) as HTMLButtonElement;
+    const microsoft = screen.getByRole("button", {
+      name: /continue with microsoft/i,
+    }) as HTMLButtonElement;
+    expect(google.disabled).toBe(false);
+    expect(microsoft.disabled).toBe(true);
+
+    await user.click(google);
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a pending OAuth callback after unmount", async () => {
+    const user = userEvent.setup();
+    const onNext = vi.fn();
+    let resolveListener: ((value: { code: string }) => void) | null = null;
+    mockInvoke.mockReturnValue(
+      new Promise((resolve) => {
+        resolveListener = resolve;
+      }),
+    );
+    mockExchange.mockResolvedValue(FAKE_TOKENS);
+
+    const rendered = render(<CognitoAuth onNext={onNext} />);
+    await user.click(screen.getByRole("button", { name: /continue with google/i }));
+    rendered.unmount();
+
+    await act(async () => {
+      resolveListener?.({ code: "late-code" });
+      await Promise.resolve();
+    });
+
+    expect(mockExchange).not.toHaveBeenCalled();
+    expect(mockStoreTokens).not.toHaveBeenCalled();
+    expect(onNext).not.toHaveBeenCalled();
   });
 
   it("renders an error when the token exchange fails", async () => {

@@ -10,8 +10,10 @@
 // ignore/exclusion rules, and the sync journal. Re-implementing that in TS
 // would inevitably drift from the canonical Rust/Node implementation.
 //
-// Auth: the runner reads ~/.hq/cognito-tokens.json itself (the installer writes
-// that file at sign-in), so there is no token to pass here.
+// Auth: the refresh token stays in the OS keychain. The accessToken parameter
+// is used for installer-side provisioning, and cognito.ts maintains an
+// access-token-only ~/.hq/cognito-tokens.json handoff for the sync runner until
+// the runner can read the keychain directly.
 //
 // Prerequisite: the personal vault bucket MUST be provisioned first — the
 // runner errors (422) if it's missing. Callers run ensurePersonProvisioned()

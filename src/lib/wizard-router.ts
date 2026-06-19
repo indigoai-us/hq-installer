@@ -26,11 +26,22 @@ export const WIZARD_STEPS: WizardStep[] = [
   { index: 5, id: "done", label: "Done" },
 ];
 
+const SETUP_STEP_INDEX = 4;
+const completedSteps = new Set<number>();
+
+export function markSetupStepCompleted(): void {
+  completedSteps.add(SETUP_STEP_INDEX);
+}
+
+export function __resetWizardRouterCompletionForTests(): void {
+  completedSteps.clear();
+}
+
 /** Step indices (1-based) where back navigation is blocked.
  *  Step 4 (Setup) is the first screen past Cognito auth — crossing it
  *  backwards would drop the user behind the auth gate and surface a re-login
  *  prompt they've already handled. */
-export const AUTH_GATED_STEPS: number[] = [4];
+export const AUTH_GATED_STEPS: number[] = [SETUP_STEP_INDEX];
 
 /**
  * Per-step "is the user allowed to advance" check.
@@ -89,6 +100,10 @@ export function createWizardRouter(): WizardRouter {
     return AUTH_GATED_STEPS.includes(step);
   }
 
+  function isCompletedGate(step: number): boolean {
+    return step === SETUP_STEP_INDEX && completedSteps.has(SETUP_STEP_INDEX);
+  }
+
   const router: WizardRouter = {
     get currentStep() {
       return current;
@@ -115,7 +130,7 @@ export function createWizardRouter(): WizardRouter {
     },
 
     goTo(step: number) {
-      if (step >= 1 && step <= TOTAL_STEPS) {
+      if (step >= 1 && step <= TOTAL_STEPS && !isCompletedGate(step)) {
         current = step;
       }
     },
@@ -123,6 +138,7 @@ export function createWizardRouter(): WizardRouter {
     canNavigateTo(target: number) {
       if (target < 1 || target > TOTAL_STEPS) return false;
       if (target === current) return false;
+      if (isCompletedGate(target)) return false;
       // Block backward navigation that would cross an auth-gated step.
       // An auth gate at step G means: once on or past G, you cannot return
       // to anything before G. Equivalent rule for sidebar jumps: target is

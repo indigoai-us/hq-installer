@@ -1,0 +1,38 @@
+# Cargo config — Windows MSVC toolchain
+#
+# Lets `cargo build` / `cargo check` work from a plain PowerShell session
+# (no Developer PowerShell for VS 2022 required) by pointing cargo at the
+# MSVC linker explicitly.
+#
+# If your Visual Studio install is under a different edition (Community,
+# Professional, Enterprise) or version, update the `linker` path below.
+# Default path here assumes "VS 2022 Build Tools" installed to its default
+# location and the x64 MSVC toolset version 14.40.x.
+
+[target.x86_64-pc-windows-msvc]
+# Defer linker discovery to cargo's default `link.exe` lookup. The Rust MSVC
+# toolchain knows how to find `link.exe` via the registry / VSWhere when
+# Visual Studio Build Tools 2022 is installed, so we don't need to hard-code
+# a path here. Hard-coding tends to bit-rot across MSVC toolset version bumps
+# (14.40, 14.41, ...) and across Community/Professional/Enterprise/BuildTools
+# editions.
+#
+# If `cargo check` fails to find `link.exe` from a plain PowerShell, the
+# fallback is to open "Developer PowerShell for VS 2022" once and re-run.
+# That's the documented escape hatch in docs/dev-setup-windows.md.
+rustflags = []
+
+[target.aarch64-pc-windows-msvc]
+rustflags = []
+
+[build]
+# Default target is the host triple; the rustup override in `src-tauri/`
+# pins this to x86_64-pc-windows-msvc on ARM64 hosts so day-to-day cargo
+# invocations from src-tauri/ build x64 binaries. To build ARM64 binaries
+# explicitly, pass `--target aarch64-pc-windows-msvc`.
+
+[net]
+# Slightly higher retry tolerance for crates.io fetches over corporate /
+# flaky networks. Harmless on a fast home connection.
+retry = 3
+git-fetch-with-cli = true

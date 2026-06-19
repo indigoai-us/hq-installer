@@ -9,6 +9,7 @@ import {
 
 const IMPORTS_DIR = "workspace/imports";
 const BREADCRUMB_PATH = `${IMPORTS_DIR}/.installer-import.json`;
+export const IMPORT_PROCESS_EXIT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface ImportSpawnResult {
   ok: boolean;
@@ -156,50 +157,92 @@ async function defaultSpawn(
     return { ok: false, stderr: [getErrorMessage(err)] };
   }
 
-  try {
-    const stdoutLines: string[] = [];
-    const stderrLines: string[] = [];
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
+  let stdoutUnlisten: (() => void) | null = null;
+  let stderrUnlisten: (() => void) | null = null;
+  let exitUnlisten: (() => void) | null = null;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let settled = false;
+  let resolveExit: ((value: ImportSpawnResult) => void) | null = null;
+  const exitResult = new Promise<ImportSpawnResult>((resolve) => {
+    resolveExit = resolve;
+  });
 
-    const stdoutUnlisten = await listen(
+  const cleanup = () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    stdoutUnlisten?.();
+    stdoutUnlisten = null;
+    stderrUnlisten?.();
+    stderrUnlisten = null;
+    exitUnlisten?.();
+    exitUnlisten = null;
+  };
+
+  const finish = (value: ImportSpawnResult) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolveExit?.(value);
+  };
+
+  try {
+    timeoutId = setTimeout(() => {
+      const msg = `${cmd} did not report completion within ${Math.round(
+        IMPORT_PROCESS_EXIT_TIMEOUT_MS / 1000,
+      )} seconds.`;
+      invoke("cancel_process", { handle }).catch((err) => {
+        console.warn(`[import-existing] could not cancel process ${handle}:`, err);
+      });
+      finish({
+        ok: false,
+        stdout: stdoutLines.join("\n"),
+        stderr: [...stderrLines, msg],
+      });
+    }, IMPORT_PROCESS_EXIT_TIMEOUT_MS);
+
+    stdoutUnlisten = await listen(
       `process://${handle}/stdout`,
       (event: { payload: unknown }) => {
         const payload = event.payload as { line?: string };
         stdoutLines.push(payload?.line ?? "");
       },
     );
-    const stderrUnlisten = await listen(
+    if (settled) return await exitResult;
+
+    stderrUnlisten = await listen(
       `process://${handle}/stderr`,
       (event: { payload: unknown }) => {
         const payload = event.payload as { line?: string };
         stderrLines.push(payload?.line ?? "");
       },
     );
+    if (settled) return await exitResult;
 
-    let resolveExit: ((value: ImportSpawnResult) => void) | null = null;
-    const exitResult = new Promise<ImportSpawnResult>((resolve) => {
-      resolveExit = resolve;
-    });
-
-    let exitUnlisten: (() => void) | null = null;
     exitUnlisten = await listen(
       `process://${handle}/exit`,
       (event: { payload: unknown }) => {
         const payload = event.payload as {
           success: boolean;
         };
-        (stdoutUnlisten as () => void)();
-        (stderrUnlisten as () => void)();
-        exitUnlisten?.();
-        resolveExit?.({
+        finish({
           ok: payload.success,
           stdout: stdoutLines.join("\n"),
           stderr: stderrLines,
         });
       },
     );
+    if (settled) return await exitResult;
 
     return await exitResult;
   } catch (err) {
+    cleanup();
+    invoke("cancel_process", { handle }).catch((cancelErr) => {
+      console.warn(`[import-existing] could not cancel process ${handle}:`, cancelErr);
+    });
     return { ok: false, stderr: [getErrorMessage(err)] };
   }
 }

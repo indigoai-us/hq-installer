@@ -53,9 +53,10 @@ export type SyncProgressCallback = (progress: SyncProgress) => void;
  *   the bucket's `knowledge/` would shadow the HQ's own top-level `knowledge/`.
  *
  * Returns null if the resolved path would escape `installPath` (e.g. because
- * the key contains `..` segments or starts with `/`). Callers should skip
- * those entries — a well-behaved bucket never produces them, so this is a
- * defense-in-depth guard against a compromised or buggy writer.
+ * the key contains `..` segments, starts with `/`, or uses Windows drive/UNC
+ * prefixes). Callers should skip those entries — a well-behaved bucket never
+ * produces them, so this is a defense-in-depth guard against a compromised or
+ * buggy writer.
  */
 export function resolveLocalPath(
   installPath: string,
@@ -71,22 +72,100 @@ export function resolveLocalPath(
 
   if (!stripped) return null;
 
-  // 2. Reject absolute paths or `..` segments. We split on `/` (S3 keys use
-  //    forward slash regardless of OS) and inspect each segment. A clean key
-  //    like `knowledge/interview.json` has no `.`, `..`, or empty segments.
-  const segments = stripped.split("/");
-  for (const seg of segments) {
-    if (seg === "" || seg === "." || seg === "..") return null;
-  }
+  // 2. Treat both slash forms as path separators. S3 keys normally use `/`,
+  //    but a compromised writer can still upload names containing `\`, which
+  //    Windows resolves as traversal unless we reject it here.
+  const keyRelative = normalizeSafeRelativePath(stripped);
+  if (!keyRelative) return null;
+
+  if (destSubpath && /^[\\/]{2}/.test(destSubpath)) return null;
+  const cleanedDestSubpath = destSubpath?.replace(/^[\\/]+|[\\/]+$/g, "");
+  const destRelative = cleanedDestSubpath
+    ? normalizeSafeRelativePath(cleanedDestSubpath)
+    : null;
+  if (destSubpath && cleanedDestSubpath && !destRelative) return null;
 
   // 3. Join { installPath, destSubpath?, relativeKey } with single separators.
   //    Trim trailing slashes on installPath so we don't double-slash.
-  const trimmedBase = installPath.replace(/\/+$/, "");
-  const prefix = destSubpath
-    ? `${trimmedBase}/${destSubpath.replace(/^\/+|\/+$/g, "")}`
-    : trimmedBase;
+  const trimmedBase = installPath.replace(/[\\/]+$/, "");
+  const relativePath = destRelative
+    ? `${destRelative}/${keyRelative}`
+    : keyRelative;
+  const localPath = `${trimmedBase || installPath}/${relativePath}`;
 
-  return `${prefix}/${stripped}`;
+  const root = normalizeTrustedPath(installPath);
+  const resolved = normalizeTrustedPath(localPath);
+  if (!root || !resolved || !isPathWithinRoot(resolved, root)) return null;
+
+  return resolved;
+}
+
+function normalizeSafeRelativePath(relative: string): string | null {
+  if (!relative || relative.includes("\0")) return null;
+  if (hasUnsafePathPrefix(relative) || relative.includes(":")) return null;
+
+  const safe: string[] = [];
+  for (const seg of relative.replace(/\\/g, "/").split("/")) {
+    if (seg === "" || seg === "." || seg === "..") return null;
+    safe.push(seg);
+  }
+
+  return safe.length > 0 ? safe.join("/") : null;
+}
+
+function hasUnsafePathPrefix(path: string): boolean {
+  return (
+    path.startsWith("/") ||
+    path.startsWith("\\") ||
+    path.startsWith("//") ||
+    path.startsWith("\\\\") ||
+    /^[A-Za-z]:/.test(path)
+  );
+}
+
+function normalizeTrustedPath(path: string): string | null {
+  if (!path || path.includes("\0")) return null;
+
+  const normalized = path.replace(/\\/g, "/");
+  const driveMatch = normalized.match(/^([A-Za-z]:)\/?/);
+  let prefix = "";
+  let rest = normalized;
+
+  if (driveMatch) {
+    prefix = driveMatch[1].toUpperCase();
+    rest = normalized.slice(driveMatch[0].length);
+  } else if (normalized.startsWith("//")) {
+    prefix = "//";
+    rest = normalized.replace(/^\/+/, "");
+  } else if (normalized.startsWith("/")) {
+    prefix = "/";
+    rest = normalized.replace(/^\/+/, "");
+  }
+
+  const parts: string[] = [];
+  for (const seg of rest.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else {
+      parts.push(seg);
+    }
+  }
+
+  if (prefix === "/") return parts.length > 0 ? `/${parts.join("/")}` : "/";
+  if (prefix === "//") return `//${parts.join("/")}`;
+  if (prefix) return parts.length > 0 ? `${prefix}/${parts.join("/")}` : `${prefix}/`;
+  return parts.join("/");
+}
+
+function isPathWithinRoot(path: string, root: string): boolean {
+  const caseInsensitive = /^[A-Za-z]:\//.test(root) || root.startsWith("//");
+  const candidate = caseInsensitive ? path.toLowerCase() : path;
+  const base = caseInsensitive ? root.toLowerCase() : root;
+
+  if (base.endsWith("/")) return candidate.startsWith(base);
+  return candidate === base || candidate.startsWith(`${base}/`);
 }
 
 function getVaultApiUrl(): string {

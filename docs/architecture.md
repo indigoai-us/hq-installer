@@ -1,16 +1,31 @@
 # hq-installer Architecture
 
-Native macOS installer for HQ. Guided 5-step wizard built on Tauri 2 + React 19 + TypeScript.
+Native cross-platform installer for HQ (macOS + Windows). Guided 5-step wizard built on Tauri 2 + React 19 + TypeScript.
+
+## Platform support (macOS + Windows)
+
+The wizard flow is shared across platforms. Platform-specific behavior stays behind Rust `cfg` gates or runtime platform checks, with the OS integration differing only where the host requires it.
+
+| Area | macOS | Windows |
+|---|---|---|
+| Native build prerequisites | Xcode Command Line Tools via `xcode.rs` | Visual Studio Build Tools 2022 C++ workload, `longPathAware` app manifest, and elevated `enable_long_paths` registry support |
+| Secret storage | macOS Keychain via `keyring` | Windows Credential Manager (DPAPI) via the `keyring` `windows-native` feature |
+| Toolchain installs | Homebrew-backed installs | `winget` preferred, `scoop` fallback, and direct downloads into `%LOCALAPPDATA%\IndigoHQ\toolchain\` |
+| `qmd` | `brew install tobi/tap/qmd` | `npm install -g @tobilu/qmd@latest` |
+| `rsync` | System `rsync` | Portable cwRsync from `small-tech/portable-rsync-with-ssh-for-windows` in the managed toolchain bin |
+| Checksums | `compute-checksums.sh` shell script | Native Rust `commands::checksums::compute_checksums` to avoid shell spawn overhead |
+
+See also: [Windows dev setup](./dev-setup-windows.md), [Windows PATH management](./path-management-windows.md), [Windows code signing](./code-signing-windows.md), and [Windows auth smoke test](./smoke-windows-auth.md).
 
 ## Stack
 
 | Layer | Technology | Role |
 |---|---|---|
 | Frontend | React 19, TypeScript, Tailwind 4 | Wizard UI, auth, state |
-| Backend | Rust, Tauri 2 | OS integration (Keychain, git, processes, Xcode) |
+| Backend | Rust, Tauri 2 | OS integration (Keychain/Credential Manager, git, processes, platform toolchains) |
 | Auth | AWS Cognito (email/password + GitHub OAuth) | Identity, session tokens |
 | Build | Vite 6, pnpm | Dev server, bundling |
-| CI | GitHub Actions (macos-latest) | Type-check, lint, test, release |
+| CI | GitHub Actions (`macos-latest`, `windows-latest`) | Type-check, lint, test, macOS sign/notarize, Windows build/sign |
 | E2E | Playwright | Full 5-step walkthrough |
 
 ## Rust ↔ TypeScript Boundary

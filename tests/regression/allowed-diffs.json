@@ -16,10 +16,5 @@
     "**/target/**": "Rust build artefacts — not in the template tarball.",
     "**/.git/**": "Git internals — excluded from tree walks by default."
   },
-  "knownLimitations": [
-    {
-      "area": "executable bits",
-      "description": "File mode bits (+x) are not compared. Tauri's plugin-fs writeFile API does not accept a mode parameter, so the installer always creates files with the platform's default umask. Executable scripts in the HQ template will lose their +x bit after installer extraction. This is a known limitation — track separately if it becomes a user-visible issue."
-    }
-  ]
+  "knownLimitations": []
 }

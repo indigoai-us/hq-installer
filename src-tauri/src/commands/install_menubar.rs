@@ -15,17 +15,28 @@
 //! `MenubarInstallProgress` payload.  All error paths return `Err(String)`
 //! so the frontend can surface a readable message without crashing.
 
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(not(windows))]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+#[cfg(not(windows))]
+use tauri::Emitter;
+
+#[cfg(windows)]
+use winreg::enums::*;
+#[cfg(windows)]
+use winreg::RegKey;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Payload for `menubar-install://progress` events.
+#[cfg(not(windows))]
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MenubarInstallProgress {
@@ -42,8 +53,20 @@ pub struct MenubarInstallProgress {
 #[serde(rename_all = "camelCase")]
 pub struct MenubarInstallResult {
     pub success: bool,
+    pub skipped: bool,
+    pub reason: Option<String>,
     pub app_path: Option<String>,
     pub error: Option<String>,
+}
+
+/// Result of probing for an installed HQ Sync menubar app.
+#[cfg(windows)]
+#[derive(Debug, Serialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MenubarStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub exe_path: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,6 +75,7 @@ pub struct MenubarInstallResult {
 
 /// Emit a `menubar-install://progress` event.  Errors are silently dropped —
 /// a missing listener should never abort the install.
+#[cfg(not(windows))]
 fn emit_progress(app: &AppHandle, phase: &str, percent: u8, message: &str) {
     let _ = app.emit(
         "menubar-install://progress",
@@ -72,6 +96,7 @@ fn emit_progress(app: &AppHandle, phase: &str, percent: u8, message: &str) {
 /// of a clear "no release published / repo private" message. Instead we
 /// append the HTTP status as a sentinel line via `--write-out` and branch
 /// on it in `classify_release_response`.
+#[cfg(not(windows))]
 fn fetch_latest_dmg_url() -> Result<String, String> {
     let output = Command::new("curl")
         .args([
@@ -118,6 +143,7 @@ fn fetch_latest_dmg_url() -> Result<String, String> {
 ///
 /// Split out from `fetch_latest_dmg_url` so the branching logic is testable
 /// without making real network calls.
+#[cfg(not(windows))]
 fn classify_release_response(status_code: &str, body: &str) -> Result<String, String> {
     match status_code {
         "200" => parse_dmg_url_from_json(body),
@@ -163,6 +189,7 @@ fn classify_release_response(status_code: &str, body: &str) -> Result<String, St
 /// forward from a `.dmg`-named asset to the next `"browser_download_url"`
 /// correct and robust against the nested bloat that breaks any
 /// fixed-window heuristic.
+#[cfg(not(windows))]
 fn parse_dmg_url_from_json(json: &str) -> Result<String, String> {
     const URL_KEY: &str = "\"browser_download_url\"";
 
@@ -223,6 +250,7 @@ fn parse_dmg_url_from_json(json: &str) -> Result<String, String> {
 /// Download `url` to `dest` using curl with `--progress-bar` output parsed
 /// for percentage updates.  Progress events are emitted on `app` as the
 /// download proceeds.
+#[cfg(not(windows))]
 fn download_dmg(app: &AppHandle, url: &str, dest: &Path) -> Result<(), String> {
     emit_progress(app, "downloading", 5, &format!("Downloading from {}", url));
 
@@ -265,6 +293,7 @@ fn download_dmg(app: &AppHandle, url: &str, dest: &Path) -> Result<(), String> {
 ///
 /// hdiutil output (with `-plist` flag) is XML; we parse the mount point
 /// by looking for the last `/Volumes/…` entry in the raw XML text.
+#[cfg(not(windows))]
 fn mount_dmg(app: &AppHandle, dmg_path: &Path) -> Result<String, String> {
     emit_progress(app, "mounting", 55, "Mounting disk image…");
 
@@ -273,7 +302,7 @@ fn mount_dmg(app: &AppHandle, dmg_path: &Path) -> Result<String, String> {
         .ok_or("DMG path contains non-UTF-8 characters")?;
 
     let output = Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-noverify", "-noautoopen", dmg_str])
+        .args(["attach", "-nobrowse", "-noautoopen", dmg_str])
         .output()
         .map_err(|e| format!("Failed to spawn hdiutil attach: {}", e))?;
 
@@ -318,6 +347,7 @@ fn mount_dmg(app: &AppHandle, dmg_path: &Path) -> Result<String, String> {
 /// yet still fail the real copy with EACCES. Probing is the only reliable
 /// signal. Returns false when `dir` is absent or the probe can't be created,
 /// which is exactly when we want to fall back to a per-user location.
+#[cfg(not(windows))]
 fn dir_is_writable(dir: &Path) -> bool {
     if !dir.is_dir() {
         return false;
@@ -345,6 +375,7 @@ fn dir_is_writable(dir: &Path) -> bool {
 /// access) so the decision is unit-testable: the caller supplies the
 /// writability verdict and home dir. Mirrors the dual-location lookup already
 /// used for Claude.app in `launch.rs`.
+#[cfg(not(windows))]
 fn apps_dir_for(system_writable: bool, home: &Path) -> PathBuf {
     if system_writable {
         PathBuf::from("/Applications")
@@ -359,6 +390,7 @@ fn apps_dir_for(system_writable: bool, home: &Path) -> PathBuf {
 /// Installs into `/Applications` when writable, else the per-user
 /// `~/Applications` (created on demand). If the chosen destination already
 /// exists it is removed first so `cp -R` doesn't nest the bundle inside it.
+#[cfg(not(windows))]
 fn copy_app(app: &AppHandle, mount_point: &str) -> Result<PathBuf, String> {
     // Guard against path traversal — mount_point must be under /Volumes/
     let source_path = PathBuf::from(mount_point).join("HQ Sync.app");
@@ -433,6 +465,7 @@ fn copy_app(app: &AppHandle, mount_point: &str) -> Result<PathBuf, String> {
 /// Detach the mounted DMG volume.
 ///
 /// Errors here are non-fatal — the install has already succeeded.
+#[cfg(not(windows))]
 fn unmount_dmg(app: &AppHandle, mount_point: &str) {
     emit_progress(app, "cleanup", 85, "Unmounting disk image…");
 
@@ -465,6 +498,7 @@ fn unmount_dmg(app: &AppHandle, mount_point: &str) {
 }
 
 /// Delete the temp DMG file.  Non-fatal on error.
+#[cfg(not(windows))]
 fn cleanup_dmg(dmg_path: &PathBuf) {
     let _ = std::fs::remove_file(dmg_path);
 }
@@ -479,6 +513,7 @@ fn cleanup_dmg(dmg_path: &PathBuf) {
 /// Emits `menubar-install://progress` events throughout.
 /// Returns `Ok(MenubarInstallResult)` regardless of whether the install
 /// succeeded, so the frontend always receives a structured result.
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult, String> {
     // Phase 1: resolve download URL.
@@ -490,6 +525,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
             emit_progress(&app, "error", 0, &msg);
             return Ok(MenubarInstallResult {
                 success: false,
+                skipped: false,
+                reason: None,
                 app_path: None,
                 error: Some(msg),
             });
@@ -506,6 +543,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
         cleanup_dmg(&dmg_path);
         return Ok(MenubarInstallResult {
             success: false,
+            skipped: false,
+            reason: None,
             app_path: None,
             error: Some(e),
         });
@@ -519,6 +558,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
             cleanup_dmg(&dmg_path);
             return Ok(MenubarInstallResult {
                 success: false,
+                skipped: false,
+                reason: None,
                 app_path: None,
                 error: Some(e),
             });
@@ -534,6 +575,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
             cleanup_dmg(&dmg_path);
             return Ok(MenubarInstallResult {
                 success: false,
+                skipped: false,
+                reason: None,
                 app_path: None,
                 error: Some(e),
             });
@@ -548,6 +591,8 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
 
     Ok(MenubarInstallResult {
         success: true,
+        skipped: false,
+        reason: None,
         app_path: Some(installed_path.to_string_lossy().into_owned()),
         error: None,
     })
@@ -556,6 +601,7 @@ pub async fn install_menubar_app(app: AppHandle) -> Result<MenubarInstallResult,
 /// Pick which installed HQ Sync.app to open, in precedence order: the system
 /// `/Applications` copy first, then the per-user `~/Applications` fallback.
 /// Pure so the precedence is unit-testable; returns `None` when neither exists.
+#[cfg(not(windows))]
 fn pick_installed_app<'a>(
     system: &'a Path,
     system_exists: bool,
@@ -573,6 +619,7 @@ fn pick_installed_app<'a>(
 
 /// Resolve the on-disk HQ Sync.app, checking `/Applications` then
 /// `~/Applications` (where the non-admin fallback install lands).
+#[cfg(not(windows))]
 fn installed_menubar_app() -> Option<PathBuf> {
     let system = PathBuf::from("/Applications/HQ Sync.app");
     let system_exists = system.exists();
@@ -587,6 +634,7 @@ fn installed_menubar_app() -> Option<PathBuf> {
 ///
 /// Resolves the real install location — `/Applications` first, then the
 /// per-user `~/Applications` fallback — so launch works for non-admin installs.
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn launch_menubar_app() -> Result<(), String> {
     let app_path = installed_menubar_app()
@@ -609,11 +657,189 @@ pub fn launch_menubar_app() -> Result<(), String> {
     Ok(())
 }
 
+/// The hq-sync-win main binary name (from its tauri.conf.json mainBinaryName).
+#[cfg(windows)]
+const MENUBAR_EXE: &str = "hq-sync-menubar.exe";
+/// Product name the hq-sync-win NSIS/WiX bundle registers under.
+#[cfg(windows)]
+const MENUBAR_PRODUCT: &str = "HQ Sync";
+
+/// Resolve the menubar exe inside an `InstallLocation` value, existence-checked.
+/// Pulled out so the path logic is unit-testable without the registry.
+#[cfg(windows)]
+fn menubar_exe_in(install_location: &str) -> PathBuf {
+    // InstallLocation values are sometimes quoted and/or trailing-slashed.
+    PathBuf::from(install_location.trim().trim_matches('"')).join(MENUBAR_EXE)
+}
+
+/// Scan a single Uninstall registry tree for a subkey whose `DisplayName` is
+/// "HQ Sync", returning its `(DisplayVersion, InstallLocation)`. Returns
+/// `None` when no matching product is registered under that tree.
+///
+/// We enumerate rather than open a fixed subkey because the subkey name
+/// differs by bundler: the NSIS bundle keys it on the product name
+/// ("HQ Sync"), while the MSI bundle keys it on a product GUID. Matching on
+/// `DisplayName` covers both.
+#[cfg(windows)]
+fn scan_uninstall_tree(root: winreg::HKEY, path: &str) -> Option<(Option<String>, Option<String>)> {
+    let base = RegKey::predef(root).open_subkey(path).ok()?;
+    for name in base.enum_keys().flatten() {
+        let Ok(sub) = base.open_subkey(&name) else {
+            continue;
+        };
+        let display: String = sub.get_value("DisplayName").unwrap_or_default();
+        if display == MENUBAR_PRODUCT {
+            let version: Option<String> = sub.get_value("DisplayVersion").ok();
+            let location: Option<String> = sub.get_value("InstallLocation").ok();
+            return Some((version, location));
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn detect_menubar() -> MenubarStatus {
+    // 1. Authoritative signal: the Uninstall registry entry the hq-sync-win
+    //    installer wrote. Per-user (HKCU) first, then machine-wide (HKLM,
+    //    including the 32-bit WOW6432Node view).
+    const UNINSTALL: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
+    const UNINSTALL_WOW: &str = r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+    let trees: [(winreg::HKEY, &str); 3] = [
+        (HKEY_CURRENT_USER, UNINSTALL),
+        (HKEY_LOCAL_MACHINE, UNINSTALL),
+        (HKEY_LOCAL_MACHINE, UNINSTALL_WOW),
+    ];
+    for (root, path) in trees {
+        if let Some((version, location)) = scan_uninstall_tree(root, path) {
+            // A registered entry means installed even if InstallLocation is
+            // missing/stale — resolve the exe when we can, but don't gate
+            // "installed" on the exe existing.
+            let exe_path = location
+                .as_deref()
+                .map(menubar_exe_in)
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().into_owned());
+            return MenubarStatus {
+                installed: true,
+                version,
+                exe_path,
+            };
+        }
+    }
+
+    // 2. Fallback: the default per-user install dir (%LOCALAPPDATA%\HQ Sync)
+    //    in case the Uninstall entry was removed but the app is still present.
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let exe = PathBuf::from(local).join(MENUBAR_PRODUCT).join(MENUBAR_EXE);
+        if exe.exists() {
+            return MenubarStatus {
+                installed: true,
+                version: None,
+                exe_path: Some(exe.to_string_lossy().into_owned()),
+            };
+        }
+    }
+
+    MenubarStatus::default()
+}
+
+/// Probe whether the HQ Sync menubar app is already installed.
+#[cfg(windows)]
+#[tauri::command]
+pub fn menubar_installed() -> MenubarStatus {
+    detect_menubar()
+}
+
+/// Launch the installed HQ Sync menubar app. Errors (with a readable message)
+/// when it isn't installed so the renderer can fall back to the download CTA.
+#[cfg(windows)]
+#[tauri::command]
+pub fn launch_menubar_app() -> Result<(), String> {
+    let exe = detect_menubar().exe_path.ok_or_else(|| {
+        "HQ Sync isn't installed yet — download it from the releases page first.".to_string()
+    })?;
+    Command::new(&exe)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to launch HQ Sync ({exe}): {e}"))
+}
+
+#[cfg(windows)]
+fn windows_menubar_not_available_result() -> MenubarInstallResult {
+    MenubarInstallResult {
+        success: false,
+        skipped: true,
+        reason: Some("not_available_on_windows".to_string()),
+        app_path: None,
+        error: Some(
+            "Automatic HQ Sync install is not available on Windows yet; skipped optional menubar setup."
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub async fn install_menubar_app(_app: AppHandle) -> Result<MenubarInstallResult, String> {
+    // Contract: Windows V1 does not install HQ Sync automatically. Return a
+    // successful IPC call with `skipped=true` instead of Err so the renderer can
+    // treat the optional menubar stage as non-fatal while still showing the
+    // explicit not-available reason.
+    Ok(windows_menubar_not_available_result())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn menubar_exe_in_joins_and_trims() {
+        let p = menubar_exe_in(r"C:\Users\me\AppData\Local\HQ Sync");
+        assert!(p.ends_with(MENUBAR_EXE));
+        assert!(p.to_string_lossy().contains("HQ Sync"));
+    }
+
+    #[test]
+    fn menubar_exe_in_strips_quotes_and_whitespace() {
+        let p = menubar_exe_in("  \"C:\\Program Files\\HQ Sync\"  ");
+        let s = p.to_string_lossy();
+        assert!(!s.contains('"'), "quotes should be stripped: {s}");
+        assert!(s.ends_with(MENUBAR_EXE));
+    }
+
+    /// Smoke: probing must never panic and must return a coherent shape on
+    /// any host — installed on a dev box that has HQ Sync, not-installed on a
+    /// clean CI runner. We assert the invariant that holds in both cases
+    /// (no exe path is reported when nothing is installed).
+    #[test]
+    fn menubar_installed_is_panic_free_and_coherent() {
+        let status = menubar_installed();
+        if !status.installed {
+            assert!(status.exe_path.is_none());
+            assert!(status.version.is_none());
+        }
+    }
+
+    #[test]
+    fn windows_install_menubar_result_is_structured_skip() {
+        let result = windows_menubar_not_available_result();
+        assert!(!result.success);
+        assert!(result.skipped);
+        assert_eq!(result.reason.as_deref(), Some("not_available_on_windows"));
+        assert!(result.app_path.is_none());
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("skipped optional menubar setup"));
+    }
+}
+
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::{
         apps_dir_for, classify_release_response, parse_dmg_url_from_json, pick_installed_app,

@@ -6,11 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  frontend:
+  frontend-macos:
     name: Frontend (typecheck + lint + test)
     runs-on: macos-latest
     steps:
@@ -26,11 +29,12 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+      - run: pnpm exec vitest run --dir scripts --environment node
 
   e2e:
     name: E2E (Playwright)
     runs-on: macos-latest
-    needs: [frontend]
+    needs: [frontend-macos]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +53,7 @@ jobs:
           VITE_COGNITO_CLIENT_ID: test-client-id
           VITE_COGNITO_DOMAIN: https://mock-cognito.auth.us-east-1.amazoncognito.com
 
-  rust:
+  rust-macos:
     name: Rust (fmt + check + clippy + test)
     runs-on: macos-latest
     steps:
@@ -132,3 +136,106 @@ jobs:
         working-directory: src-tauri
       - run: cargo test
         working-directory: src-tauri
+
+  frontend-windows:
+    name: Frontend (typecheck + lint + test) — Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm exec vitest run --dir scripts --environment node
+
+  rust-windows:
+    name: Rust (fmt + check + clippy + test) — Windows (${{ matrix.target }})
+    runs-on: windows-latest
+    needs: [frontend-windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      # windows-latest already ships VS Build Tools 2022, the Windows SDK,
+      # and a working MSVC link.exe — no extra setup needed for cargo.
+      # `cargo` and `rustc` from rustup are first on PATH.
+
+      - name: cargo fmt --check
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        working-directory: src-tauri
+        run: cargo test --release
+
+      - name: cargo check (${{ matrix.target }})
+        working-directory: src-tauri
+        run: cargo check --target ${{ matrix.target }}
+
+  build-smoke-windows:
+    name: Tauri build smoke (x64 MSI/NSIS, no signing)
+    runs-on: windows-latest
+    needs: [frontend-windows, rust-windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - run: pnpm install --frozen-lockfile
+
+      # Smoke build only — verifies the WiX + NSIS bundlers complete and
+      # produce both .msi and .exe artifacts. The base config sets
+      # bundle.createUpdaterArtifacts=true, which makes Tauri v2 HARD-FAIL the
+      # build when TAURI_SIGNING_PRIVATE_KEY is absent (it's an error, not a
+      # warning). The smoke build doesn't need updater artifacts, so we merge
+      # tauri.smoke.conf.json to flip createUpdaterArtifacts=false — bundles
+      # still emit, no signing key required. Full signed-updater + Azure signing
+      # flow lives in release.yml.
+      - name: Tauri build (x64)
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis --config src-tauri/tauri.smoke.conf.json
+        env:
+          # Force unsigned smoke build — full Azure signing flow lives in release.yml
+          CI: "true"
+
+      - name: Verify MSI + NSIS artifacts exist
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path src-tauri\target\x86_64-pc-windows-msvc\release\bundle\msi -Filter '*.msi' -ErrorAction SilentlyContinue
+          if (-not $msi) { Write-Error "No .msi found in bundle/msi"; exit 1 }
+          $nsis = Get-ChildItem -Path src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis -Filter '*-setup.exe' -ErrorAction SilentlyContinue
+          if (-not $nsis) { Write-Error "No NSIS -setup.exe found in bundle/nsis"; exit 1 }
+          Write-Host "OK: $($msi.Name) + $($nsis.Name)"

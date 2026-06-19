@@ -1,7 +1,7 @@
 [package]
 name = "hq-installer"
 version = "0.8.1"
-description = "HQ native macOS installer"
+description = "HQ native installer"
 authors = []
 edition = "2021"
 
@@ -23,9 +23,8 @@ dirs = "5"
 which = "6"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
-keyring = { version = "3", features = ["apple-native"] }
+keyring = { version = "3" }
 git2 = { version = "0.19", features = ["vendored-openssl"] }
-nix = { version = "0.29", features = ["signal"] }
 tauri-plugin-agent-test = { path = "crates/tauri-plugin-agent-test", optional = true }
 # `unsafe-headers` is required so the plugin honors `User-Agent` (and the
 # rest of the forbidden-header set) when set from the renderer. Without it,
@@ -35,6 +34,22 @@ tauri-plugin-agent-test = { path = "crates/tauri-plugin-agent-test", optional = 
 tauri-plugin-http = { version = "2.5.8", features = ["unsafe-headers"] }
 tauri-plugin-fs = "2"
 sentry = "^0.35"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+winreg = "0.55"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "stream"], default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+walkdir = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [features]
 # Embeds the agent-browser MCP server (127.0.0.1:9876) for E2E testing.

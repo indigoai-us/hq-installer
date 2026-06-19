@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -18,12 +18,25 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 }));
 
 import {
+  IMPORT_PROCESS_EXIT_TIMEOUT_MS,
   readInstallerImportBreadcrumb,
   runExistingImport,
   type ImportFs,
 } from "../import-existing.js";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const INSTALL_PATH = "/tmp/hq";
+const mockInvoke = vi.mocked(invoke);
+const mockListen = vi.mocked(listen);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function resolvePath(root: string, relativePath: string): string {
   return `${root.replace(/\/+$/, "")}/${relativePath.replace(/^\/+/, "")}`;
@@ -230,6 +243,41 @@ describe("runExistingImport", () => {
       claudeCounts: null,
       totalClaudeArtifacts: null,
       deferred: true,
+    });
+  });
+
+  it("times out and cancels default spawns when an exit event is missed", async () => {
+    vi.useFakeTimers();
+    const { adapter } = createFs();
+    let handleCounter = 0;
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "spawn_process") return `handle-${++handleCounter}`;
+      if (command === "cancel_process") return true;
+      return undefined;
+    });
+    mockListen.mockResolvedValue(() => {});
+
+    const resultPromise = runExistingImport({
+      installPath: INSTALL_PATH,
+      fs: adapter,
+      now: () => new Date("2026-06-18T12:34:56.000Z"),
+    });
+
+    await vi.advanceTimersByTimeAsync(IMPORT_PROCESS_EXIT_TIMEOUT_MS + 1);
+    await vi.advanceTimersByTimeAsync(IMPORT_PROCESS_EXIT_TIMEOUT_MS + 1);
+    const result = await resultPromise;
+
+    expect(result.codexApplied).toBe(false);
+    expect(result.discoveryOk).toBe(false);
+    expect(result.issues).toContain(
+      "Codex parity could not be applied automatically.",
+    );
+    expect(result.issues).toContain("Claude discovery did not complete.");
+    expect(mockInvoke).toHaveBeenCalledWith("cancel_process", {
+      handle: "handle-1",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("cancel_process", {
+      handle: "handle-2",
     });
   });
 

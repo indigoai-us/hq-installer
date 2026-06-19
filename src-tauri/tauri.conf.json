@@ -30,9 +30,16 @@
   "bundle": {
     "active": true,
     "targets": [
-      "app"
+      "app",
+      "msi",
+      "nsis"
     ],
     "createUpdaterArtifacts": true,
+    "publisher": "Indigo AI",
+    "shortDescription": "HQ native Windows installer wizard",
+    "longDescription": "Guided wizard to install HQ on Windows: AWS Cognito auth, dep installation via winget, repository clone, and Claude Code launch — all from a native MSI/NSIS bundle.",
+    "category": "DeveloperTool",
+    "copyright": "Copyright (c) Indigo AI",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -47,6 +54,29 @@
       "minimumSystemVersion": "13.0",
       "hardenedRuntime": true,
       "entitlements": null
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "digestAlgorithm": "sha256",
+      "wix": {
+        "language": ["en-US"],
+        "upgradeCode": "9b1b3a36-4d29-5b5e-9b48-1f9b1f8f4b00",
+        "fragmentPaths": [],
+        "componentGroupRefs": [],
+        "componentRefs": [],
+        "featureGroupRefs": [],
+        "featureRefs": [],
+        "mergeRefs": []
+      },
+      "nsis": {
+        "languages": ["English"],
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      }
     }
   },
   "plugins": {
@@ -57,7 +87,7 @@
       ]
     },
     "fs": {
-      "requireLiteralLeadingDot": false
+      "requireLiteralLeadingDot": true
     }
   }
 }

@@ -63,6 +63,7 @@ import {
 } from "@/lib/install-manifest";
 import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 import { runExistingImport } from "@/lib/import-existing";
+import { markSetupStepCompleted } from "@/lib/wizard-router";
 
 // ---------------------------------------------------------------------------
 // Stage model
@@ -123,6 +124,125 @@ function buildInitialStages(): StageState[] {
   }));
 }
 
+const SETUP_PROCESS_EXIT_TIMEOUT_MS = 5 * 60 * 1000;
+
+type SetupSessionStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
+
+interface SetupSession {
+  installPath: string | null;
+  runId: number;
+  status: SetupSessionStatus;
+  activeHandles: Set<string>;
+  cancelListeners: Map<number, Set<() => void>>;
+}
+
+const setupSession: SetupSession = {
+  installPath: null,
+  runId: 0,
+  status: "idle",
+  activeHandles: new Set(),
+  cancelListeners: new Map(),
+};
+
+function beginSetupSession(installPath: string): {
+  runId: number;
+  started: boolean;
+  completed: boolean;
+} {
+  if (
+    setupSession.status === "completed" &&
+    setupSession.installPath === installPath
+  ) {
+    return { runId: setupSession.runId, started: false, completed: true };
+  }
+  if (
+    setupSession.status === "running" &&
+    setupSession.installPath === installPath
+  ) {
+    return { runId: setupSession.runId, started: false, completed: false };
+  }
+
+  setupSession.runId += 1;
+  setupSession.installPath = installPath;
+  setupSession.status = "running";
+  setupSession.activeHandles.clear();
+  setupSession.cancelListeners.delete(setupSession.runId);
+  return { runId: setupSession.runId, started: true, completed: false };
+}
+
+function isCurrentSetupRun(runId: number): boolean {
+  return setupSession.runId === runId;
+}
+
+function isSetupRunCancelled(runId: number): boolean {
+  return (
+    !isCurrentSetupRun(runId) ||
+    setupSession.status === "cancelled"
+  );
+}
+
+function completeSetupSession(runId: number): void {
+  if (!isCurrentSetupRun(runId)) return;
+  setupSession.status = "completed";
+  setupSession.activeHandles.clear();
+  setupSession.cancelListeners.delete(runId);
+  markSetupStepCompleted();
+}
+
+function failSetupSession(runId: number): void {
+  if (!isCurrentSetupRun(runId)) return;
+  setupSession.status = "failed";
+  setupSession.activeHandles.clear();
+  setupSession.cancelListeners.delete(runId);
+}
+
+function registerForegroundHandle(runId: number, handle: string): void {
+  if (!isCurrentSetupRun(runId) || setupSession.status !== "running") return;
+  setupSession.activeHandles.add(handle);
+}
+
+function unregisterForegroundHandle(runId: number, handle: string): void {
+  if (!isCurrentSetupRun(runId)) return;
+  setupSession.activeHandles.delete(handle);
+}
+
+function onSetupRunCancelled(runId: number, listener: () => void): () => void {
+  if (!setupSession.cancelListeners.has(runId)) {
+    setupSession.cancelListeners.set(runId, new Set());
+  }
+  setupSession.cancelListeners.get(runId)!.add(listener);
+  return () => {
+    setupSession.cancelListeners.get(runId)?.delete(listener);
+  };
+}
+
+function cancelSetupSession(runId: number): void {
+  if (!isCurrentSetupRun(runId) || setupSession.status !== "running") return;
+  setupSession.status = "cancelled";
+  const handles = Array.from(setupSession.activeHandles);
+  setupSession.activeHandles.clear();
+  const listeners = Array.from(setupSession.cancelListeners.get(runId) ?? []);
+  setupSession.cancelListeners.delete(runId);
+
+  for (const listener of listeners) {
+    listener();
+  }
+  for (const handle of handles) {
+    invoke("cancel_process", { handle }).catch((err) => {
+      console.warn(`[setup] could not cancel process ${handle}:`, err);
+    });
+  }
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function __resetSetupProgressSessionForTests(): void {
+  setupSession.installPath = null;
+  setupSession.runId = 0;
+  setupSession.status = "idle";
+  setupSession.activeHandles.clear();
+  setupSession.cancelListeners.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -141,6 +261,14 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   const [failedStage, setFailedStage] = useState<StageId | null>(null);
   const [running, setRunning] = useState(false);
   const [allDone, setAllDone] = useState(false);
+  const mountedRef = useRef(true);
+  const activeRunRef = useRef<number | null>(null);
+  const stageErrorsRef = useRef<Record<StageId, string | null>>(
+    Object.fromEntries(STAGE_ORDER.map((id) => [id, null])) as Record<
+      StageId,
+      string | null
+    >,
+  );
 
   // React strict-mode double-mount guard — without it the orchestrator would
   // run twice and double-install everything.
@@ -149,10 +277,15 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   // ── Stage state helpers ────────────────────────────────────────────────
 
   const patchStage = useCallback((id: StageId, patch: Partial<StageState>) => {
+    if ("error" in patch) {
+      stageErrorsRef.current[id] = patch.error ?? null;
+    }
+    if (!mountedRef.current) return;
     setStages((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
 
   const appendLog = useCallback((id: StageId, line: string) => {
+    if (!mountedRef.current) return;
     setStages((prev) =>
       prev.map((s) =>
         s.id === id ? { ...s, logLines: [...s.logLines, line] } : s,
@@ -292,7 +425,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   // install-manifest (so a later /setup can finish the job) and the stage
   // still succeeds — one flaky pack fetch never blocks the whole install.
 
-  async function runPackages(): Promise<boolean> {
+  async function runPackages(runId: number): Promise<boolean> {
     const packs: DefaultPack[] = getDefaultPacks();
     if (packs.length === 0) return true;
 
@@ -300,6 +433,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     for (const pack of packs) {
       appendLog("packages", `Installing ${pack.name}…`);
       const ok = await spawnAndWait(
+        runId,
         "packages",
         "hq",
         ["install", pack.source, "--allow-hooks"],
@@ -457,14 +591,14 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   // `/import-claude` handoff after install. ALWAYS returns true: missing
   // scripts, scan failures, or parse problems are journaled, never blocking.
 
-  async function runImport(): Promise<boolean> {
+  async function runImport(runId: number): Promise<boolean> {
     appendLog("import", "Checking for an existing Claude or Codex setup…");
 
     try {
       const summary = await runExistingImport({
         installPath,
         onLog: (line) => appendLog("import", line),
-        spawn: (cmd, args, cwd) => spawnAndCapture("import", cmd, args, cwd),
+        spawn: (cmd, args, cwd) => spawnAndCapture(runId, "import", cmd, args, cwd),
         fs: {
           mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
           readTextFile,
@@ -545,12 +679,26 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   // collection already exists. Writes a pending-embeddings marker so HQ Sync
   // picks up indexing on next launch.
 
+  function qmdCollectionNameFromPath(path: string): string {
+    const trimmed = path.trim().replace(/[\\/]+$/g, "");
+    const basename = trimmed.split(/[\\/]+/).filter(Boolean).pop() ?? "hq";
+    const sanitized = basename
+      .replace(/[^A-Za-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return sanitized || "hq";
+  }
+
   async function spawnAndCapture(
+    runId: number,
     stage: StageId,
     cmd: string,
     args: string[],
     cwd: string,
   ): Promise<{ ok: boolean; stdout: string; stderr: string[] }> {
+    if (isSetupRunCancelled(runId)) {
+      return { ok: false, stdout: "", stderr: ["Setup run cancelled."] };
+    }
+
     let handle: string;
     try {
       handle = await invoke<string>("spawn_process", {
@@ -561,12 +709,102 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       patchStage(stage, { error: msg });
       return { ok: false, stdout: "", stderr: [msg] };
     }
+    registerForegroundHandle(runId, handle);
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    let stdoutUnlisten: (() => void) | null = null;
+    let stderrUnlisten: (() => void) | null = null;
+    let exitUnlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let cancelUnsubscribe: (() => void) | null = null;
+    let settled = false;
+    let resolveExit:
+      | ((value: { ok: boolean; stdout: string; stderr: string[] }) => void)
+      | null = null;
+    const exitResult = new Promise<{
+      ok: boolean;
+      stdout: string;
+      stderr: string[];
+    }>((resolve) => {
+      resolveExit = resolve;
+    });
+
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      cancelUnsubscribe?.();
+      cancelUnsubscribe = null;
+      stdoutUnlisten?.();
+      stdoutUnlisten = null;
+      stderrUnlisten?.();
+      stderrUnlisten = null;
+      exitUnlisten?.();
+      exitUnlisten = null;
+      unregisterForegroundHandle(runId, handle);
+    };
+
+    const finish = (value: { ok: boolean; stdout: string; stderr: string[] }) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveExit?.(value);
+    };
 
     try {
-      const stdoutLines: string[] = [];
-      const stderrLines: string[] = [];
+      cancelUnsubscribe = onSetupRunCancelled(runId, () => {
+        finish({
+          ok: false,
+          stdout: stdoutLines.join("\n"),
+          stderr: [...stderrLines, "Setup run cancelled."],
+        });
+      });
+      timeoutId = setTimeout(() => {
+        const msg = `${cmd} did not report completion within ${Math.round(
+          SETUP_PROCESS_EXIT_TIMEOUT_MS / 1000,
+        )} seconds.`;
+        appendLog(stage, `[error] ${msg}`);
+        patchStage(stage, { error: msg });
+        invoke("cancel_process", { handle }).catch((err) => {
+          console.warn(`[setup] could not cancel timed-out process ${handle}:`, err);
+        });
+        finish({
+          ok: false,
+          stdout: stdoutLines.join("\n"),
+          stderr: [...stderrLines, msg],
+        });
+      }, SETUP_PROCESS_EXIT_TIMEOUT_MS);
 
-      const stdoutUnlisten = await listen(
+      // Attach the EXIT listener first. A short-lived process can emit its
+      // terminal event almost immediately after spawn_process returns, and the
+      // event is not buffered — subscribing to stdout/stderr first widened that
+      // window enough to drop the exit event entirely (the stage then hung
+      // until the safety timeout below). The timeout remains the last-resort net
+      // for a genuinely lost exit.
+      exitUnlisten = await listen(
+        `process://${handle}/exit`,
+        (event: { payload: unknown }) => {
+          const payload = event.payload as {
+            code: number | null;
+            success: boolean;
+          };
+          if (!payload.success && !isSetupRunCancelled(runId)) {
+            patchStage(stage, {
+              error: `Process exited with code ${payload.code ?? -1}`,
+            });
+          }
+          finish({
+            ok: payload.success,
+            stdout: stdoutLines.join("\n"),
+            stderr: stderrLines,
+          });
+        },
+      );
+      if (settled) return await exitResult;
+
+      stdoutUnlisten = await listen(
         `process://${handle}/stdout`,
         (event: { payload: unknown }) => {
           const payload = event.payload as { line?: string };
@@ -575,7 +813,9 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
           appendLog(stage, line);
         },
       );
-      const stderrUnlisten = await listen(
+      if (settled) return await exitResult;
+
+      stderrUnlisten = await listen(
         `process://${handle}/stderr`,
         (event: { payload: unknown }) => {
           const payload = event.payload as { line?: string };
@@ -584,65 +824,38 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
           appendLog(stage, `[stderr] ${line}`);
         },
       );
-
-      let resolveExit: ((value: { ok: boolean; stdout: string; stderr: string[] }) => void) | null =
-        null;
-      const exitResult = new Promise<{
-        ok: boolean;
-        stdout: string;
-        stderr: string[];
-      }>((resolve) => {
-        resolveExit = resolve;
-      });
-
-      let exitUnlisten: (() => void) | null = null;
-      exitUnlisten = await listen(
-        `process://${handle}/exit`,
-        (event: { payload: unknown }) => {
-          const payload = event.payload as {
-            code: number | null;
-            success: boolean;
-          };
-          (stdoutUnlisten as () => void)();
-          (stderrUnlisten as () => void)();
-          exitUnlisten?.();
-          if (!payload.success) {
-            patchStage(stage, {
-              error: `Process exited with code ${payload.code ?? -1}`,
-            });
-          }
-          resolveExit?.({
-            ok: payload.success,
-            stdout: stdoutLines.join("\n"),
-            stderr: stderrLines,
-          });
-        },
-      );
+      if (settled) return await exitResult;
 
       return await exitResult;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      cleanup();
+      invoke("cancel_process", { handle }).catch((cancelErr) => {
+        console.warn(`[setup] could not cancel process ${handle}:`, cancelErr);
+      });
       patchStage(stage, { error: msg });
       return { ok: false, stdout: "", stderr: [msg] };
     }
   }
 
   async function spawnAndWait(
+    runId: number,
     stage: StageId,
     cmd: string,
     args: string[],
     cwd: string,
     stderrSink?: string[],
   ): Promise<boolean> {
-    const result = await spawnAndCapture(stage, cmd, args, cwd);
+    const result = await spawnAndCapture(runId, stage, cmd, args, cwd);
     stderrSink?.push(...result.stderr);
     return result.ok;
   }
 
-  async function runIndexing(): Promise<boolean> {
-    const slug = installPath.split("/").filter(Boolean).pop() || "hq";
+  async function runIndexing(runId: number): Promise<boolean> {
+    const slug = qmdCollectionNameFromPath(installPath);
     const stderrBuf: string[] = [];
     let ok = await spawnAndWait(
+      runId,
       "indexing",
       "qmd",
       ["collection", "add", ".", "--name", slug],
@@ -660,6 +873,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         `[info] Collection "${slug}" already exists — re-indexing.`,
       );
       ok = await spawnAndWait(
+        runId,
         "indexing",
         "qmd",
         ["update", "--name", slug],
@@ -695,29 +909,36 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   // ── Stage 8: menubar (HQ Sync) ─────────────────────────────────────────
 
   async function runMenubar(): Promise<boolean> {
-    const unlisten = await listen<{
-      phase?: string;
-      percent?: number;
-      message?: string;
-      done?: boolean;
-      error?: string;
-    }>("menubar-install://progress", (event) => {
-      const p = event.payload;
-      if (p.error) {
-        appendLog("menubar", `[error] ${p.error}`);
-        return;
-      }
-      const line = [
-        p.phase,
-        typeof p.percent === "number" ? `${p.percent}%` : null,
-        p.message,
-      ]
-        .filter(Boolean)
-        .join(" — ");
-      if (line) appendLog("menubar", line);
-    });
+    let unlisten: (() => void) | null = null;
+    const noteSkipped = async (msg: string) => {
+      appendLog("menubar", `[warn] HQ Sync menu bar install skipped: ${msg}`);
+      patchStage("menubar", { error: null });
+      await journalFail("menubar", msg);
+      return true;
+    };
 
     try {
+      unlisten = await listen<{
+        phase?: string;
+        percent?: number;
+        message?: string;
+        done?: boolean;
+        error?: string;
+      }>("menubar-install://progress", (event) => {
+        const p = event.payload;
+        if (p.error) {
+          appendLog("menubar", `[error] ${p.error}`);
+          return;
+        }
+        const line = [
+          p.phase,
+          typeof p.percent === "number" ? `${p.percent}%` : null,
+          p.message,
+        ]
+          .filter(Boolean)
+          .join(" — ");
+        if (line) appendLog("menubar", line);
+      });
       const result = await invoke<{
         success: boolean;
         appPath: string | null;
@@ -734,49 +955,56 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         }
         return true;
       }
-      patchStage("menubar", { error: result.error ?? "Installation failed" });
-      return false;
+      return await noteSkipped(result.error ?? "Installation failed");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patchStage("menubar", { error: msg });
-      return false;
+      return await noteSkipped(msg);
     } finally {
-      (unlisten as () => void)();
+      unlisten?.();
     }
   }
 
   // ── Stage dispatcher ───────────────────────────────────────────────────
 
-  async function runStage(id: StageId): Promise<boolean> {
+  async function runStage(id: StageId, runId: number): Promise<boolean> {
     patchStage(id, { status: "running", error: null });
     await journalStart(id);
     let ok = false;
-    switch (id) {
-      case "deps":
-        ok = await runDeps();
-        break;
-      case "initial-sync":
-        ok = await runInitialSync();
-        break;
-      case "packages":
-        ok = await runPackages();
-        break;
-      case "git-init":
-        ok = await runGitInit();
-        break;
-      case "personalize":
-        ok = await runPersonalize();
-        break;
-      case "import":
-        ok = await runImport();
-        break;
-      case "indexing":
-        ok = await runIndexing();
-        break;
-      case "menubar":
-        ok = await runMenubar();
-        break;
+    try {
+      switch (id) {
+        case "deps":
+          ok = await runDeps();
+          break;
+        case "initial-sync":
+          ok = await runInitialSync();
+          break;
+        case "packages":
+          ok = await runPackages(runId);
+          break;
+        case "git-init":
+          ok = await runGitInit();
+          break;
+        case "personalize":
+          ok = await runPersonalize();
+          break;
+        case "import":
+          ok = await runImport(runId);
+          break;
+        case "indexing":
+          ok = await runIndexing(runId);
+          break;
+        case "menubar":
+          ok = await runMenubar();
+          break;
+      }
+    } catch (err) {
+      if (isSetupRunCancelled(runId)) return false;
+      const msg = err instanceof Error ? err.message : String(err);
+      patchStage(id, { status: "failed", error: msg });
+      await journalFail(id, msg);
+      return false;
     }
+    if (isSetupRunCancelled(runId)) return false;
     if (ok) {
       patchStage(id, { status: "ok" });
       await journalOk(id);
@@ -784,7 +1012,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       patchStage(id, { status: "failed" });
       // Capture the error message from the stage state for the manifest.
       const msg =
-        stages.find((s) => s.id === id)?.error ??
+        stageErrorsRef.current[id] ??
         "Stage failed (no detail recorded).";
       await journalFail(id, msg);
     }
@@ -795,12 +1023,35 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
 
   const runFromStage = useCallback(
     async (startId: StageId) => {
+      const session = beginSetupSession(installPath);
+      activeRunRef.current = session.runId;
+
+      if (session.completed) {
+        if (!mountedRef.current) return;
+        setStages(
+          buildInitialStages().map((stage) => ({
+            ...stage,
+            status: "ok",
+          })),
+        );
+        setRunning(false);
+        setFailedStage(null);
+        setAllDone(true);
+        return;
+      }
+
+      if (!session.started) return;
+
+      if (!mountedRef.current) return;
       setRunning(true);
       setFailedStage(null);
       setAllDone(false);
 
       // Reset the failing stage onward; keep earlier stages' final status.
       const startIdx = STAGE_ORDER.indexOf(startId);
+      for (let i = startIdx; i < STAGE_ORDER.length; i += 1) {
+        stageErrorsRef.current[STAGE_ORDER[i]] = null;
+      }
       setStages((prev) =>
         prev.map((s, i) =>
           i >= startIdx
@@ -815,14 +1066,27 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       );
 
       for (let i = startIdx; i < STAGE_ORDER.length; i += 1) {
+        if (isSetupRunCancelled(session.runId)) {
+          if (mountedRef.current) setRunning(false);
+          return;
+        }
         const id = STAGE_ORDER[i];
-        const ok = await runStage(id);
+        const ok = await runStage(id, session.runId);
+        if (isSetupRunCancelled(session.runId)) {
+          if (mountedRef.current) setRunning(false);
+          return;
+        }
         if (!ok) {
-          setFailedStage(id);
-          setRunning(false);
+          failSetupSession(session.runId);
+          if (mountedRef.current) {
+            setFailedStage(id);
+            setRunning(false);
+          }
           return;
         }
       }
+      completeSetupSession(session.runId);
+      if (!mountedRef.current) return;
       setRunning(false);
       setAllDone(true);
       onNext?.();
@@ -834,9 +1098,27 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   );
 
   useEffect(() => {
+    mountedRef.current = true;
     if (startedRef.current) return;
     startedRef.current = true;
     void runFromStage("deps");
+    return () => {
+      mountedRef.current = false;
+      // Reset the per-instance "started" latch so that if this effect is torn
+      // down and immediately re-run (React StrictMode in dev double-invokes
+      // mount effects, and refs persist across that cycle), the remount can
+      // start a fresh run instead of bailing here while the cleanup below has
+      // already cancelled the only in-flight run — which would strand the UI on
+      // the first stage. Real re-entry safety (no duplicate run after a genuine
+      // completion, no re-run on back-nav) is enforced by beginSetupSession,
+      // not by this latch.
+      startedRef.current = false;
+      const runId = activeRunRef.current;
+      if (runId !== null) {
+        cancelSetupSession(runId);
+        activeRunRef.current = null;
+      }
+    };
   }, [runFromStage]);
 
   // ── Derived progress + status line ──────────────────────────────────────

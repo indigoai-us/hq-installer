@@ -10,9 +10,14 @@ on:
         description: "Tag to release (e.g. v0.1.0). If empty, uses the current commit."
         required: false
         type: string
+      allow_unsigned:
+        description: "Allow unsigned Windows installers for a manual dispatch only. Never set for production releases."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,11 +27,13 @@ jobs:
     name: Build & Release (macOS universal)
     runs-on: macos-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - name: Validate tag format
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Tag must match vX.Y.Z format, got: $TAG"
             exit 1
           fi
@@ -36,6 +43,50 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
+
+      - name: Validate release version files
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const tag = process.env.TAG;
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+
+          const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          const tauriVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+
+          const cargoToml = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+          const cargoTomlMatch = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
+          if (!cargoTomlMatch) {
+            console.error("::error file=src-tauri/Cargo.toml::Could not find package version");
+            process.exit(1);
+          }
+
+          const cargoLock = fs.readFileSync("src-tauri/Cargo.lock", "utf8");
+          const cargoLockMatch = cargoLock.match(/^\[\[package\]\]\nname = "hq-installer"\nversion = "([^"]+)"/m);
+          if (!cargoLockMatch) {
+            console.error("::error file=src-tauri/Cargo.lock::Could not find hq-installer package entry");
+            process.exit(1);
+          }
+
+          const checks = [
+            ["package.json", packageVersion],
+            ["src-tauri/tauri.conf.json", tauriVersion],
+            ["src-tauri/Cargo.toml", cargoTomlMatch[1]],
+            ["src-tauri/Cargo.lock", cargoLockMatch[1]],
+          ];
+          const mismatches = checks.filter(([, actual]) => actual !== version);
+          if (mismatches.length > 0) {
+            for (const [file, actual] of mismatches) {
+              console.error(`::error file=${file}::Release tag ${tag} expects version ${version}, found ${actual}`);
+            }
+            process.exit(1);
+          }
+          console.log(`Release version ${version} matches package.json, tauri.conf.json, Cargo.toml, and Cargo.lock`);
+          NODE
 
       - uses: pnpm/action-setup@v4
         with:
@@ -123,8 +174,8 @@ jobs:
       # Signing + notarization uses the same Apple Developer identity as
       # hq-sync and the indigo-nx Electron app. Secret-name mapping:
       #
-      #   indigo-nx (CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_ID_PASSWORD,
-      #              ASC_PROVIDER)
+      #   indigo-nx (CSC_LINK, CSC_KEY_PASSWORD, Apple ID app-specific
+      #              password, ASC_PROVIDER)
       #   → hq-installer / hq-sync (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
       #                             APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID)
       #
@@ -223,59 +274,6 @@ jobs:
           sentry-cli releases set-commits "$RELEASE" --auto --org indigo-d0 --project hq-installer
           sentry-cli releases finalize "$RELEASE" --org indigo-d0 --project hq-installer
 
-      # Auto-updater manifest. tauri-action produces the .tar.gz + .tar.gz.sig
-      # with createUpdaterArtifacts enabled; here we translate those into the
-      # latest.json shape Tauri's updater plugin polls at the endpoint in
-      # tauri.conf.json.
-      - name: Generate and upload latest.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          UPDATER_BUNDLE=$(find src-tauri/target/universal-apple-darwin/release/bundle -name "*.tar.gz" | head -1)
-          if [ -z "$UPDATER_BUNDLE" ]; then
-            echo "::warning::No updater bundle found — skipping latest.json"
-            exit 0
-          fi
-
-          if [ ! -f "${UPDATER_BUNDLE}.sig" ]; then
-            echo "::error::Updater signature file missing: ${UPDATER_BUNDLE}.sig"
-            exit 1
-          fi
-          SIGNATURE=$(cat "${UPDATER_BUNDLE}.sig")
-
-          # tauri-action renames the uploaded .tar.gz (e.g. the local
-          # "HQ Installer.app.tar.gz" becomes "HQ.Installer_universal.app.tar.gz"
-          # on the release). Pull the real asset name from the release API so
-          # latest.json's URL actually resolves — don't compute from basename.
-          UPLOADED_NAME=$(gh release view "$TAG" --json assets -q '.assets[] | select(.name | endswith(".tar.gz")) | .name' | head -1)
-          if [ -z "$UPLOADED_NAME" ]; then
-            echo "::error::Could not find uploaded .tar.gz asset on release $TAG"
-            exit 1
-          fi
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${UPLOADED_NAME}"
-          NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
-
-          python3 -c "
-          import json, sys
-          data = {
-            'version': sys.argv[1],
-            'notes': 'See ' + sys.argv[2],
-            'pub_date': sys.argv[3],
-            'platforms': {
-              'darwin-universal': {'signature': sys.argv[4], 'url': sys.argv[5]},
-              'darwin-aarch64':  {'signature': sys.argv[4], 'url': sys.argv[5]},
-              'darwin-x86_64':   {'signature': sys.argv[4], 'url': sys.argv[5]}
-            }
-          }
-          json.dump(data, open('latest.json','w'), indent=2)
-          " "$VERSION" "$NOTES_URL" "$DATE" "$SIGNATURE" "$DOWNLOAD_URL"
-
-          gh release upload "$TAG" latest.json --clobber
-
       # Versionless .zip alias. A zipped copy of the same signed/notarized
       # .app uploaded under a stable filename gives consumers a permanent
       # one-click URL:
@@ -316,19 +314,377 @@ jobs:
           cp "$ALIAS_PATH" "$VERSIONED_PATH"
           gh release upload "$TAG" "$VERSIONED_PATH" --clobber
 
-      # tauri-action creates the release as a draft so we can sanity-check
-      # assets before it hits everyone's auto-updater. Publish once the
-      # .tar.gz, .sig, .zip, and latest.json are all present.
-      - name: Publish draft release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # tauri-action creates the release as a draft. The finalize job is the
+      # only job allowed to upload latest.json and publish the draft, after
+      # both macOS and Windows assets exist and every updater signature points
+      # at artifacts signed with the single updater keypair.
+
+  build-windows:
+    name: Build & Sign (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    # Bind the job to the `release` environment so the GitHub OIDC token's
+    # subject is `repo:indigoai-us/hq-installer:environment:release` — exactly
+    # what the Azure federated credential on the signing app trusts. This
+    # subject is stable across tag pushes AND workflow_dispatch (tags can't be
+    # matched by a static federated credential subject, environments can).
+    environment: release
+
+    steps:
+      - name: Validate tag format
+        shell: pwsh
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
-          for REQUIRED in ".tar.gz" ".tar.gz.sig" "latest.json" "hq-installer_universal.zip"; do
-            if ! echo "$ASSETS" | grep -q "$REQUIRED"; then
-              echo "::error::Missing required asset: $REQUIRED"
+          $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            Write-Error "Tag must match vX.Y.Z format, got: $tag"
+            exit 1
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Preflight Windows signing configuration
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ALLOW_UNSIGNED_WINDOWS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_unsigned == true }}
+        run: |
+          $missing = @()
+          foreach ($name in @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID")) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              $missing += $name
+            }
+          }
+
+          if ($missing.Count -eq 0) {
+            Write-Host "Azure Trusted Signing configuration present."
+            exit 0
+          }
+
+          if ($env:ALLOW_UNSIGNED_WINDOWS -eq "true") {
+            Write-Warning "Unsigned Windows release explicitly allowed for this manual dispatch. Missing: $($missing -join ', ')"
+            exit 0
+          }
+
+          Write-Error "Refusing to publish unsigned Windows installers. Missing repository variables: $($missing -join ', '). Configure Azure Trusted Signing or rerun a manual dispatch with allow_unsigned=true for a non-production exception."
+          exit 1
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Tauri build (${{ matrix.target }})
+        env:
+          # Cognito config is inlined into the JS bundle by Vite at BUILD time
+          # (import.meta.env.VITE_*). Without these the shipped installer
+          # throws "VITE_COGNITO_CLIENT_ID is not set" on the sign-in screen —
+          # see src/lib/cognito.ts + src/lib/google-oauth.ts. Same secret
+          # names the macOS release workflow uses.
+          VITE_COGNITO_USER_POOL_ID: ${{ secrets.VITE_COGNITO_USER_POOL_ID }}
+          VITE_COGNITO_CLIENT_ID: ${{ secrets.VITE_COGNITO_CLIENT_ID }}
+          VITE_COGNITO_DOMAIN: ${{ secrets.VITE_COGNITO_DOMAIN }}
+          # Tauri updater bundle signing (minisign). The unified repo uses one
+          # updater keypair for both darwin and windows artifacts; the public
+          # half lives in tauri.conf.json -> plugins.updater.pubkey. The signed
+          # -setup.exe + .sig produced here are what finalize feeds into the
+          # combined latest.json. NB: this is distinct from Authenticode Trusted
+          # Signing below. The updater .sig is REGENERATED after Authenticode
+          # signing because Authenticode mutates the installer bytes.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Crash reporting. build.rs reads HQ_INSTALLER_SENTRY_DSN at compile
+          # time and bakes it into env!("SENTRY_DSN") (src-tauri/src/lib.rs);
+          # VITE_SENTRY_DSN is inlined for the React layer. SENTRY_* drive
+          # @sentry/vite-plugin source-map upload.
+          HQ_INSTALLER_SENTRY_DSN: ${{ secrets.HQ_INSTALLER_SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_HQ_INSTALLER_WEB_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: indigo-d0
+          SENTRY_PROJECT: hq-installer-web
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi,nsis,updater
+
+      # -- Azure Trusted Signing (Artifact Signing) -------------------------
+      # Authenticate to Azure via OIDC IMMEDIATELY before signing. A federated
+      # login yields a ~1h az-CLI access token with NO refresh token, so we log
+      # in post-build (not before) to guarantee the token is still valid when
+      # signtool runs at the end of a long build. Normal releases fail in the
+      # preflight above unless all Azure repo variables are present; unsigned
+      # artifacts are allowed only for an explicit manual exception.
+      - name: Azure login (OIDC)
+        if: vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Sign the MSI and the NSIS -setup.exe with the Indigo AI Trusted Signing
+      # certificate profile. Two SCOPED, non-recursive passes (one per bundle
+      # subdir) so we never re-sign the embedded MicrosoftEdgeWebview2Setup.exe
+      # that `embedBootstrapper` packs into the bundle staging — re-signing
+      # Microsoft's binary would replace their Authenticode signature with ours.
+      # trusted-signing-action authenticates via the az-CLI credential
+      # established above (its exclude-azure-cli-credential defaults to false).
+      - name: Sign MSI (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\src-tauri\target\${{ matrix.target }}\release\bundle\msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign NSIS setup (Azure Trusted Signing)
+        if: vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != ''
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: indigosigning
+          certificate-profile-name: indigo-codesign
+          files-folder: ${{ github.workspace }}\src-tauri\target\${{ matrix.target }}\release\bundle\nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Authenticode signing mutates the installer bytes, which invalidates the
+      # minisign updater .sig that `tauri build` wrote over the UNSIGNED bytes.
+      # Regenerate each .sig over the now-signed installer so the auto-updater's
+      # signature check passes against the bytes we actually distribute. Without
+      # this, enabling signing would silently break auto-updates.
+      - name: Regenerate updater signatures (post-Authenticode)
+        if: vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != ''
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
+          # Only files that already have a .sig are updater artifacts worth
+          # re-signing (the NSIS -setup.exe always; the MSI when it carries one).
+          $targets = @()
+          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path "$bundleDir\msi"  -Filter '*.msi'        -ErrorAction SilentlyContinue
+          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
+          if (-not $targets) { Write-Error "No updater artifacts (.sig) found to regenerate"; exit 1 }
+          foreach ($t in $targets) {
+            Write-Host "Re-signing updater signature for $($t.Name)"
+            # `tauri signer sign` reads the key/password from the env vars above
+            # and rewrites <file>.sig next to the input.
+            pnpm exec tauri signer sign "$($t.FullName)"
+            if ($LASTEXITCODE -ne 0) { Write-Error "tauri signer sign failed on $($t.Name)"; exit 1 }
+          }
+
+      - name: Stage release artifacts
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
+          # Tauri v2's Windows updater artifact IS the installer plus a `.sig`
+          # sidecar (e.g. `...-setup.exe` + `...-setup.exe.sig`). Stage the
+          # installers AND their `.sig` files so the publish job can build
+          # latest.json.
+          Get-ChildItem -Path "$bundleDir\msi" -Recurse -Include '*.msi','*.msi.sig' -ErrorAction SilentlyContinue | Copy-Item -Destination $stage
+          Get-ChildItem -Path "$bundleDir\nsis" -Recurse -Include '*-setup.exe','*-setup.exe.sig' -ErrorAction SilentlyContinue | Copy-Item -Destination $stage
+          Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
+
+      - name: Verify staged Authenticode signatures
+        if: vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != ''
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-${{ matrix.target }}"
+          $targets = @()
+          $targets += Get-ChildItem -Path $stage -Filter '*.msi' -File -ErrorAction SilentlyContinue
+          $targets += Get-ChildItem -Path $stage -Filter '*.exe' -File -ErrorAction SilentlyContinue
+          if (-not $targets) {
+            Write-Error "No staged MSI or NSIS setup artifacts found for Authenticode verification"
+            exit 1
+          }
+
+          foreach ($target in $targets) {
+            $signature = Get-AuthenticodeSignature -FilePath $target.FullName
+            if ($signature.Status -ne 'Valid') {
+              Write-Error "Invalid Authenticode signature for $($target.Name): $($signature.Status) $($signature.StatusMessage)"
+              exit 1
+            }
+            Write-Host "Valid Authenticode signature: $($target.Name)"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release-artifacts-${{ matrix.target }}/
+
+  publish-windows:
+    name: Publish Windows release assets
+    needs: [build-windows]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts/
+
+      - name: Flatten into a single dir
+        shell: pwsh
+        run: |
+          $combined = Join-Path $env:GITHUB_WORKSPACE "release-final"
+          New-Item -ItemType Directory -Path $combined -Force | Out-Null
+          Get-ChildItem -Path release-artifacts -Recurse -File | Copy-Item -Destination $combined
+          Get-ChildItem $combined | Format-Table Name, Length
+
+      - name: Upload to macOS-created draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $files = Get-ChildItem release-final -File | ForEach-Object { $_.FullName }
+
+          # The macOS tauri-action job is responsible for creating the draft
+          # release. Windows only uploads assets into that same draft so the
+          # finalizer can publish one cross-platform release and one combined
+          # latest.json after both platform pipelines are complete.
+          $found = $false
+          for ($i = 1; $i -le 120; $i++) {
+            gh release view "$tag" 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              $found = $true
+              break
+            }
+            Write-Host "Waiting for macOS draft release $tag to exist ($i/120)..."
+            Start-Sleep -Seconds 30
+          }
+          if (-not $found) {
+            Write-Error "Release $tag was not created by the macOS job"
+            exit 1
+          }
+
+          gh release upload "$tag" $files --clobber
+
+      # Versionless download aliases. The MSI/NSIS assets are version-stamped
+      # (HQ Installer_0.4.1_x64-setup.exe), so there's no stable "latest" URL
+      # for an onboarding/download page to link. Upload a copy under a fixed
+      # name per arch so this resolves forever:
+      #   .../releases/latest/download/HQ-Installer_x64-setup.exe
+      - name: Upload versionless installer aliases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          foreach ($arch in @("x64", "arm64")) {
+            $setup = Get-ChildItem release-final -Filter "*_${arch}-setup.exe" | Select-Object -First 1
+            if (-not $setup) { Write-Warning "No NSIS setup .exe for $arch — skipping alias"; continue }
+            $alias = Join-Path release-final "HQ-Installer_${arch}-setup.exe"
+            Copy-Item $setup.FullName $alias -Force
+            gh release upload "$tag" $alias --clobber
+            Write-Host "Alias: HQ-Installer_${arch}-setup.exe -> $($setup.Name)"
+          }
+
+  finalize:
+    name: Finalize release
+    needs: [release, publish-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Generate and upload combined latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-sigs
+
+          gh release view "$TAG" --json assets > release-assets.json
+          gh release download "$TAG" --pattern "*.sig" --dir release-sigs --clobber
+          VERSION="${TAG#v}"
+          node scripts/build-latest-json.mjs \
+            --assets release-assets.json \
+            --sig-dir release-sigs \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --repo "$REPO" \
+            --output latest.json
+
+          gh release upload "$TAG" latest.json --clobber
+
+      - name: Verify release assets and publish draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets -q '.assets[].name' > assets.txt
+
+          require_asset() {
+            local label="$1"
+            local pattern="$2"
+            if ! grep -Eq "$pattern" assets.txt; then
+              echo "::error::Missing required asset: $label"
+              echo "Assets present:"
+              cat assets.txt
               exit 1
             fi
-          done
+          }
+
+          # Nothing goes live until all platform assets and the combined
+          # updater manifest are present in the same draft release.
+          require_asset "darwin updater tarball" '\.tar\.gz$'
+          require_asset "darwin updater signature" '\.tar\.gz\.sig$'
+          require_asset "combined latest.json" '^latest\.json$'
+          require_asset "macOS versionless zip" '^hq-installer_universal\.zip$'
+          require_asset "windows x64 setup" '_x64-setup\.exe$'
+          require_asset "windows x64 setup signature" '_x64-setup\.exe\.sig$'
+          require_asset "windows arm64 setup" '_arm64-setup\.exe$'
+          require_asset "windows arm64 setup signature" '_arm64-setup\.exe\.sig$'
+          require_asset "windows x64 versionless setup" '^HQ-Installer_x64-setup\.exe$'
+          require_asset "windows arm64 versionless setup" '^HQ-Installer_arm64-setup\.exe$'
+
           gh release edit "$TAG" --draft=false
