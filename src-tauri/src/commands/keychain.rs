@@ -43,7 +43,20 @@ fn keychain_err(message: impl std::fmt::Display) -> String {
 pub fn keychain_set_impl(service: &str, account: &str, secret: &str) -> Result<(), String> {
     let svc = full_service(service);
     let entry = keyring::Entry::new(&svc, account).map_err(keychain_err)?;
-    entry.set_password(secret).map_err(keychain_err)
+    match entry.set_password(secret) {
+        Ok(()) => Ok(()),
+        // Writing must be idempotent. An existing entry can block the in-place
+        // update — most notably macOS returns errSecDuplicateItem ("the
+        // specified item already exists in the keychain") when the stored item's
+        // ACL is bound to a different code signature (reinstalls, an updated
+        // signing identity, or unsigned dev builds). Recover by removing any
+        // existing entry and writing fresh, so a re-login always succeeds
+        // instead of dead-ending the user.
+        Err(_) => {
+            let _ = entry.delete_credential();
+            entry.set_password(secret).map_err(keychain_err)
+        }
+    }
 }
 
 /// Read the secret for `(service, account)` from the Keychain.
