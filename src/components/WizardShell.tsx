@@ -4,7 +4,6 @@
 // there is no bottom Back/Next bar — each screen owns its own forward CTA.
 
 import React, { useCallback } from "react";
-import { CustomTitlebar } from "./CustomTitlebar";
 import { ProgressIndicator } from "./ProgressIndicator";
 import { WizardFooterProvider } from "./WizardFooter";
 import { useFooterRef } from "./wizard-footer-context";
@@ -71,8 +70,13 @@ function WizardShellInner({
           calc(100% - 2rem) avoids the bug where titlebar h-10 (40px) didn't
           match the subtracted 2rem (32px) in Tauri, clipping the footer by 8px. */}
       <div className="relative z-10 flex flex-col w-full h-full">
-        {/* Titlebar drag strip; CustomTitlebar adds Windows-only controls. */}
-        <CustomTitlebar inTauri={inTauri} />
+        {/* Titlebar drag strip — ONLY element with data-tauri-drag-region */}
+        <div
+          data-testid="titlebar"
+          role="banner"
+          data-tauri-drag-region
+          className={`shrink-0 w-full bg-zinc-950/80 ${inTauri ? "h-10" : "h-8"}`}
+        />
 
         {/* Body — sidebar + content/footer */}
         <div className="flex-1 flex w-full overflow-hidden">

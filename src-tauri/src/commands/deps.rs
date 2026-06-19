@@ -976,6 +976,11 @@ async fn run_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<
 /// surfaces useful context in the UI even though no real process ever ran.
 /// Without this, `install_node` / `install_gh` return a bare `Err(…)` and
 /// the panel is empty: the user sees "Installation failed" with no clue why.
+///
+/// Only the macOS install path emits preflight lines; the Windows installers
+/// surface their own progress, so this is `#[cfg(not(windows))]` to avoid a
+/// dead-code warning on Windows.
+#[cfg(not(windows))]
 fn emit_preflight_line(app: &AppHandle, msg: &str) {
     let _ = app.emit(
         "install:progress",
