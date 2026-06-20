@@ -1126,7 +1126,7 @@ mod windows_tests {
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
             program: "bash".into(),
-            args: vec!["/c".into(), "echo".into(), "hello world".into()],
+            args: vec!["-c".into(), "echo hello world".into()],
             cwd: None,
             env: None,
             install_root: root.path().to_string_lossy().into_owned(),
@@ -1150,7 +1150,7 @@ mod windows_tests {
         let root = tempfile::tempdir().expect("tmpdir");
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
-            program: "bash".into(),
+            program: "qmd".into(),
             args: vec![],
             cwd: None,
             env: None,
@@ -1167,13 +1167,7 @@ mod windows_tests {
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
             program: "bash".into(),
-            args: vec![
-                "/c".into(),
-                "ping".into(),
-                "-n".into(),
-                "31".into(),
-                "127.0.0.1".into(),
-            ],
+            args: vec!["-c".into(), "sleep 31".into()],
             cwd: None,
             env: None,
             install_root: root.path().to_string_lossy().into_owned(),
