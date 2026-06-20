@@ -91,6 +91,10 @@ function looksLikeFileError(message: string): boolean {
   return /is a file|not a folder|not a directory/i.test(message);
 }
 
+function pathKey(path: string): string {
+  return trimTrailingSlash(path).replace(/\\/g, "/").toLowerCase();
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -106,6 +110,8 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   const mountedRef = useRef(true);
   const controllerRef = useRef<AbortController | null>(null);
   const installerVersionRef = useRef<string>("unknown");
+  const hasAutoResolvedRef = useRef(false);
+  const failedPathKeysRef = useRef<Set<string>>(new Set());
 
   // Stable ref so async attempts call the latest onNext without re-running.
   const onNextRef = useRef(onNext);
@@ -149,6 +155,7 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
       detail?: string,
     ) => {
       if (!mountedRef.current) return;
+      if (installPath) failedPathKeysRef.current.add(pathKey(installPath));
       setPhase("recovering");
       setBusy(false);
       setRecovery({ title, message, detail, path: installPath || undefined });
@@ -386,14 +393,22 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
     }
   }, [fail, installAt]);
 
+  const resolveAndInstallRef = useRef(resolveAndInstall);
+  useEffect(() => {
+    resolveAndInstallRef.current = resolveAndInstall;
+  }, [resolveAndInstall]);
+
   useEffect(() => {
     mountedRef.current = true;
-    void resolveAndInstall();
+    if (!hasAutoResolvedRef.current) {
+      hasAutoResolvedRef.current = true;
+      void resolveAndInstallRef.current();
+    }
     return () => {
       mountedRef.current = false;
       controllerRef.current?.abort();
     };
-  }, [resolveAndInstall]);
+  }, []);
 
   async function handleChooseDifferentFolder() {
     setBusy(true);
@@ -421,25 +436,30 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
     setBusy(true);
     try {
       const home = await invoke<string>("home_dir");
-      const documentsPath = joinPath(joinPath(home, "Documents"), "HQ");
-      const homeFallbackPath = joinPath(home, "HQ");
-      const documentsOk = await installAt(documentsPath);
-      if (!documentsOk && mountedRef.current) {
-        await installAt(homeFallbackPath);
+      const documentsDir = joinPath(home, "Documents");
+      const fallbackPaths = [
+        joinPath(documentsDir, "HQ"),
+        joinPath(home, "HQ"),
+        joinPath(documentsDir, "HQ-Recovery"),
+        joinPath(home, "HQ-Recovery"),
+      ];
+
+      let attempted = false;
+      for (const fallbackPath of fallbackPaths) {
+        if (failedPathKeysRef.current.has(pathKey(fallbackPath))) continue;
+        attempted = true;
+        const ok = await installAt(fallbackPath);
+        if (ok || !mountedRef.current) return;
       }
-    } catch {
-      try {
-        const home = await invoke<string>("home_dir");
-        await installAt(joinPath(home, "HQ"));
-      } catch (err) {
-        await fail(
-          currentPath,
-          "directory",
-          "HQ couldn't use the fallback folder",
-          "The Documents fallback was not writable, and ~/HQ could not be prepared.",
-          messageFromError(err),
-        );
-      }
+      if (!attempted && mountedRef.current) setBusy(false);
+    } catch (err) {
+      await fail(
+        currentPath,
+        "directory",
+        "HQ couldn't use the fallback folder",
+        "The Documents fallback was not writable, and a recovery folder could not be prepared.",
+        messageFromError(err),
+      );
     }
   }
 

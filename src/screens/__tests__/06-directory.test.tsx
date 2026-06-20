@@ -332,6 +332,88 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
       expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/HQ");
     });
 
+    it("finishes the Documents extraction after install state updates rerender the component", async () => {
+      let resolveFetch!: (v: { version: string }) => void;
+      let progress:
+        | ((event: { bytes: number; total: number }) => void)
+        | undefined;
+      let signal: AbortSignal | undefined;
+      mockFetch.mockImplementation((targetDir, _token, onProgress, abortSignal) => {
+        if (targetDir === "/Users/test/Documents/HQ") {
+          progress = onProgress;
+          signal = abortSignal;
+          return new Promise((res) => {
+            resolveFetch = res;
+          });
+        }
+        return Promise.resolve({ version: "v-test" });
+      });
+      const onNext = vi.fn();
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonWritablePaths: ["/Users/test/hq"],
+        homeDir: "/Users/test",
+      });
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+        ).toBeTruthy();
+      });
+
+      await userEvent.click(
+        screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+      );
+
+      await waitFor(() => expect(signal).toBeDefined());
+      progress?.({ bytes: 1, total: 2 });
+      await waitFor(() => expect(screen.getByText("50%")).toBeTruthy());
+      expect(signal?.aborted).toBe(false);
+      expect(
+        mockInvoke.mock.calls.filter(([command]) => command === "resolve_hq_path"),
+      ).toHaveLength(1);
+
+      resolveFetch({ version: "v-test" });
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/HQ");
+      expect(signal?.aborted).toBe(false);
+    });
+
+    it("does not retry a case-folded copy of the failed path during Documents recovery", async () => {
+      const onNext = vi.fn();
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonWritablePaths: ["/Users/test/hq", "/Users/test/Documents/HQ"],
+        homeDir: "/Users/test",
+      });
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+        ).toBeTruthy();
+      });
+
+      await userEvent.click(
+        screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+      );
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      const createdPaths = mockInvoke.mock.calls
+        .filter(([command]) => command === "create_directory")
+        .map(([, payload]) => {
+          const args = payload as { parent: string; name: string };
+          const parent = args.parent.replace(/[\\/]+$/, "");
+          const separator = args.parent.includes("\\") ? "\\" : "/";
+          return `${parent}${separator}${args.name}`;
+        });
+      expect(createdPaths).toContain("/Users/test/Documents/HQ");
+      expect(createdPaths).toContain("/Users/test/Documents/HQ-Recovery");
+      expect(createdPaths).not.toContain("/Users/test/HQ");
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe(
+        "/Users/test/Documents/HQ-Recovery",
+      );
+    });
+
     it("shows a warning for an existing non-HQ non-empty folder and can use it anyway", async () => {
       const onNext = vi.fn();
       setupInvokeMock({
