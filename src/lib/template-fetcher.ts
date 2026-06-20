@@ -57,14 +57,6 @@ export interface TemplateSource {
   /** When set, force `/tarball/{ref}` against `repo` and skip release lookup. */
   ref?: string;
   /**
-   * Bearer token included as `Authorization: Bearer <token>` on every fetch.
-   * Required for private repos (e.g. `indigoai-us/hq-core-staging`), where
-   * GitHub returns 404 for anonymous tarball requests. The wizard reads it
-   * from `gh auth token` via the `get_github_token` Tauri command and never
-   * persists it.
-   */
-  authToken?: string;
-  /**
    * Explicit opt-in for mutable branch/ref tarballs outside the staging source.
    * Intended for dev/test builds only; production release tarballs should be
    * immutable GitHub releases.
@@ -685,6 +677,14 @@ function isStagingRef(repo: string, source?: TemplateSource): boolean {
   return Boolean(source?.ref) && repo === "indigoai-us/hq-core-staging";
 }
 
+function toUint8Array(bytes: unknown): Uint8Array {
+  if (bytes instanceof Uint8Array) return bytes;
+  if (Array.isArray(bytes) && bytes.every((b) => Number.isInteger(b))) {
+    return Uint8Array.from(bytes);
+  }
+  throw new TemplateFetchError("Native staging download returned invalid bytes", false);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -734,11 +734,11 @@ export async function fetchAndExtract(
   }
 
   const repo = source?.repo ?? DEFAULT_REPO;
-  const authToken = source?.authToken;
 
   // 1. Resolve tarball URL + version.
   let version: string;
-  let tarballUrl: string;
+  let tarballUrl: string | null = null;
+  let compressedBytes: Uint8Array | null = null;
 
   if (source?.ref) {
     // Forced mutable refs are only allowed for the explicit staging source or
@@ -751,13 +751,34 @@ export async function fetchAndExtract(
       );
     }
     version = source.ref;
-    tarballUrl = branchTarballUrl(repo, source.ref);
+    if (isStagingRef(repo, source)) {
+      try {
+        compressedBytes = toUint8Array(await invoke("download_staging_tarball"));
+      } catch (err) {
+        if (signal?.aborted) {
+          throw new TemplateFetchError("Download cancelled", false, err);
+        }
+        throw new TemplateFetchError(
+          `Staging template download failed: ${String(err)}`,
+          true,
+          err,
+        );
+      }
+      if (signal?.aborted) {
+        throw new TemplateFetchError("Download cancelled", false);
+      }
+      if (onProgress && compressedBytes.length > 0) {
+        onProgress({ bytes: compressedBytes.length, total: compressedBytes.length });
+      }
+    } else {
+      tarballUrl = branchTarballUrl(repo, source.ref);
+    }
   } else if (tag) {
-    const release = await getTagRelease(repo, tag, authToken, signal);
+    const release = await getTagRelease(repo, tag, undefined, signal);
     version = release.tag_name;
     tarballUrl = release.tarball_url;
   } else {
-    const release = await getLatestRelease(repo, authToken, signal);
+    const release = await getLatestRelease(repo, undefined, signal);
     if (release) {
       version = release.tag_name;
       tarballUrl = release.tarball_url;
@@ -776,12 +797,17 @@ export async function fetchAndExtract(
   }
 
   // 2. Download tarball with streaming progress
-  const compressedBytes = await downloadTarball(
-    tarballUrl,
-    authToken,
-    onProgress,
-    signal,
-  );
+  if (tarballUrl) {
+    compressedBytes = await downloadTarball(
+      tarballUrl,
+      undefined,
+      onProgress,
+      signal,
+    );
+  }
+  if (!compressedBytes) {
+    throw new TemplateFetchError("Template download did not return bytes", false);
+  }
 
   // 3. Ensure target directory exists
   await mkdir(targetDir, { recursive: true });

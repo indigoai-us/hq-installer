@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const STAGING_KEY: &str = "useStagingSource";
+const STAGING_REPO: &str = "indigoai-us/hq-core-staging";
 
 /// Default `~/.hq/installer.json`. Pulled out so callers can resolve the
 /// path once and pass it both to the menu builder (on startup) and to the
@@ -123,16 +124,15 @@ where
     None
 }
 
-/// Tauri command: returns the user's GitHub token via `gh auth token`.
+/// Returns the user's GitHub token via `gh auth token`.
 ///
 /// Required when the staging toggle is on, because `indigoai-us/hq-core-staging`
 /// is private and anonymous GitHub tarball requests return 404. Errors are
 /// surfaced to the frontend as readable strings so the wizard can prompt the
 /// user to run `gh auth login` (rather than dumping a generic 404).
 ///
-/// Token bytes are never logged or persisted — only returned over IPC.
-#[tauri::command]
-pub fn get_github_token() -> Result<String, String> {
+/// Token bytes are never logged, persisted, or returned over IPC.
+fn get_github_token() -> Result<String, String> {
     let gh = resolve_gh_binary(|| which::which("gh").ok(), GH_FALLBACK_PATHS).ok_or_else(|| {
         "GitHub CLI (`gh`) not found. Install with `brew install gh`, then run `gh auth login`."
             .to_string()
@@ -164,6 +164,50 @@ pub fn get_github_token() -> Result<String, String> {
         );
     }
     Ok(token)
+}
+
+fn staging_tarball_url(reference: &str) -> String {
+    format!("https://api.github.com/repos/{STAGING_REPO}/tarball/{reference}")
+}
+
+fn download_staging_tarball_with_token(reference: &str, token: &str) -> Result<Vec<u8>, String> {
+    if reference.trim().is_empty() || reference.contains('/') || reference.contains('\\') {
+        return Err("Invalid staging ref".to_string());
+    }
+
+    let response = reqwest::blocking::Client::new()
+        .get(staging_tarball_url(reference))
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("hq-installer/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .bearer_auth(token)
+        .send()
+        .map_err(|e| format!("Network error downloading staging template: {e}"))?;
+
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err("Staging template not found or GitHub token lacks access.".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!(
+            "GitHub staging tarball download failed: HTTP {status}"
+        ));
+    }
+
+    response
+        .bytes()
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| format!("Failed to read staging template bytes: {e}"))
+}
+
+/// Tauri command: downloads the private staging tarball without exposing the
+/// GitHub token to the renderer. The renderer receives archive bytes only.
+#[tauri::command]
+pub fn download_staging_tarball() -> Result<Vec<u8>, String> {
+    let token = get_github_token()?;
+    download_staging_tarball_with_token("main", &token)
 }
 
 #[cfg(test)]
@@ -265,6 +309,20 @@ mod tests {
     fn resolve_gh_binary_returns_none_when_nothing_available() {
         let resolved = resolve_gh_binary(|| None, &["/nonexistent/path/gh"]);
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn staging_tarball_url_targets_private_staging_repo_ref() {
+        assert_eq!(
+            staging_tarball_url("main"),
+            "https://api.github.com/repos/indigoai-us/hq-core-staging/tarball/main"
+        );
+    }
+
+    #[test]
+    fn staging_download_rejects_path_like_refs_before_network() {
+        let err = download_staging_tarball_with_token("../main", "secret").unwrap_err();
+        assert_eq!(err, "Invalid staging ref");
     }
 
     #[test]

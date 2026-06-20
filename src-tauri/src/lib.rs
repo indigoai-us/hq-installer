@@ -163,7 +163,7 @@ pub fn run() {
                     commands::menubar::write_menubar_telemetry_pref,
                     commands::menubar::write_menubar_hq_path,
                     commands::staging::get_use_staging_source,
-                    commands::staging::get_github_token,
+                    commands::staging::download_staging_tarball,
                 ]
             }
             #[cfg(windows)]
@@ -213,7 +213,7 @@ pub fn run() {
                     commands::menubar::write_menubar_telemetry_pref,
                     commands::menubar::write_menubar_hq_path,
                     commands::staging::get_use_staging_source,
-                    commands::staging::get_github_token,
+                    commands::staging::download_staging_tarball,
                 ]
             }
         })
