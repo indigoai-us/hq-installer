@@ -318,7 +318,13 @@ pub enum ProcessEvent {
     Exit { code: Option<i32>, success: bool },
 }
 
+#[cfg(not(test))]
 const ALLOWED_PROGRAMS: &[&str] = &["npx", "bash", "hq", "qmd"];
+// Tests exercise the spawn plumbing with `cmd` on Windows — the only shell
+// reliably present on CI runners (`bash` there resolves to WSL's stub, which
+// has no distro). `cmd` is NEVER allowed in shipped builds.
+#[cfg(test)]
+const ALLOWED_PROGRAMS: &[&str] = &["npx", "bash", "hq", "qmd", "cmd"];
 const ALLOWED_ENV_KEYS: &[&str] = &["HQ_ROOT"];
 
 fn ensure_allowed_program(program: &str) -> Result<(), String> {
@@ -1125,8 +1131,8 @@ mod windows_tests {
         let root = tempfile::tempdir().expect("tmpdir");
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
-            program: "bash".into(),
-            args: vec!["-c".into(), "echo hello world".into()],
+            program: "cmd".into(),
+            args: vec!["/c".into(), "echo".into(), "hello world".into()],
             cwd: None,
             env: None,
             install_root: root.path().to_string_lossy().into_owned(),
@@ -1166,8 +1172,14 @@ mod windows_tests {
         let root = tempfile::tempdir().expect("tmpdir");
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
-            program: "bash".into(),
-            args: vec!["-c".into(), "sleep 31".into()],
+            program: "cmd".into(),
+            args: vec![
+                "/c".into(),
+                "ping".into(),
+                "-n".into(),
+                "31".into(),
+                "127.0.0.1".into(),
+            ],
             cwd: None,
             env: None,
             install_root: root.path().to_string_lossy().into_owned(),
