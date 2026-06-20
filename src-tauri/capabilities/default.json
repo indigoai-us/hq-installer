@@ -26,9 +26,9 @@
         { "url": "https://*.execute-api.us-east-1.amazonaws.com/*" },
         { "url": "https://hqapi.getindigo.ai/*" },
         { "url": "https://*.auth.us-east-1.amazoncognito.com/*" },
+        { "url": "https://cognito-idp.us-east-1.amazonaws.com/*" },
         { "url": "https://api.github.com/*" },
         { "url": "https://codeload.github.com/*" },
-        { "url": "https://*.amazonaws.com/*" },
         { "url": "https://*.s3.amazonaws.com/*" },
         { "url": "https://*.s3.us-east-1.amazonaws.com/*" },
         { "url": "https://s3.us-east-1.amazonaws.com/*" },
@@ -44,11 +44,7 @@
         { "path": "$HOME/hq/.*/**" },
         { "path": "$HOME/hq/**/.*" },
         { "path": "$HOME/hq/**/.*/**" },
-        { "path": "$HOME/.hq" },
-        { "path": "$HOME/.hq/**" },
-        { "path": "$HOME/.hq/.*" },
-        { "path": "$HOME/.hq/**/.*" },
-        { "path": "$HOME/.hq/**/.*/**" }
+        { "path": "$HOME/.hq" }
       ]
     },
     {
@@ -60,10 +56,8 @@
         { "path": "$HOME/hq/.*/**" },
         { "path": "$HOME/hq/**/.*" },
         { "path": "$HOME/hq/**/.*/**" },
-        { "path": "$HOME/.hq/**" },
-        { "path": "$HOME/.hq/.*" },
-        { "path": "$HOME/.hq/**/.*" },
-        { "path": "$HOME/.hq/**/.*/**" }
+        { "path": "$HOME/.hq/cognito-tokens.json" },
+        { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
       ]
     },
     {
@@ -75,10 +69,7 @@
         { "path": "$HOME/hq/.*/**" },
         { "path": "$HOME/hq/**/.*" },
         { "path": "$HOME/hq/**/.*/**" },
-        { "path": "$HOME/.hq/**" },
-        { "path": "$HOME/.hq/.*" },
-        { "path": "$HOME/.hq/**/.*" },
-        { "path": "$HOME/.hq/**/.*/**" }
+        { "path": "$HOME/.hq/embeddings-pending.json" }
       ]
     },
     {
@@ -91,10 +82,8 @@
         { "path": "$HOME/hq/**/.*" },
         { "path": "$HOME/hq/**/.*/**" },
         { "path": "$HOME/.hq" },
-        { "path": "$HOME/.hq/**" },
-        { "path": "$HOME/.hq/.*" },
-        { "path": "$HOME/.hq/**/.*" },
-        { "path": "$HOME/.hq/**/.*/**" }
+        { "path": "$HOME/.hq/cognito-tokens.json" },
+        { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
       ]
     },
     {
@@ -106,12 +95,7 @@
         { "path": "$HOME/hq/.*" },
         { "path": "$HOME/hq/.*/**" },
         { "path": "$HOME/hq/**/.*" },
-        { "path": "$HOME/hq/**/.*/**" },
-        { "path": "$HOME/.hq" },
-        { "path": "$HOME/.hq/**" },
-        { "path": "$HOME/.hq/.*" },
-        { "path": "$HOME/.hq/**/.*" },
-        { "path": "$HOME/.hq/**/.*/**" }
+        { "path": "$HOME/hq/**/.*/**" }
       ]
     },
     {
@@ -123,10 +107,8 @@
         { "path": "$HOME/hq/.*/**" },
         { "path": "$HOME/hq/**/.*" },
         { "path": "$HOME/hq/**/.*/**" },
-        { "path": "$HOME/.hq/**" },
-        { "path": "$HOME/.hq/.*" },
-        { "path": "$HOME/.hq/**/.*" },
-        { "path": "$HOME/.hq/**/.*/**" }
+        { "path": "$HOME/.hq/cognito-tokens.json" },
+        { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
       ]
     },
     {
