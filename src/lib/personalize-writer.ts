@@ -1,5 +1,7 @@
 import Handlebars from "handlebars";
 import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import profileTemplate from "../../templates/profile.md.hbs";
+import voiceStyleTemplate from "../../templates/voice-style.md.hbs";
 import {
   ensureManifestEntries,
   type ManifestEntrySeed,
@@ -51,23 +53,16 @@ export interface PersonalizeOptions {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Load a template: use the injected string if provided, otherwise resolve the
- * bundled Tauri resource path and read via @tauri-apps/plugin-fs.
- */
-async function loadTemplate(
+function renderTemplate(
+  precompiled: (context: Record<string, unknown>) => string,
   injected: string | undefined,
-  resourceRelPath: string,
-): Promise<string> {
+  context: Record<string, unknown>,
+): string {
   if (injected !== undefined) {
-    return injected;
+    return Handlebars.compile(injected)(context);
   }
-  // At runtime in a packaged Tauri app, templates/ is bundled as a resource.
-  // resolveResource() maps "templates/..." to the correct on-disk path.
-  const { resolveResource } = await import("@tauri-apps/api/path");
-  const { readTextFile } = await import("@tauri-apps/plugin-fs");
-  const resolved = await resolveResource(resourceRelPath);
-  return readTextFile(resolved);
+
+  return precompiled(context);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,22 +92,20 @@ export async function personalize(
   // -----------------------------------------------------------------------
   // 1. Load and render profile.md
   // -----------------------------------------------------------------------
-  const profileTemplateStr = await loadTemplate(
+  const profileContent = renderTemplate(
+    profileTemplate,
     options?.profileTemplate,
-    "templates/profile.md.hbs",
+    { name, about, goals },
   );
-  const renderProfile = Handlebars.compile(profileTemplateStr);
-  const profileContent = renderProfile({ name, about, goals });
 
   // -----------------------------------------------------------------------
   // 2. Load and render voice-style.md
   // -----------------------------------------------------------------------
-  const voiceStyleTemplateStr = await loadTemplate(
+  const voiceStyleContent = renderTemplate(
+    voiceStyleTemplate,
     options?.voiceStyleTemplate,
-    "templates/voice-style.md.hbs",
+    { name, customizations },
   );
-  const renderVoiceStyle = Handlebars.compile(voiceStyleTemplateStr);
-  const voiceStyleContent = renderVoiceStyle({ name, customizations });
 
   // -----------------------------------------------------------------------
   // 3. Write knowledge files under core/knowledge/{name}/
