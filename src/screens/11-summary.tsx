@@ -15,7 +15,9 @@ import { WizardFooterSlot } from "@/components/WizardFooter";
 import { pingSuccess } from "../lib/telemetry";
 import {
   getInstallerVersion,
+  readManifest,
   recordInstallComplete,
+  type FailureRecord,
 } from "../lib/install-manifest";
 import {
   readInstallerImportBreadcrumb,
@@ -76,6 +78,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   const [importPromptCopied, setImportPromptCopied] = useState(false);
   const [installerImport, setInstallerImport] =
     useState<InstallerImportBreadcrumb | null>(null);
+  const [setupFailures, setSetupFailures] = useState<FailureRecord[]>([]);
   const detectorMountedRef = useRef(false);
   const detectorProbeInFlightRef = useRef(false);
   // null while we're still probing — render a neutral placeholder until known.
@@ -108,6 +111,8 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             pingSuccess(v).catch(() => {});
           }
           await recordInstallComplete(wizardState.installPath as string, v);
+          const manifest = await readManifest(wizardState.installPath as string, v);
+          setSetupFailures(manifest.failures);
         } catch {
           /* non-fatal */
         }
@@ -125,8 +130,10 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         .then((v) => pingSuccess(v))
         .catch(() => {});
       setInstallerImport(null);
+      setSetupFailures([]);
     } else {
       setInstallerImport(null);
+      setSetupFailures([]);
     }
   }, [wizardState.telemetryEnabled, wizardState.installPath]);
 
@@ -281,6 +288,26 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           <SummaryRow label="Email" value={wizardState.gitEmail ?? "—"} />
         </div>
       </div>
+
+      {setupFailures.length > 0 && (
+        <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-4">
+          <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
+            Needs attention
+          </p>
+          <p className="text-sm text-zinc-300">
+            Setup reached Done, but a few steps need another pass. Open HQ and
+            the assistant can finish them from inside your workspace.
+          </p>
+          <ul className="flex flex-col gap-1 text-xs text-zinc-500">
+            {setupFailures.map((failure, index) => (
+              <li key={`${failure.stage}-${failure.ts}-${index}`}>
+                <span className="text-zinc-300">{failure.stage}</span>:{" "}
+                {failure.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Open HQ — primary CTA */}
       <div className="flex flex-col gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-4">

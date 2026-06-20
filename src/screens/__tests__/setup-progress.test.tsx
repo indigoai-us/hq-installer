@@ -1,5 +1,4 @@
-import { render, screen, waitFor, act } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   __resetSetupProgressSessionForTests,
@@ -25,8 +24,8 @@ import {
 // Asserted behavior:
 //   - Exactly one progress bar is rendered (role="progressbar").
 //   - A single status line describes the current activity (no per-stage rows).
-//   - No Next / Continue / Skip controls appear; only Retry on failure.
-//   - A failed stage does NOT discard prior completed stages.
+//   - No Next / Continue / Skip controls appear.
+//   - A failed stage is journaled and setup continues to Done.
 //   - install-manifest records each stage outcome.
 //   - onNext() fires automatically when every stage succeeds.
 // ---------------------------------------------------------------------------
@@ -548,63 +547,58 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     });
 
     it("skips the claim when no user is signed in", async () => {
-      // No user → the flow halts at git-init (needs identity), but the claim
-      // must never be attempted without a signed-in user.
+      // No user → git-init is recorded as failed, but setup continues. The
+      // claim must never be attempted without a signed-in user.
       mockGetCurrentUser.mockResolvedValue(null);
-      const { container } = render(
-        <SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />,
-      );
-      await waitFor(() => {
-        const row = container.querySelector('[data-stage="git-init"]');
-        expect(row?.getAttribute("data-status")).toBe("failed");
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
       });
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "git-init",
+        expect.stringContaining("signed-in user identity"),
+      );
       expect(mockClaimPendingInvitesForUser).not.toHaveBeenCalled();
     });
   });
 
-  // ── 3. Stage failure — error UI + Retry, prior stages preserved ────────
+  // ── 3. Stage failure — journaled and non-fatal ─────────────────────────
 
   describe("stage failure", () => {
-    it("shows a Retry button when deps fails", async () => {
-      setDepsFailNode();
-      render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
-      await waitFor(() => {
-        expect(screen.queryByTestId("retry-button")).not.toBeNull();
-      });
-    });
-
-    it("marks the failed stage with status='failed' in the DOM", async () => {
-      setDepsFailNode();
-      const { container } = render(
-        <SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />,
-      );
-      await waitFor(() => {
-        const row = container.querySelector('[data-stage="deps"]');
-        expect(row?.getAttribute("data-status")).toBe("failed");
-      });
-    });
-
-    it("does NOT call onNext when deps fails", async () => {
+    it("does NOT show a Retry button when deps fails", async () => {
       setDepsFailNode();
       const onNext = vi.fn();
       render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
-      await waitFor(() => {
-        expect(screen.queryByTestId("retry-button")).not.toBeNull();
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
       });
-      expect(onNext).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("retry-button")).toBeNull();
     });
 
-    it("resumes from the failed stage on Retry — prior stages are NOT re-run", async () => {
-      // First run: deps OK → git-init fails. Retry should NOT re-call
-      // runDepsInstall but SHOULD re-invoke git_init.
-      let gitCalls = 0;
+    it("records the failed deps stage in the manifest", async () => {
+      setDepsFailNode();
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "deps",
+        expect.stringContaining("Node.js failed to install"),
+      );
+    });
+
+    it("continues to later stages and Done when git-init fails", async () => {
       mockInvoke.mockImplementation(async (cmd: string) => {
         if (cmd === "git_init") {
-          gitCalls += 1;
-          if (gitCalls === 1) throw new Error("git refused");
-          return "0123456789abcdef0123456789abcdef01234567";
+          throw new Error("git refused");
         }
-        if (cmd === "spawn_process") return `handle-${gitCalls}`;
+        if (cmd === "spawn_process") return "handle-after-git-failure";
         if (cmd === "install_menubar_app") {
           return { success: true, appPath: "/x", error: null };
         }
@@ -614,38 +608,30 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       const onNext = vi.fn();
       render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
 
-      await waitFor(() =>
-        expect(screen.queryByTestId("retry-button")).not.toBeNull(),
-      );
-      // deps ran exactly once.
-      expect(mockRunDepsInstall).toHaveBeenCalledTimes(1);
-
-      await act(async () => {
-        await userEvent.click(screen.getByTestId("retry-button"));
-      });
-
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
         timeout: 5000,
       });
-      // deps STILL ran only once — Retry resumes from git-init.
-      expect(mockRunDepsInstall).toHaveBeenCalledTimes(1);
-      // git_init re-invoked on retry.
-      expect(gitCalls).toBe(2);
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "git-init",
+        "git refused",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith("install_menubar_app");
     });
 
-    it("converts unexpected stage throws into a failed stage with Retry", async () => {
+    it("converts unexpected stage throws into a failed stage and continues", async () => {
       mockRunDepsInstall.mockRejectedValueOnce(
         new Error("listener registration failed"),
       );
 
-      render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
 
-      await waitFor(() =>
-        expect(screen.queryByTestId("retry-button")).not.toBeNull(),
-      );
-      expect(screen.getByTestId("status-line")).toHaveTextContent(
-        /listener registration failed/i,
-      );
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+      expect(screen.queryByTestId("retry-button")).toBeNull();
       expect(mockRecordStepFailure).toHaveBeenCalledWith(
         "/tmp/hq",
         expect.any(String),
@@ -806,20 +792,21 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     });
 
     it("skips the kickoff (and still completes) when no user is signed in", async () => {
-      // No user: initial-sync skips; the flow then halts at git-init (which
-      // requires the identity) — but the sync stage itself must not be the
-      // thing that fails, and no kickoff must have been attempted.
+      // No user: initial-sync skips; git-init is recorded as failed later, but
+      // the sync stage itself must not be the thing that fails, and no kickoff
+      // must have been attempted.
       mockGetCurrentUser.mockResolvedValue(null);
-      const { container } = render(
-        <SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />,
-      );
-      await waitFor(() => {
-        const row = container.querySelector('[data-stage="git-init"]');
-        expect(row?.getAttribute("data-status")).toBe("failed");
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
       });
       expect(mockStartInitialCloudSync).not.toHaveBeenCalled();
-      const syncRow = container.querySelector('[data-stage="initial-sync"]');
-      expect(syncRow).toBeNull(); // not the active/failed stage
+      expect(mockRecordStepOk).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "initial-sync",
+      );
     });
 
     it("treats a kickoff failure as non-fatal — install completes, failure journaled", async () => {

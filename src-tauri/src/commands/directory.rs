@@ -16,6 +16,7 @@
 // Server-side per the test contract (06-directory.test.tsx) — frontend MUST
 // NOT do inline file checks.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -131,6 +132,12 @@ pub fn create_directory(parent: String, name: String) -> Result<CreateDirectoryR
 
     let target = parent_path.join(trimmed_name);
     let already_existed = target.exists();
+    if already_existed && !target.is_dir() {
+        return Err(format!(
+            "{} exists but is a file, not a folder",
+            target.display()
+        ));
+    }
     if !already_existed {
         std::fs::create_dir_all(&target)
             .map_err(|e| format!("Failed to create {}: {}", target.display(), e))?;
@@ -159,6 +166,9 @@ pub fn create_directory(parent: String, name: String) -> Result<CreateDirectoryR
 #[tauri::command]
 pub fn resolve_hq_path() -> Result<String, String> {
     let hq_path = expand_tilde("~/hq");
+    if hq_path.exists() && !hq_path.is_dir() {
+        return Err("~/hq exists but is a file, not a folder".to_string());
+    }
     if !hq_path.exists() {
         std::fs::create_dir_all(&hq_path).map_err(|e| format!("Failed to create ~/hq: {e}"))?;
     }
@@ -166,6 +176,37 @@ pub fn resolve_hq_path() -> Result<String, String> {
     // Fall back to the unresolved path if canonicalize fails (e.g. race).
     let canonical = hq_path.canonicalize().unwrap_or_else(|_| hq_path.clone());
     Ok(canonical.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn check_writable(path: String) -> Result<bool, String> {
+    let dir = expand_tilde(&path);
+    if dir.exists() && !dir.is_dir() {
+        return Ok(false);
+    }
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Ok(false);
+    }
+
+    let probe = dir.join(format!(
+        ".hq-installer-write-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    match std::fs::File::create(&probe).and_then(|mut f| f.write_all(b"ok")) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(true)
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
@@ -298,6 +339,32 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn create_directory_rejects_existing_file() {
+        let parent = tempdir().unwrap();
+        fs::write(parent.path().join("hq"), "x").unwrap();
+        let err = create_directory(
+            parent.path().to_string_lossy().into_owned(),
+            "hq".to_string(),
+        )
+        .unwrap_err();
+        assert!(err.contains("is a file"));
+    }
+
+    #[test]
+    fn check_writable_returns_true_for_writable_directory() {
+        let dir = tempdir().unwrap();
+        assert!(check_writable(dir.path().to_string_lossy().into_owned()).unwrap());
+    }
+
+    #[test]
+    fn check_writable_returns_false_for_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("hq");
+        fs::write(&file, "x").unwrap();
+        assert!(!check_writable(file.to_string_lossy().into_owned()).unwrap());
     }
 
     #[cfg(unix)]
