@@ -351,8 +351,8 @@ jobs:
         shell: pwsh
         run: |
           $tag = if ("${{ github.event.inputs.tag }}") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
-          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
-            Write-Error "Tag must match vX.Y.Z format, got: $tag"
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
+            Write-Error "Tag must match vX.Y.Z or vX.Y.Z-prerelease format, got: $tag"
             exit 1
           }
 
