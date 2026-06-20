@@ -309,10 +309,16 @@ export async function syncFromS3(
     if (getRes.Body) {
       // Read body as bytes and write via Tauri
       const bytes = await getRes.Body.transformToByteArray();
+      const installRoot = normalizeTrustedPath(installPath);
+      const writePath =
+        installRoot && filePath.startsWith(`${installRoot.replace(/\/+$/, "")}/`)
+          ? filePath.slice(installRoot.replace(/\/+$/, "").length + 1)
+          : filePath;
 
       await invoke("write_file", {
-        path: filePath,
+        path: writePath,
         contents: Array.from(bytes),
+        installRoot: installPath,
       });
     }
 
