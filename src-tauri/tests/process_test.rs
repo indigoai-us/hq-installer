@@ -53,6 +53,31 @@ mod process_tests {
         (lines, exit)
     }
 
+    fn spawn_args(program: &str, args: Vec<String>, install_root: &TempDir) -> SpawnArgs {
+        SpawnArgs {
+            program: program.to_string(),
+            args,
+            cwd: None,
+            env: None,
+            install_root: install_root.path().to_string_lossy().into_owned(),
+        }
+    }
+
+    fn spawn_args_with_cwd(
+        program: &str,
+        args: Vec<String>,
+        cwd: String,
+        install_root: &TempDir,
+    ) -> SpawnArgs {
+        SpawnArgs {
+            program: program.to_string(),
+            args,
+            cwd: Some(cwd),
+            env: None,
+            install_root: install_root.path().to_string_lossy().into_owned(),
+        }
+    }
+
     /// Drop an executable shell script named `name` into `dir` that echoes
     /// `<name>-ok` to stdout and exits 0.
     fn make_fake_bin(dir: &TempDir, name: &str) {
@@ -69,12 +94,12 @@ mod process_tests {
 
     #[test]
     fn run_echo_emits_stdout_and_exit_zero() {
-        let args = SpawnArgs {
-            cmd: "echo".to_string(),
-            args: vec!["hello from process".to_string()],
-            cwd: None,
-            env: None,
-        };
+        let root = TempDir::new().unwrap();
+        let args = spawn_args(
+            "bash",
+            vec!["-c".to_string(), "echo 'hello from process'".to_string()],
+            &root,
+        );
 
         let (lines, exit) = collect_events(args);
 
@@ -100,12 +125,12 @@ mod process_tests {
     #[test]
     fn process_registers_and_deregisters() {
         // Use a process that exits quickly.
-        let args = SpawnArgs {
-            cmd: "echo".to_string(),
-            args: vec!["register-test".to_string()],
-            cwd: None,
-            env: None,
-        };
+        let root = TempDir::new().unwrap();
+        let args = spawn_args(
+            "bash",
+            vec!["-c".to_string(), "echo register-test".to_string()],
+            &root,
+        );
 
         let handle = Uuid::new_v4().to_string();
         let handle_for_check = handle.clone();
@@ -125,12 +150,12 @@ mod process_tests {
 
     #[test]
     fn cancel_process_terminates_running_process() {
-        let args = SpawnArgs {
-            cmd: "sleep".to_string(),
-            args: vec!["30".to_string()], // won't finish on its own
-            cwd: None,
-            env: None,
-        };
+        let root = TempDir::new().unwrap();
+        let args = spawn_args(
+            "bash",
+            vec!["-c".to_string(), "sleep 30".to_string()], // won't finish on its own
+            &root,
+        );
 
         let handle = format!("test-cancel-{}", Uuid::new_v4());
         let handle_thread = handle.clone();
@@ -186,12 +211,8 @@ mod process_tests {
 
     #[test]
     fn run_false_emits_nonzero_exit() {
-        let args = SpawnArgs {
-            cmd: "false".to_string(),
-            args: vec![],
-            cwd: None,
-            env: None,
-        };
+        let root = TempDir::new().unwrap();
+        let args = spawn_args("bash", vec!["-c".to_string(), "false".to_string()], &root);
 
         let (_, exit) = collect_events(args);
 
@@ -210,14 +231,10 @@ mod process_tests {
     #[test]
     fn run_process_impl_resolves_cmd_via_search_path() {
         let dir = TempDir::new().unwrap();
-        make_fake_bin(&dir, "fakebin");
+        let root = TempDir::new().unwrap();
+        make_fake_bin(&dir, "qmd");
 
-        let args = SpawnArgs {
-            cmd: "fakebin".to_string(),
-            args: vec![],
-            cwd: None,
-            env: None,
-        };
+        let args = spawn_args("qmd", vec![], &root);
 
         let stdout_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
         let exit_info: ExitInfo = Arc::new(Mutex::new(None));
@@ -235,12 +252,12 @@ mod process_tests {
             }
             ProcessEvent::Stderr(_) => {}
         })
-        .expect("fakebin should have been resolved and run");
+        .expect("qmd should have been resolved and run");
 
         let lines = stdout_lines.lock().unwrap().clone();
         assert!(
-            lines.iter().any(|l| l.contains("fakebin-ok")),
-            "stdout should contain fakebin output, got: {:?}",
+            lines.iter().any(|l| l.contains("qmd-ok")),
+            "stdout should contain qmd output, got: {:?}",
             lines
         );
         let (code, success) = exit_info.lock().unwrap().expect("exit event");
@@ -258,23 +275,24 @@ mod process_tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     #[test]
-    fn run_process_impl_errs_when_cmd_not_found_in_search_path() {
+    fn run_process_impl_rejects_disallowed_program() {
         let empty_dir = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
         let args = SpawnArgs {
-            cmd: "definitely_not_a_real_binary_xyz123".to_string(),
+            program: "python".to_string(),
             args: vec![],
             cwd: None,
             env: None,
+            install_root: root.path().to_string_lossy().into_owned(),
         };
 
         let handle = Uuid::new_v4().to_string();
         let result = run_process_impl(&handle, &args, empty_dir.path().to_str().unwrap(), |_| {});
 
-        let err = result.expect_err("should fail when cmd is not in search path");
+        let err = result.expect_err("should fail when program is not allowlisted");
         assert!(
-            err.to_lowercase().contains("not found")
-                || err.contains("definitely_not_a_real_binary_xyz123"),
-            "error message should mention the missing cmd, got: {}",
+            err.contains("not allowed") && err.contains("python"),
+            "error message should mention the disallowed program, got: {}",
             err
         );
         assert!(
@@ -291,15 +309,15 @@ mod process_tests {
     #[test]
     fn run_process_impl_sets_child_path_env() {
         let dir = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
         // Use /bin/sh to echo $PATH — works on any macOS/Linux. The search
         // path seeds PATH for the child; we verify by reading it from the
         // child's view.
-        let args = SpawnArgs {
-            cmd: "sh".to_string(),
-            args: vec!["-c".to_string(), "echo \"PATH=$PATH\"".to_string()],
-            cwd: None,
-            env: None,
-        };
+        let args = spawn_args(
+            "bash",
+            vec!["-c".to_string(), "echo \"PATH=$PATH\"".to_string()],
+            &root,
+        );
 
         // Build a search path that contains /bin (so sh is found) + our marker dir.
         let marker = dir.path().to_str().unwrap();
@@ -350,6 +368,7 @@ mod process_tests {
     fn run_process_impl_colocated_node_beats_search_path_node() {
         let bin_dir = TempDir::new().unwrap();
         let alt_dir = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
 
         // fake qmd: resolves `node` via $PATH and prints the result
         let qmd_path = bin_dir.path().join("qmd");
@@ -372,12 +391,7 @@ mod process_tests {
         perms.set_mode(0o755);
         fs::set_permissions(&alt_node, perms).unwrap();
 
-        let args = SpawnArgs {
-            cmd: "qmd".to_string(),
-            args: vec![],
-            cwd: None,
-            env: None,
-        };
+        let args = spawn_args("qmd", vec![], &root);
 
         // alt_dir precedes bin_dir — without the fix, command -v node inside
         // the qmd wrapper would return alt_dir/node.
@@ -406,5 +420,23 @@ mod process_tests {
             bin_dir_str,
             lines
         );
+    }
+
+    #[test]
+    fn run_process_impl_rejects_cwd_outside_install_root() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let args = spawn_args_with_cwd(
+            "bash",
+            vec!["-c".to_string(), "echo nope".to_string()],
+            outside.path().to_string_lossy().into_owned(),
+            &root,
+        );
+
+        let handle = Uuid::new_v4().to_string();
+        let result = run_process_impl(&handle, &args, TEST_SYSTEM_PATH, |_| {});
+        let err = result.expect_err("cwd outside install root must be rejected");
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(lookup_pid(&handle).is_none());
     }
 }

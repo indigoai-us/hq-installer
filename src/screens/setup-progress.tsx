@@ -598,7 +598,8 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       const summary = await runExistingImport({
         installPath,
         onLog: (line) => appendLog("import", line),
-        spawn: (cmd, args, cwd) => spawnAndCapture(runId, "import", cmd, args, cwd),
+        spawn: (program, args, cwd) =>
+          spawnAndCapture(runId, "import", program as "bash", args, cwd),
         fs: {
           mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
           readTextFile,
@@ -691,7 +692,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   async function spawnAndCapture(
     runId: number,
     stage: StageId,
-    cmd: string,
+    program: "npx" | "bash" | "hq" | "qmd",
     args: string[],
     cwd: string,
   ): Promise<{ ok: boolean; stdout: string; stderr: string[] }> {
@@ -702,7 +703,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     let handle: string;
     try {
       handle = await invoke<string>("spawn_process", {
-        args: { cmd, args, cwd },
+        args: { program, args, cwd, installRoot: installPath },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -762,7 +763,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         });
       });
       timeoutId = setTimeout(() => {
-        const msg = `${cmd} did not report completion within ${Math.round(
+        const msg = `${program} did not report completion within ${Math.round(
           SETUP_PROCESS_EXIT_TIMEOUT_MS / 1000,
         )} seconds.`;
         appendLog(stage, `[error] ${msg}`);
@@ -841,12 +842,12 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   async function spawnAndWait(
     runId: number,
     stage: StageId,
-    cmd: string,
+    program: "npx" | "bash" | "hq" | "qmd",
     args: string[],
     cwd: string,
     stderrSink?: string[],
   ): Promise<boolean> {
-    const result = await spawnAndCapture(runId, stage, cmd, args, cwd);
+    const result = await spawnAndCapture(runId, stage, program, args, cwd);
     stderrSink?.push(...result.stderr);
     return result.ok;
   }

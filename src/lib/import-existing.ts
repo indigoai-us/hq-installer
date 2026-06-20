@@ -144,14 +144,14 @@ function summarizeScanReport(raw: string): ScanSummary {
 }
 
 async function defaultSpawn(
-  cmd: string,
+  program: string,
   args: string[],
   cwd: string,
 ): Promise<ImportSpawnResult> {
   let handle: string;
   try {
     handle = await invoke<string>("spawn_process", {
-      args: { cmd, args, cwd },
+      args: { program, args, cwd, installRoot: cwd },
     });
   } catch (err) {
     return { ok: false, stderr: [getErrorMessage(err)] };
@@ -191,7 +191,7 @@ async function defaultSpawn(
 
   try {
     timeoutId = setTimeout(() => {
-      const msg = `${cmd} did not report completion within ${Math.round(
+      const msg = `${program} did not report completion within ${Math.round(
         IMPORT_PROCESS_EXIT_TIMEOUT_MS / 1000,
       )} seconds.`;
       invoke("cancel_process", { handle }).catch((err) => {

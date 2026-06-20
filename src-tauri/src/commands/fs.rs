@@ -469,6 +469,23 @@ fn guard_relative_path_under_root(path: &str, root: &str) -> Result<PathBuf, Str
     Ok(PathBuf::from(destination))
 }
 
+pub(super) fn guard_absolute_path_under_root(path: &str, root: &str) -> Result<PathBuf, String> {
+    let root = normalize_trusted_path(root)
+        .filter(|root| has_unsafe_relative_prefix(root))
+        .ok_or_else(|| "Refusing to use path because the install root is invalid".to_string())?;
+    let destination = normalize_trusted_path(path)
+        .filter(|destination| has_unsafe_relative_prefix(destination))
+        .ok_or_else(|| "Refusing to use path outside install root: invalid path".to_string())?;
+
+    if !is_path_within_root(&destination, &root) {
+        return Err(format!(
+            "Refusing to use path outside install root: {destination:?}"
+        ));
+    }
+
+    Ok(PathBuf::from(destination))
+}
+
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
