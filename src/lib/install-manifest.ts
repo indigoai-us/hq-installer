@@ -8,8 +8,12 @@
 // state on completion or failure. Best-effort: write errors are logged but
 // never block the wizard.
 
-import { mkdir, readTextFile, writeTextFile, exists } from "@tauri-apps/plugin-fs";
 import { getVersion } from "@tauri-apps/api/app";
+import {
+  makeInstallDir,
+  readInstallTextFile,
+  writeInstallTextFile,
+} from "./install-fs";
 
 const MANIFEST_DIR = ".hq";
 const MANIFEST_FILE = "install-manifest.json";
@@ -113,10 +117,7 @@ export async function readManifest(
 ): Promise<InstallManifest> {
   try {
     const path = manifestPath(installPath);
-    if (!(await exists(path))) {
-      return emptyManifest(installPath, installerVersion);
-    }
-    const raw = await readTextFile(path);
+    const raw = await readInstallTextFile(installPath, path);
     const parsed = JSON.parse(raw) as InstallManifest;
     // Defensive: if any required field is missing, fall back to fresh.
     if (!parsed.schemaVersion || !parsed.steps) {
@@ -132,8 +133,9 @@ export async function readManifest(
 export async function writeManifest(manifest: InstallManifest): Promise<void> {
   try {
     const dir = `${manifest.installPath}/${MANIFEST_DIR}`;
-    await mkdir(dir, { recursive: true });
-    await writeTextFile(
+    await makeInstallDir(manifest.installPath, dir);
+    await writeInstallTextFile(
+      manifest.installPath,
       manifestPath(manifest.installPath),
       JSON.stringify(manifest, null, 2) + "\n",
     );

@@ -1,11 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  mkdir,
-  readTextFile,
-  rename,
-  writeTextFile,
-} from "@tauri-apps/plugin-fs";
+  makeInstallDir,
+  readInstallTextFile,
+  writeInstallTextFile,
+} from "./install-fs";
 
 const IMPORTS_DIR = "workspace/imports";
 const BREADCRUMB_PATH = `${IMPORTS_DIR}/.installer-import.json`;
@@ -21,7 +20,6 @@ export interface ImportFs {
   mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>;
   readTextFile(path: string): Promise<string>;
   writeTextFile(path: string, contents: string): Promise<void>;
-  rename(from: string, to: string): Promise<void>;
 }
 
 export interface InstallerImportBreadcrumb {
@@ -71,13 +69,6 @@ interface ScanReport {
   categories?: Record<string, unknown> | ScanReportEntry[];
 }
 
-const defaultFs: ImportFs = {
-  mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
-  readTextFile,
-  writeTextFile,
-  rename,
-};
-
 function normalizePath(path: string): string {
   return path.replace(/\/+$/, "");
 }
@@ -86,6 +77,15 @@ function resolvePath(root: string, relativePath: string): string {
   const cleanRoot = normalizePath(root);
   const cleanRelative = relativePath.replace(/^\/+/, "");
   return `${cleanRoot}/${cleanRelative}`;
+}
+
+function createDefaultFs(installPath: string): ImportFs {
+  return {
+    mkdir: (path) => makeInstallDir(installPath, path),
+    readTextFile: (path) => readInstallTextFile(installPath, path),
+    writeTextFile: (path, contents) =>
+      writeInstallTextFile(installPath, path, contents),
+  };
 }
 
 function buildScanId(now: Date): string {
@@ -252,7 +252,7 @@ export async function runExistingImport(
 ): Promise<ExistingImportResult> {
   const installPath = normalizePath(opts.installPath);
   const spawn = opts.spawn ?? defaultSpawn;
-  const fs = opts.fs ?? defaultFs;
+  const fs = opts.fs ?? createDefaultFs(installPath);
   const now = opts.now ?? (() => new Date());
   const onLog = opts.onLog ?? (() => {});
   const startedAt = now();
@@ -260,10 +260,6 @@ export async function runExistingImport(
   const scanDir = `${IMPORTS_DIR}/${scanId}`;
   const reportRelativePath = `${scanDir}/report.json`;
   const reportPath = resolvePath(installPath, reportRelativePath);
-  const redactedReportPath = resolvePath(
-    installPath,
-    `${scanDir}/report.redacted.json`,
-  );
   const result: ExistingImportResult = {
     codexApplied: false,
     discoveryOk: false,
@@ -335,8 +331,7 @@ export async function runExistingImport(
     } else {
       let redactedReportReady = false;
       try {
-        await fs.writeTextFile(redactedReportPath, redact.stdout);
-        await fs.rename(redactedReportPath, reportPath);
+        await fs.writeTextFile(reportPath, redact.stdout);
         redactedReportReady = true;
       } catch (err) {
         noteIssue(`Could not persist the redacted Claude report: ${getErrorMessage(err)}`);
@@ -397,10 +392,11 @@ function isNumberRecord(value: unknown): value is Record<string, number> {
 
 export async function readInstallerImportBreadcrumb(
   installPath: string,
-  fs: ImportFs = defaultFs,
+  fs?: ImportFs,
 ): Promise<InstallerImportBreadcrumb | null> {
+  const adapter = fs ?? createDefaultFs(normalizePath(installPath));
   try {
-    const raw = await fs.readTextFile(
+    const raw = await adapter.readTextFile(
       resolvePath(installPath, BREADCRUMB_PATH),
     );
     const parsed = JSON.parse(raw) as Partial<InstallerImportBreadcrumb>;

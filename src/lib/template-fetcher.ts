@@ -1,8 +1,8 @@
 import { gunzipSync } from "fflate";
-import { mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { fetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { CLIENT_HEADERS } from "./client-info";
+import { makeInstallDir, writeInstallFile } from "./install-fs";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -419,7 +419,7 @@ function parseTar(buf: Uint8Array): TarEntry[] {
 }
 
 // ---------------------------------------------------------------------------
-// Extraction using @tauri-apps/plugin-fs
+// Extraction through root-validated Rust filesystem commands
 // ---------------------------------------------------------------------------
 
 /**
@@ -585,9 +585,9 @@ async function extractTarball(
   // 2. Parse tar entries
   const entries = parseTar(tarBytes);
 
-  // 3. Write each entry via Tauri plugin-fs. hq-core is a standalone template
-  //    repo, so we strip only the tarball wrapper (indigoai-us-hq-core-<sha>/)
-  //    and extract everything inside it.
+  // 3. Write each entry via root-validated Rust commands. hq-core is a
+  //    standalone template repo, so we strip only the tarball wrapper
+  //    (indigoai-us-hq-core-<sha>/) and extract everything inside it.
   const symlinkRelatives = new Set<string>();
   for (const entry of entries) {
     const relative = mapEntryToTemplatePath(entry.name);
@@ -615,7 +615,7 @@ async function extractTarball(
     }
 
     if (isDir) {
-      await mkdir(destPath, { recursive: true });
+      await makeInstallDir(targetDir, destPath);
       continue;
     }
 
@@ -648,16 +648,16 @@ async function extractTarball(
     }
 
     // Regular file — ensure parent dir exists, then write.
-    // `recursive: true` means repeated mkdir of the same parent is a no-op,
-    // so we don't bother deduping across siblings.
+    // Repeated recursive mkdir of the same parent is a no-op, so we don't
+    // bother deduping across siblings.
     const lastSlash = destPath.lastIndexOf("/");
     if (lastSlash > 0) {
-      await mkdir(destPath.slice(0, lastSlash), { recursive: true });
+      await makeInstallDir(targetDir, destPath.slice(0, lastSlash));
     }
     // Preserve the executable bit from the tar header — shell scripts under
     // `scripts/` are 0o755 and need to stay that way, or later
     // `bash -c <path>` invocations fail with exit code 126.
-    await writeFile(destPath, entry.data, { mode: entry.mode });
+    await writeInstallFile(targetDir, destPath, entry.data, entry.mode);
   }
 }
 
@@ -810,7 +810,7 @@ export async function fetchAndExtract(
   }
 
   // 3. Ensure target directory exists
-  await mkdir(targetDir, { recursive: true });
+  await makeInstallDir(targetDir, targetDir);
 
   // 4. Extract (strips tarball wrapper internally)
   await extractTarball(compressedBytes, targetDir);

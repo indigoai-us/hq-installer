@@ -1,23 +1,29 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
-// Mock @tauri-apps/plugin-fs BEFORE importing the module under test
+// Mock root-validated install fs helpers BEFORE importing the module under test
 // ---------------------------------------------------------------------------
 
-const mockMkdir = vi.fn<(path: string, opts?: { recursive?: boolean }) => Promise<void>>(
+const mockMakeInstallDir = vi.fn<(root: string, path: string) => Promise<void>>(
   async () => undefined,
 );
-const mockWriteTextFile = vi.fn<(path: string, data: string) => Promise<void>>(
+const mockWriteInstallTextFile = vi.fn<
+  (root: string, path: string, data: string) => Promise<void>
+>(
   async () => undefined,
 );
-const mockWriteFile = vi.fn<(path: string, data: Uint8Array) => Promise<void>>(
+const mockWriteInstallFile = vi.fn<
+  (root: string, path: string, data: Uint8Array) => Promise<void>
+>(
   async () => undefined,
 );
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  mkdir: (path: string, opts?: { recursive?: boolean }) => mockMkdir(path, opts),
-  writeTextFile: (path: string, data: string) => mockWriteTextFile(path, data),
-  writeFile: (path: string, data: Uint8Array) => mockWriteFile(path, data),
+vi.mock("../install-fs.js", () => ({
+  makeInstallDir: (root: string, path: string) => mockMakeInstallDir(root, path),
+  writeInstallTextFile: (root: string, path: string, data: string) =>
+    mockWriteInstallTextFile(root, path, data),
+  writeInstallFile: (root: string, path: string, data: Uint8Array) =>
+    mockWriteInstallFile(root, path, data),
 }));
 
 // Mock the manifest writer so company seeds can be asserted without touching
@@ -46,15 +52,15 @@ import {
 
 /** Collect all paths that were written (both text and binary) */
 function allWrittenPaths(): string[] {
-  const textPaths = mockWriteTextFile.mock.calls.map((c) => c[0]);
-  const binaryPaths = mockWriteFile.mock.calls.map((c) => c[0]);
+  const textPaths = mockWriteInstallTextFile.mock.calls.map((c) => c[1]);
+  const binaryPaths = mockWriteInstallFile.mock.calls.map((c) => c[1]);
   return [...textPaths, ...binaryPaths].sort();
 }
 
 /** Get the content written to a specific path (text only) */
 function getWrittenText(path: string): string | undefined {
-  const call = mockWriteTextFile.mock.calls.find((c) => c[0] === path);
-  return call ? call[1] : undefined;
+  const call = mockWriteInstallTextFile.mock.calls.find((c) => c[1] === path);
+  return call ? call[2] : undefined;
 }
 
 /** Minimal profile Handlebars template (mirrors what templates/profile.md.hbs will contain) */
@@ -97,9 +103,9 @@ const BASE_DIR = "/tmp/hq-personalize-test";
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  mockMkdir.mockReset().mockResolvedValue(undefined);
-  mockWriteTextFile.mockReset().mockResolvedValue(undefined);
-  mockWriteFile.mockReset().mockResolvedValue(undefined);
+  mockMakeInstallDir.mockReset().mockResolvedValue(undefined);
+  mockWriteInstallTextFile.mockReset().mockResolvedValue(undefined);
+  mockWriteInstallFile.mockReset().mockResolvedValue(undefined);
   mockEnsureManifestEntries
     .mockReset()
     .mockResolvedValue({ added: [], skipped: [] });
@@ -119,7 +125,8 @@ describe("personalize", () => {
       });
 
       const expectedPath = `${BASE_DIR}/core/knowledge/alice/profile.md`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
+      expect(mockWriteInstallTextFile).toHaveBeenCalledWith(
+        BASE_DIR,
         expectedPath,
         expect.stringContaining("alice"),
       );
@@ -145,7 +152,8 @@ describe("personalize", () => {
       });
 
       const expectedPath = `${BASE_DIR}/core/knowledge/alice/voice-style.md`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
+      expect(mockWriteInstallTextFile).toHaveBeenCalledWith(
+        BASE_DIR,
         expectedPath,
         expect.any(String),
       );
@@ -170,9 +178,9 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      expect(mockMkdir).toHaveBeenCalledWith(
+      expect(mockMakeInstallDir).toHaveBeenCalledWith(
+        BASE_DIR,
         `${BASE_DIR}/core/knowledge/alice`,
-        { recursive: true },
       );
     });
 
@@ -203,7 +211,8 @@ describe("personalize", () => {
       });
 
       const expectedPath = `${BASE_DIR}/personal/settings/cognito.json`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
+      expect(mockWriteInstallTextFile).toHaveBeenCalledWith(
+        BASE_DIR,
         expectedPath,
         expect.any(String),
       );
@@ -235,9 +244,9 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      expect(mockMkdir).toHaveBeenCalledWith(
+      expect(mockMakeInstallDir).toHaveBeenCalledWith(
+        BASE_DIR,
         `${BASE_DIR}/personal/settings`,
-        { recursive: true },
       );
     });
 
@@ -316,7 +325,7 @@ describe("personalize", () => {
     });
 
     it("propagates error if writeTextFile rejects", async () => {
-      mockWriteTextFile.mockRejectedValueOnce(new Error("disk full"));
+      mockWriteInstallTextFile.mockRejectedValueOnce(new Error("disk full"));
 
       await expect(
         personalize(BASE_ANSWERS, BASE_DIR, {
@@ -327,7 +336,7 @@ describe("personalize", () => {
     });
 
     it("propagates error if mkdir rejects", async () => {
-      mockMkdir.mockRejectedValueOnce(new Error("permission denied"));
+      mockMakeInstallDir.mockRejectedValueOnce(new Error("permission denied"));
 
       await expect(
         personalize(BASE_ANSWERS, BASE_DIR, {
@@ -357,7 +366,7 @@ describe("personalize", () => {
       });
 
       const companyPrefix = `${BASE_DIR}/companies/broya`;
-      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
+      const mkdirPaths = mockMakeInstallDir.mock.calls.map((c) => c[1]);
 
       expect(mkdirPaths.some((p) => p.startsWith(companyPrefix))).toBe(false);
       expect(allWrittenPaths().some((p) => p.startsWith(companyPrefix))).toBe(
@@ -405,7 +414,7 @@ describe("personalize", () => {
       });
 
       const base = `${BASE_DIR}/companies/acme-co`;
-      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
+      const mkdirPaths = mockMakeInstallDir.mock.calls.map((c) => c[1]);
       for (const sub of ["knowledge", "settings", "workers", "projects"]) {
         expect(mkdirPaths).toContain(`${base}/${sub}`);
         expect(allWrittenPaths()).toContain(`${base}/${sub}/.gitkeep`);
@@ -420,7 +429,7 @@ describe("personalize", () => {
     // Best-effort: a failed scaffold write must not abort Setup — the manifest
     // entry (what makes the company discoverable) is still registered.
     it("does not abort Setup when a company scaffold write fails", async () => {
-      mockWriteTextFile.mockImplementation(async (path: string) => {
+      mockWriteInstallTextFile.mockImplementation(async (_root: string, path: string) => {
         if (path.includes("/companies/acme-co/")) {
           throw new Error(`forbidden path: ${path}`);
         }

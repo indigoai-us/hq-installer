@@ -31,8 +31,6 @@ import { listen } from "@tauri-apps/api/event";
 import {
   BaseDirectory,
   mkdir,
-  readTextFile,
-  rename,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
@@ -61,6 +59,7 @@ import {
 } from "@/lib/install-manifest";
 import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 import { runExistingImport } from "@/lib/import-existing";
+import { writeInstallTextFile } from "@/lib/install-fs";
 import { markSetupStepCompleted } from "@/lib/wizard-router";
 
 // ---------------------------------------------------------------------------
@@ -590,12 +589,6 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         onLog: (line) => appendLog("import", line),
         spawn: (program, args, cwd) =>
           spawnAndCapture(runId, "import", program as "bash", args, cwd),
-        fs: {
-          mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
-          readTextFile,
-          writeTextFile,
-          rename,
-        },
       });
 
       if (
@@ -879,7 +872,8 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       reason: "post-install",
     });
     try {
-      await writeTextFile(
+      await writeInstallTextFile(
+        installPath,
         `${installPath.replace(/\/+$/, "")}/.hq-embeddings-pending.json`,
         payload,
       );
