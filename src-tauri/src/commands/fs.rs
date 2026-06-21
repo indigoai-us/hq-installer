@@ -43,6 +43,9 @@ pub fn write_file(
     let file_path = guard_relative_path_under_root(&path, &install_root)?;
 
     if let Some(parent) = file_path.parent() {
+        // Resolve symlinks before creating anything — a symlinked ancestor that
+        // escapes the root must be caught here, not after writing through it.
+        assert_canonical_within_root(parent, &install_root)?;
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {e}"))?;
     }
 
@@ -68,6 +71,7 @@ pub fn make_dir(path: String, install_root: String) -> Result<(), String> {
         guard_relative_path_under_root(&path, &install_root)?
     };
 
+    assert_canonical_within_root(&dir_path, &install_root)?;
     fs::create_dir_all(&dir_path)
         .map_err(|e| format!("Failed to create directory {}: {e}", dir_path.display()))
 }
@@ -80,6 +84,8 @@ pub fn read_text_file(path: String, install_root: String) -> Result<String, Stri
         guard_relative_path_under_root(&path, &install_root)?
     };
 
+    // `read_to_string` follows the final symlink, so resolve `file_path` itself.
+    assert_canonical_within_root(&file_path, &install_root)?;
     fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read file {}: {e}", file_path.display()))
 }
@@ -528,6 +534,58 @@ pub(super) fn guard_absolute_path_under_root(path: &str, root: &str) -> Result<P
     Ok(PathBuf::from(destination))
 }
 
+/// Defense-in-depth beyond the lexical guards: resolve symlinks on the real
+/// on-disk path and confirm the destination still lands inside the install
+/// root. The `guard_*_under_root` helpers do pure string math, so a path whose
+/// ancestor directory is a symlink pointing outside the tree would pass the
+/// textual check yet have the OS write outside the root once it follows the
+/// link. We canonicalize the deepest ALREADY-EXISTING ancestor of `path`
+/// (symlinks resolved) and require it to sit within the canonicalized root.
+///
+/// Checking the existing ancestor — rather than `path` itself, which may not
+/// exist yet — means callers MUST invoke this BEFORE any `create_dir_all`, so we
+/// never materialize directories through an escaping symlink. In-tree symlinks
+/// (the HQ template ships e.g. `.codex/claude → ../.claude`) resolve to paths
+/// still under the root and pass; only links that escape the root are rejected.
+///
+/// Failure modes are biased toward not inventing new errors: if the root cannot
+/// be canonicalized (e.g. it does not exist yet) we fall back to the lexical
+/// guarantee, and an existing-but-unresolvable ancestor (a dangling symlink) is
+/// skipped in favor of checking its real parent directory.
+fn assert_canonical_within_root(path: &Path, root: &str) -> Result<(), String> {
+    let canon_root = match fs::canonicalize(root) {
+        Ok(p) => p,
+        // Root not resolvable (shouldn't happen — preflight creates it). The
+        // lexical guard already ran; don't add a new failure mode.
+        Err(_) => return Ok(()),
+    };
+
+    let mut ancestor = path;
+    loop {
+        // A successful canonicalize means the path exists and its symlinks
+        // resolved; check it and return. A failure (path absent, or a dangling /
+        // unreadable symlink) falls through to its real parent directory.
+        if fs::symlink_metadata(ancestor).is_ok() {
+            if let Ok(canon) = fs::canonicalize(ancestor) {
+                // `Path::starts_with` is component-wise, so `/a/bc` does NOT
+                // match prefix `/a/b` — and it also covers exact equality.
+                return if canon.starts_with(&canon_root) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "Refusing to write outside install root: {canon:?} \
+                         escapes {canon_root:?}"
+                    ))
+                };
+            }
+        }
+        match ancestor.parent() {
+            Some(parent) => ancestor = parent,
+            None => return Ok(()),
+        }
+    }
+}
+
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -856,6 +914,74 @@ mod validation_tests {
         .expect_err("absolute out-of-root read must be rejected");
 
         assert!(err.contains("outside install root"), "got: {err}");
+    }
+
+    // The lexical guard passes a textually-clean path like "escape/evil.txt",
+    // but if `escape` is a symlink pointing OUT of the install root, the OS
+    // would follow it and write outside. assert_canonical_within_root must
+    // resolve the link and reject — the self-sufficient-Rust-boundary guarantee
+    // (no reliance on the renderer for symlink containment).
+    #[cfg(unix)]
+    #[test]
+    fn write_file_rejects_symlinked_ancestor_escaping_root() {
+        use std::os::unix::fs::symlink;
+        let root_dir = setup();
+        let outside_dir = setup();
+        let escape = root_dir.path().join("escape");
+        symlink(outside_dir.path(), &escape).expect("seed escaping symlink");
+
+        let err = write_file(
+            "escape/evil.txt".to_string(),
+            b"pwned".to_vec(),
+            root_dir.path().to_string_lossy().to_string(),
+            None,
+        )
+        .expect_err("write through an escaping symlinked ancestor must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!outside_dir.path().join("evil.txt").exists());
+    }
+
+    // A symlink that stays WITHIN the tree (the HQ template ships these, e.g.
+    // `.codex/claude → ../.claude`) must still resolve and be allowed.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_allows_in_tree_symlink_ancestor() {
+        use std::os::unix::fs::symlink;
+        let root_dir = setup();
+        let real = root_dir.path().join("real");
+        fs::create_dir(&real).expect("seed real dir");
+        let link = root_dir.path().join("link");
+        symlink(&real, &link).expect("seed in-tree symlink");
+
+        write_file(
+            "link/ok.txt".to_string(),
+            b"fine".to_vec(),
+            root_dir.path().to_string_lossy().to_string(),
+            None,
+        )
+        .expect("write through an in-tree symlink should succeed");
+
+        assert_eq!(fs::read(real.join("ok.txt")).expect("read"), b"fine");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn make_dir_rejects_symlinked_ancestor_escaping_root() {
+        use std::os::unix::fs::symlink;
+        let root_dir = setup();
+        let outside_dir = setup();
+        let escape = root_dir.path().join("escape");
+        symlink(outside_dir.path(), &escape).expect("seed escaping symlink");
+
+        let err = make_dir(
+            "escape/sub".to_string(),
+            root_dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("mkdir through an escaping symlinked ancestor must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!outside_dir.path().join("sub").exists());
     }
 
     #[test]
