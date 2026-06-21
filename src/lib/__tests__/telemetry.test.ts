@@ -13,7 +13,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { postOptIn } from "../telemetry.js";
+import {
+  postOptIn,
+  pingStep,
+  getInstallSessionId,
+  __resetTelemetryCachesForTests,
+} from "../telemetry.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,5 +172,64 @@ describe("postOptIn — local cache on final failure", () => {
     expect(calls).toBe(3);
     expect(invoke).toHaveBeenCalledWith("write_menubar_telemetry_pref", { enabled: false });
     expect(stderrSpy).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pingStep — installer step funnel
+// ---------------------------------------------------------------------------
+
+describe("pingStep", () => {
+  beforeEach(() => {
+    // The session id + device id are memoized at module scope; clear them so
+    // a success cached by one case doesn't leak into the next.
+    __resetTelemetryCachesForTests();
+  });
+
+  it("POSTs the step with a stable session id, personUid, and best-effort device id", async () => {
+    vi.useRealTimers();
+    // device_fingerprint resolves to a hash for this test.
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue("hashed-mac-abc");
+    globalThis.fetch = sequencedFetch([makeResponse(200, { ok: true })]);
+
+    await pingStep({ step: "signin", personUid: "prs_ada", version: "9.9.9" });
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/v1\/installer\/step$/);
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({
+      step: "signin",
+      personUid: "prs_ada",
+      deviceId: "hashed-mac-abc",
+      version: "9.9.9",
+      installSessionId: getInstallSessionId(),
+    });
+    // The session id is stable across pings within a process.
+    expect(typeof body.installSessionId).toBe("string");
+    expect(body.installSessionId.length).toBeGreaterThan(0);
+  });
+
+  it("omits deviceId + personUid gracefully when unavailable", async () => {
+    vi.useRealTimers();
+    (invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("no command"));
+    globalThis.fetch = sequencedFetch([makeResponse(200, { ok: true })]);
+
+    await pingStep({ step: "welcome", version: "9.9.9" });
+
+    const [, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect("deviceId" in body).toBe(false);
+    expect("personUid" in body).toBe(false);
+    expect(body.step).toBe("welcome");
+  });
+
+  it("never throws when the network fails", async () => {
+    vi.useRealTimers();
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValue("");
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    await expect(pingStep({ step: "done" })).resolves.toBeUndefined();
   });
 });
