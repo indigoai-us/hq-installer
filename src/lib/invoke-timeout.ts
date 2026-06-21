@@ -23,7 +23,9 @@ export async function invokeWithTimeout<T>(
   });
 
   try {
-    return await Promise.race([invoke<T>(command, args), timeout]);
+    const invocation =
+      args === undefined ? invoke<T>(command) : invoke<T>(command, args);
+    return await Promise.race([invocation, timeout]);
   } finally {
     if (timeoutId !== undefined) {
       window.clearTimeout(timeoutId);

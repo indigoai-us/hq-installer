@@ -3,6 +3,7 @@ import { fetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { CLIENT_HEADERS } from "./client-info";
 import { makeInstallDir, writeInstallFile } from "./install-fs";
+import { DOWNLOAD_HARD_STALL_MS } from "./timeouts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,6 +79,7 @@ export class TemplateFetchError extends Error {
     message: string,
     public readonly retriable: boolean,
     public readonly cause?: unknown,
+    public readonly stalled = false,
   ) {
     super(message);
     this.name = "TemplateFetchError";
@@ -228,15 +230,127 @@ async function downloadTarball(
   onProgress?: (event: ProgressEvent) => void,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  let response: Response;
+  const requestController = new AbortController();
+  const abortRequest = () => requestController.abort();
+  if (signal?.aborted) {
+    abortRequest();
+  } else {
+    signal?.addEventListener("abort", abortRequest, { once: true });
+  }
+
   try {
-    response = await fetch(tarballUrl, {
+    const response = await fetch(tarballUrl, {
       headers: buildHeaders(authToken),
       redirect: "follow",
-      signal,
+      signal: requestController.signal,
     });
+
+    if (response.status === 404) {
+      throw new TemplateFetchError(
+        `Tarball not found (404): ${tarballUrl}`,
+        false,
+      );
+    }
+    if (!response.ok) {
+      throw new TemplateFetchError(
+        `HTTP ${response.status} downloading tarball: ${response.statusText}`,
+        response.status >= 500,
+      );
+    }
+
+    const total = Number(response.headers.get("content-length")) || 0;
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    let lastEmit = 0;
+    let downloadHardStalled = false;
+
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const readPromise = reader.read();
+          let hardStallTimer: ReturnType<typeof setTimeout> | null = null;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            hardStallTimer = setTimeout(() => {
+              downloadHardStalled = true;
+              requestController.abort();
+              reject(
+                new TemplateFetchError(
+                  "Template download stalled before receiving more data.",
+                  true,
+                  undefined,
+                  true,
+                ),
+              );
+            }, DOWNLOAD_HARD_STALL_MS);
+          });
+          const { done, value } = await Promise.race([
+            readPromise,
+            timeoutPromise,
+          ]).finally(() => {
+            if (hardStallTimer) {
+              clearTimeout(hardStallTimer);
+              hardStallTimer = null;
+            }
+          });
+          if (done) break;
+          if (signal?.aborted) {
+            reader.cancel().catch(() => {});
+            throw new TemplateFetchError("Download cancelled", false);
+          }
+          chunks.push(value);
+          bytes += value.length;
+
+          if (onProgress) {
+            const now = Date.now();
+            if (now - lastEmit >= PROGRESS_THROTTLE_MS) {
+              lastEmit = now;
+              onProgress({ bytes, total });
+            }
+          }
+        }
+      } catch (err) {
+        if (err instanceof TemplateFetchError) throw err;
+        if (downloadHardStalled) {
+          throw new TemplateFetchError(
+            "Template download stalled before receiving more data.",
+            true,
+            err,
+            true,
+          );
+        }
+        if (signal?.aborted || requestController.signal.aborted) {
+          throw new TemplateFetchError("Download cancelled", false, err);
+        }
+        throw new TemplateFetchError(
+          `Stream error: ${String(err)}`,
+          true,
+          err,
+        );
+      }
+    } else {
+      // Fallback for environments without streaming body
+      const buf = await response.arrayBuffer();
+      chunks.push(new Uint8Array(buf));
+      bytes = chunks[0].length;
+    }
+
+    // Emit final progress
+    if (onProgress && bytes > 0) {
+      onProgress({ bytes, total: total || bytes });
+    }
+
+    // Concatenate chunks
+    const result = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return result;
   } catch (err) {
-    if (signal?.aborted) {
+    if (err instanceof TemplateFetchError) throw err;
+    if (signal?.aborted || requestController.signal.aborted) {
       throw new TemplateFetchError("Download cancelled", false, err);
     }
     throw new TemplateFetchError(
@@ -244,75 +358,9 @@ async function downloadTarball(
       true,
       err,
     );
+  } finally {
+    signal?.removeEventListener("abort", abortRequest);
   }
-
-  if (response.status === 404) {
-    throw new TemplateFetchError(
-      `Tarball not found (404): ${tarballUrl}`,
-      false,
-    );
-  }
-  if (!response.ok) {
-    throw new TemplateFetchError(
-      `HTTP ${response.status} downloading tarball: ${response.statusText}`,
-      response.status >= 500,
-    );
-  }
-
-  const total = Number(response.headers.get("content-length")) || 0;
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  let lastEmit = 0;
-
-  if (response.body) {
-    const reader = response.body.getReader();
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (signal?.aborted) {
-          reader.cancel().catch(() => {});
-          throw new TemplateFetchError("Download cancelled", false);
-        }
-        chunks.push(value);
-        bytes += value.length;
-
-        if (onProgress) {
-          const now = Date.now();
-          if (now - lastEmit >= PROGRESS_THROTTLE_MS) {
-            lastEmit = now;
-            onProgress({ bytes, total });
-          }
-        }
-      }
-    } catch (err) {
-      if (err instanceof TemplateFetchError) throw err;
-      throw new TemplateFetchError(
-        `Stream error: ${String(err)}`,
-        true,
-        err,
-      );
-    }
-  } else {
-    // Fallback for environments without streaming body
-    const buf = await response.arrayBuffer();
-    chunks.push(new Uint8Array(buf));
-    bytes = chunks[0].length;
-  }
-
-  // Emit final progress
-  if (onProgress && bytes > 0) {
-    onProgress({ bytes, total: total || bytes });
-  }
-
-  // Concatenate chunks
-  const result = new Uint8Array(bytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
 }
 
 // ---------------------------------------------------------------------------

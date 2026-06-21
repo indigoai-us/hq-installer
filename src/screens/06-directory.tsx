@@ -19,6 +19,12 @@ import {
   TemplateFetchError,
   type TemplateSource,
 } from "@/lib/template-fetcher";
+import { invokeWithTimeout } from "@/lib/invoke-timeout";
+import {
+  DOWNLOAD_SLOW_NOTICE_MS,
+  DOWNLOAD_STALL_MS,
+  INSTALL_PROBE_TIMEOUT_MS,
+} from "@/lib/timeouts";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -58,6 +64,14 @@ function messageFromError(err: unknown): string {
     : err instanceof Error
       ? err.message
       : String(err);
+}
+
+function isTemplateDownloadStalled(err: unknown): boolean {
+  return err instanceof TemplateFetchError && err.stalled;
+}
+
+function formatMegabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1);
 }
 
 function trimTrailingSlash(path: string): string {
@@ -104,6 +118,10 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   const [phase, setPhase] = useState<Phase>("preparing");
   const [downloaded, setDownloaded] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
+  const [downloadInFlight, setDownloadInFlight] = useState(false);
+  const [downloadStartedAt, setDownloadStartedAt] = useState<number | null>(null);
+  const [lastProgressAt, setLastProgressAt] = useState<number | null>(null);
+  const [downloadNow, setDownloadNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [currentPath, setCurrentPath] = useState("");
 
@@ -112,6 +130,7 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   const installerVersionRef = useRef<string>("unknown");
   const hasAutoResolvedRef = useRef(false);
   const failedPathKeysRef = useRef<Set<string>>(new Set());
+  const lastDownloadedRef = useRef(0);
 
   // Stable ref so async attempts call the latest onNext without re-running.
   const onNextRef = useRef(onNext);
@@ -167,10 +186,11 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   const ensureDirectory = useCallback(
     async (path: string): Promise<CreateDirectoryResult> => {
       const { parent, name } = splitPath(path);
-      return await invoke<CreateDirectoryResult>("create_directory", {
-        parent,
-        name,
-      });
+      return await invokeWithTimeout<CreateDirectoryResult>(
+        "create_directory",
+        { parent, name },
+        INSTALL_PROBE_TIMEOUT_MS,
+      );
     },
     [],
   );
@@ -197,7 +217,11 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
         return "warning";
       }
 
-      const hq = await invoke<DetectHqResult>("detect_hq", { path: created.path });
+      const hq = await invokeWithTimeout<DetectHqResult>(
+        "detect_hq",
+        { path: created.path },
+        INSTALL_PROBE_TIMEOUT_MS,
+      );
       if (
         created.already_existed &&
         created.non_empty &&
@@ -219,9 +243,11 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
         return "warning";
       }
 
-      const writable = await invoke<boolean>("check_writable", {
-        path: created.path,
-      });
+      const writable = await invokeWithTimeout<boolean>(
+        "check_writable",
+        { path: created.path },
+        INSTALL_PROBE_TIMEOUT_MS,
+      );
       if (!writable) {
         await fail(
           created.path,
@@ -270,17 +296,33 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
         // non-fatal
       }
 
+      const startedAt = Date.now();
+      lastDownloadedRef.current = 0;
+      setDownloadStartedAt(startedAt);
+      setLastProgressAt(startedAt);
+      setDownloadNow(startedAt);
+      setDownloadInFlight(true);
+
       const { version } = await fetchAndExtract(
         installPath,
         undefined,
         (event) => {
           if (!mountedRef.current) return;
+          const now = Date.now();
+          if (event.bytes > lastDownloadedRef.current) {
+            lastDownloadedRef.current = event.bytes;
+            setLastProgressAt(now);
+          }
+          setDownloadNow(now);
           setDownloaded(event.bytes);
           if (event.total > 0) setTotal(event.total);
         },
         controller.signal,
         source,
       );
+      if (mountedRef.current) {
+        setDownloadInFlight(false);
+      }
 
       try {
         await recordStepOk(installPath, installerVersionRef.current, "templates");
@@ -314,6 +356,11 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
         setPhase("preparing");
         setDownloaded(0);
         setTotal(null);
+        setDownloadInFlight(false);
+        setDownloadStartedAt(null);
+        setLastProgressAt(null);
+        setDownloadNow(Date.now());
+        lastDownloadedRef.current = 0;
       }
 
       try {
@@ -345,7 +392,18 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
         return true;
       } catch (err) {
         if (!mountedRef.current || controller.signal.aborted) return false;
+        setDownloadInFlight(false);
         const msg = messageFromError(err);
+        if (isTemplateDownloadStalled(err)) {
+          await fail(
+            installPath,
+            "templates",
+            "Download stalled",
+            "Your internet connection appears to be down — the download has stalled.",
+            msg,
+          );
+          return false;
+        }
         await fail(
           installPath,
           "templates",
@@ -369,12 +427,21 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
       setPhase("preparing");
       setDownloaded(0);
       setTotal(null);
+      setDownloadInFlight(false);
+      setDownloadStartedAt(null);
+      setLastProgressAt(null);
+      setDownloadNow(Date.now());
+      lastDownloadedRef.current = 0;
     }
 
     let installPath = "";
     try {
       installerVersionRef.current = await getInstallerVersion();
-      installPath = await invoke<string>("resolve_hq_path");
+      installPath = await invokeWithTimeout<string>(
+        "resolve_hq_path",
+        undefined,
+        INSTALL_PROBE_TIMEOUT_MS,
+      );
       if (!mountedRef.current || controller.signal.aborted) return;
       setCurrentPath(installPath);
       await installAt(installPath);
@@ -416,7 +483,17 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!downloadInFlight) return;
+    setDownloadNow(Date.now());
+    const interval = window.setInterval(() => {
+      setDownloadNow(Date.now());
+    }, 250);
+    return () => window.clearInterval(interval);
+  }, [downloadInFlight]);
+
   async function handleChooseDifferentFolder() {
+    controllerRef.current?.abort();
     setBusy(true);
     try {
       const picked = await invoke<string | null>("pick_directory", {
@@ -470,6 +547,7 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   }
 
   function handleRetry() {
+    controllerRef.current?.abort();
     if (currentPath) {
       void installAt(currentPath);
     } else {
@@ -547,6 +625,22 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
       total && total > 0
         ? Math.min(100, Math.round((downloaded / total) * 100))
         : null;
+    const downloadComplete = total !== null && total > 0 && downloaded >= total;
+    const stalled =
+      downloadInFlight &&
+      !downloadComplete &&
+      lastProgressAt !== null &&
+      downloadNow - lastProgressAt >= DOWNLOAD_STALL_MS;
+    const slow =
+      downloadInFlight &&
+      !downloadComplete &&
+      !stalled &&
+      downloadStartedAt !== null &&
+      lastProgressAt !== null &&
+      downloadNow - downloadStartedAt >= DOWNLOAD_SLOW_NOTICE_MS &&
+      downloadNow - lastProgressAt < DOWNLOAD_STALL_MS;
+    const downloadedMb = formatMegabytes(downloaded);
+    const totalMb = total && total > 0 ? formatMegabytes(total) : null;
     return (
       <div className="flex flex-col gap-6 max-w-lg">
         <div className="flex flex-col gap-2">
@@ -574,6 +668,47 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
             {pct !== null ? `${pct}%` : "Preparing…"}
           </span>
         </div>
+
+        {stalled && (
+          <div className="flex flex-col gap-3 rounded-lg border border-amber-300/30 bg-amber-300/10 px-4 py-3">
+            <p className="text-sm text-amber-100">
+              Your internet connection appears to be down — the download has stalled.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleRetry}
+                className="px-4 py-2 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleChooseDifferentFolder()}
+                className="px-4 py-2 rounded-full text-sm font-medium bg-white/10 text-zinc-100 hover:bg-white/15 transition-colors"
+              >
+                Choose a different folder
+              </button>
+            </div>
+          </div>
+        )}
+
+        {slow && (
+          <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/5 px-4 py-3">
+            <p className="text-sm text-zinc-300">
+              Slow internet connection — still downloading (
+              {totalMb ? `${downloadedMb} of ${totalMb} MB` : `${downloadedMb} MB`}
+              )…
+            </p>
+            <button
+              type="button"
+              onClick={handleRetry}
+              className="self-start px-4 py-2 rounded-full text-sm font-medium bg-white/10 text-zinc-100 hover:bg-white/15 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
       </div>
     );
   }

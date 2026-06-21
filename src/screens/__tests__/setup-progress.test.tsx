@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   __resetSetupProgressSessionForTests,
   SetupProgress,
@@ -8,6 +8,7 @@ import {
   __resetWizardRouterCompletionForTests,
   createWizardRouter,
 } from "@/lib/wizard-router";
+import { SETUP_STAGE_SKIP_MS } from "@/lib/timeouts";
 
 // ---------------------------------------------------------------------------
 // SetupProgress orchestrator tests — US-004
@@ -184,6 +185,14 @@ const mockSetGitIdentity = vi.mocked(setGitIdentity);
 const mockSetIsPersonal = vi.mocked(setIsPersonal);
 const mockSetTeam = vi.mocked(setTeam);
 
+async function flushAsyncWork(cycles = 10) {
+  for (let i = 0; i < cycles; i += 1) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 const USER = {
@@ -273,6 +282,10 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       issues: [],
     });
     mockInvoke.mockImplementation(buildInvokeMock());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // ── 1. Render contract — single progress bar, no input controls ─────────
@@ -568,6 +581,38 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
   // ── 3. Stage failure — journaled and non-fatal ─────────────────────────
 
   describe("stage failure", () => {
+    it("reveals Skip after a stuck stage, journals it, and advances to Done", async () => {
+      vi.useFakeTimers();
+      mockRunDepsInstall.mockReturnValue(new Promise(() => {}));
+      const onNext = vi.fn();
+
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await flushAsyncWork();
+      expect(screen.getByTestId("status-line")).toHaveAttribute(
+        "data-stage",
+        "deps",
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SETUP_STAGE_SKIP_MS);
+      });
+
+      expect(
+        screen.getByText(/this step is taking longer than expected/i),
+      ).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: /skip this step/i }));
+
+      await flushAsyncWork(40);
+      expect(onNext).toHaveBeenCalledTimes(1);
+      expect(mockRecordStepFailure).toHaveBeenCalledWith(
+        "/tmp/hq",
+        expect.any(String),
+        "deps",
+        "Skipped after timeout",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith("install_menubar_app");
+    });
+
     it("does NOT show a Retry button when deps fails", async () => {
       setDepsFailNode();
       const onNext = vi.fn();
