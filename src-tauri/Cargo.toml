@@ -48,6 +48,7 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Securit
 winreg = "0.55"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+mac_address = "1.1"
 walkdir = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 

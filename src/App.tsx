@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { createWizardRouter } from "@/lib/wizard-router";
+import { createWizardRouter, WIZARD_STEPS } from "@/lib/wizard-router";
+import { pingStep } from "@/lib/telemetry";
 import { WizardShell } from "@/components/WizardShell";
 import { ScreenSwitcher } from "@/components/ScreenSwitcher";
 import {
@@ -71,6 +72,21 @@ function App() {
 
   const wizardState = getWizardState();
   const { currentStep } = router;
+
+  // Step-funnel telemetry: one ping per step as it's reached. Anonymous by an
+  // install-session id until sign-in, after which the personUid rides along and
+  // the server stitches the session to the person. Gated on telemetry opt-in;
+  // fully fire-and-forget so it never blocks the wizard.
+  useEffect(() => {
+    if (!getWizardState().telemetryEnabled) return;
+    const step = WIZARD_STEPS.find((s) => s.index === currentStep);
+    if (!step) return;
+    void pingStep({
+      step: step.id,
+      personUid: getWizardState().team?.personUid,
+      version: __APP_VERSION__,
+    });
+  }, [currentStep]);
 
   // 5-step flow (US-005):
   //   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito provider) →

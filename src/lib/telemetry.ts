@@ -7,6 +7,62 @@ import { invoke } from "@tauri-apps/api/core";
 import { CLIENT_HEADERS } from "./client-info";
 
 const TELEMETRY_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/success";
+const STEP_ENDPOINT = "https://telemetry.getindigo.ai/v1/installer/step";
+
+// Anonymous install-session id, minted once per installer process. It is the
+// spine of the step funnel before sign-in; once a personUid is known it rides
+// each ping so the server stitches the session to the person.
+let installSessionId: string | null = null;
+export function getInstallSessionId(): string {
+  if (!installSessionId) installSessionId = crypto.randomUUID();
+  return installSessionId;
+}
+
+// Stable, privacy-preserving device id (a hashed MAC from the Rust side) used to
+// spot the same machine installing again. Best-effort + memoized: if the command
+// is unavailable the funnel still records, just without the device dimension.
+let deviceIdCache: string | null | undefined;
+async function getDeviceId(): Promise<string | undefined> {
+  if (deviceIdCache !== undefined) return deviceIdCache ?? undefined;
+  try {
+    const id = await invoke<string>("device_fingerprint");
+    deviceIdCache = typeof id === "string" && id ? id : null;
+  } catch {
+    deviceIdCache = null;
+  }
+  return deviceIdCache ?? undefined;
+}
+
+/**
+ * Fire-and-forget ping for one installer step (welcome → install → signin →
+ * setup → done). Anonymous by `installSessionId`; attaches `personUid` once the
+ * user has signed in and a best-effort hashed device id. Errors are swallowed —
+ * a telemetry failure must never block the wizard. Caller gates on the user's
+ * telemetry opt-in.
+ */
+export async function pingStep(opts: {
+  step: string;
+  personUid?: string;
+  version?: string;
+}): Promise<void> {
+  try {
+    const deviceId = await getDeviceId();
+    await fetch(STEP_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
+      body: JSON.stringify({
+        installSessionId: getInstallSessionId(),
+        step: opts.step,
+        ...(opts.personUid ? { personUid: opts.personUid } : {}),
+        ...(deviceId ? { deviceId } : {}),
+        version: opts.version ?? "unknown",
+        ts: Date.now(),
+      }),
+    });
+  } catch (err) {
+    console.error("[telemetry] pingStep failed:", err);
+  }
+}
 
 /**
  * Failure-notification endpoint. The server forwards POSTs here to the
