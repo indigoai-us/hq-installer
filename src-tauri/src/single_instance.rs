@@ -25,6 +25,10 @@ struct SingleInstanceInner {
 pub enum LockStatus {
     #[cfg(unix)]
     Acquired(InstanceLock),
+    // Only constructed on Unix (flock can detect a held lock). On Windows the
+    // lock is currently a no-op that always returns FailedOpen (primary), so
+    // this variant is never built there.
+    #[cfg_attr(not(unix), allow(dead_code))]
     AlreadyRunning,
     FailedOpen,
 }
@@ -138,7 +142,7 @@ pub fn recheck_primary_instance(state: tauri::State<'_, SingleInstanceState>) ->
     state.recheck_primary()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::{acquire_lock_at, LockStatus};
 
