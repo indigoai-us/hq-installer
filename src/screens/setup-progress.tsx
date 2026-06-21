@@ -61,6 +61,8 @@ import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 import { runExistingImport } from "@/lib/import-existing";
 import { writeInstallTextFile } from "@/lib/install-fs";
 import { markSetupStepCompleted } from "@/lib/wizard-router";
+import { invokeWithTimeout } from "@/lib/invoke-timeout";
+import { SETUP_IPC_TIMEOUT_MS, SETUP_STAGE_SKIP_MS } from "@/lib/timeouts";
 
 // ---------------------------------------------------------------------------
 // Stage model
@@ -84,6 +86,13 @@ interface StageState {
   status: StageStatus;
   error: string | null;
   logLines: string[];
+}
+
+interface ActiveStageControl {
+  runId: number;
+  stageId: StageId;
+  skip: () => void;
+  skipped: boolean;
 }
 
 const STAGE_LABELS: Record<StageId, string> = {
@@ -124,12 +133,13 @@ function buildInitialStages(): StageState[] {
 const SETUP_PROCESS_EXIT_TIMEOUT_MS = 5 * 60 * 1000;
 
 type SetupSessionStatus = "idle" | "running" | "completed" | "cancelled";
+type CancelCommand = "cancel_process" | "cancel_install";
 
 interface SetupSession {
   installPath: string | null;
   runId: number;
   status: SetupSessionStatus;
-  activeHandles: Set<string>;
+  activeHandles: Map<string, CancelCommand>;
   cancelListeners: Map<number, Set<() => void>>;
 }
 
@@ -137,7 +147,7 @@ const setupSession: SetupSession = {
   installPath: null,
   runId: 0,
   status: "idle",
-  activeHandles: new Set(),
+  activeHandles: new Map(),
   cancelListeners: new Map(),
 };
 
@@ -186,14 +196,34 @@ function completeSetupSession(runId: number): void {
   markSetupStepCompleted();
 }
 
-function registerForegroundHandle(runId: number, handle: string): void {
+function registerForegroundHandle(
+  runId: number,
+  handle: string,
+  cancelCommand: CancelCommand = "cancel_process",
+): void {
   if (!isCurrentSetupRun(runId) || setupSession.status !== "running") return;
-  setupSession.activeHandles.add(handle);
+  setupSession.activeHandles.set(handle, cancelCommand);
 }
 
 function unregisterForegroundHandle(runId: number, handle: string): void {
   if (!isCurrentSetupRun(runId)) return;
   setupSession.activeHandles.delete(handle);
+}
+
+function cancelForegroundWork(runId: number): void {
+  if (!isCurrentSetupRun(runId)) return;
+  const handles = Array.from(setupSession.activeHandles.entries());
+  setupSession.activeHandles.clear();
+  const listeners = Array.from(setupSession.cancelListeners.get(runId) ?? []);
+
+  for (const listener of listeners) {
+    listener();
+  }
+  for (const [handle, command] of handles) {
+    invoke(command, { handle }).catch((err) => {
+      console.warn(`[setup] could not cancel ${command} handle=${handle}:`, err);
+    });
+  }
 }
 
 function onSetupRunCancelled(runId: number, listener: () => void): () => void {
@@ -209,19 +239,8 @@ function onSetupRunCancelled(runId: number, listener: () => void): () => void {
 function cancelSetupSession(runId: number): void {
   if (!isCurrentSetupRun(runId) || setupSession.status !== "running") return;
   setupSession.status = "cancelled";
-  const handles = Array.from(setupSession.activeHandles);
-  setupSession.activeHandles.clear();
-  const listeners = Array.from(setupSession.cancelListeners.get(runId) ?? []);
+  cancelForegroundWork(runId);
   setupSession.cancelListeners.delete(runId);
-
-  for (const listener of listeners) {
-    listener();
-  }
-  for (const handle of handles) {
-    invoke("cancel_process", { handle }).catch((err) => {
-      console.warn(`[setup] could not cancel process ${handle}:`, err);
-    });
-  }
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -250,8 +269,10 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   const [stages, setStages] = useState<StageState[]>(buildInitialStages);
   const [, setRunning] = useState(false);
   const [allDone, setAllDone] = useState(false);
+  const [skipReadyStage, setSkipReadyStage] = useState<StageId | null>(null);
   const mountedRef = useRef(true);
   const activeRunRef = useRef<number | null>(null);
+  const activeStageControlRef = useRef<ActiveStageControl | null>(null);
   const stageErrorsRef = useRef<Record<StageId, string | null>>(
     Object.fromEntries(STAGE_ORDER.map((id) => [id, null])) as Record<
       StageId,
@@ -313,8 +334,19 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
 
   // ── Stage 1: deps ──────────────────────────────────────────────────────
 
-  async function runDeps(): Promise<boolean> {
-    const summary = await runDepsInstall((_id, line) => appendLog("deps", line));
+  async function runDeps(runId: number): Promise<boolean> {
+    const installHandles = new Set<string>();
+    const summary = await runDepsInstall(
+      (_id, line) => appendLog("deps", line),
+      (_id, handle) => {
+        installHandles.add(handle);
+        registerForegroundHandle(runId, handle, "cancel_install");
+      },
+    ).finally(() => {
+      for (const handle of installHandles) {
+        unregisterForegroundHandle(runId, handle);
+      }
+    });
 
     try {
       const ver = await getInstallerVersion();
@@ -474,11 +506,15 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         return false;
       }
 
-      const sha = await invoke<string>("git_init", {
-        path: installPath,
-        name,
-        email,
-      });
+      const sha = await invokeWithTimeout<string>(
+        "git_init",
+        {
+          path: installPath,
+          name,
+          email,
+        },
+        SETUP_IPC_TIMEOUT_MS,
+      );
       appendLog("git-init", `Initialised repository (${sha.slice(0, 7)})`);
       setGitIdentity(name, email);
       return true;
@@ -951,14 +987,12 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
 
   // ── Stage dispatcher ───────────────────────────────────────────────────
 
-  async function runStage(id: StageId, runId: number): Promise<boolean> {
-    patchStage(id, { status: "running", error: null });
-    await journalStart(id);
+  async function runStageWork(id: StageId, runId: number): Promise<boolean> {
     let ok = false;
     try {
       switch (id) {
         case "deps":
-          ok = await runDeps();
+          ok = await runDeps(runId);
           break;
         case "initial-sync":
           ok = await runInitialSync();
@@ -985,12 +1019,52 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     } catch (err) {
       if (isSetupRunCancelled(runId)) return false;
       const msg = err instanceof Error ? err.message : String(err);
+      patchStage(id, { error: msg });
+      return false;
+    }
+    if (isSetupRunCancelled(runId)) return false;
+    return ok;
+  }
+
+  async function runStage(id: StageId, runId: number): Promise<boolean> {
+    patchStage(id, { status: "running", error: null });
+    await journalStart(id);
+
+    let skipStage!: () => void;
+    const skipPromise = new Promise<"skipped">((resolve) => {
+      skipStage = () => resolve("skipped");
+    });
+    const control: ActiveStageControl = {
+      runId,
+      stageId: id,
+      skip: skipStage,
+      skipped: false,
+    };
+    activeStageControlRef.current = control;
+
+    const workPromise = runStageWork(id, runId).then((ok) => ({
+      kind: "done" as const,
+      ok,
+    }));
+    const result = await Promise.race([
+      workPromise,
+      skipPromise.then((kind) => ({ kind })),
+    ]);
+
+    if (activeStageControlRef.current === control) {
+      activeStageControlRef.current = null;
+    }
+
+    if (result.kind === "skipped") {
+      const msg = "Skipped after timeout";
       patchStage(id, { status: "failed", error: msg });
       await journalFail(id, msg);
       return false;
     }
+
+    if (control.skipped) return false;
     if (isSetupRunCancelled(runId)) return false;
-    if (ok) {
+    if (result.ok) {
       patchStage(id, { status: "ok" });
       await journalOk(id);
     } else {
@@ -1001,7 +1075,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         "Stage failed (no detail recorded).";
       await journalFail(id, msg);
     }
-    return ok;
+    return result.ok;
   }
 
   // ── Orchestrator ───────────────────────────────────────────────────────
@@ -1029,6 +1103,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       if (!mountedRef.current) return;
       setRunning(true);
       setAllDone(false);
+      setSkipReadyStage(null);
 
       // Reset the failing stage onward; keep earlier stages' final status.
       const startIdx = STAGE_ORDER.indexOf(startId);
@@ -1064,6 +1139,7 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       if (!mountedRef.current) return;
       setRunning(false);
       setAllDone(true);
+      setSkipReadyStage(null);
       onNext?.();
     },
     // We intentionally only depend on installPath — onNext is captured fresh
@@ -1114,6 +1190,30 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         : "Starting…";
   const statusStage = activeStage?.id ?? null;
   const statusKind = allDone ? "done" : "running";
+  const showSkip =
+    !allDone &&
+    activeStage !== undefined &&
+    skipReadyStage === activeStage.id;
+
+  const activeStageId = activeStage?.id;
+  useEffect(() => {
+    setSkipReadyStage(null);
+    if (allDone || !activeStageId) return;
+    const timeout = window.setTimeout(() => {
+      setSkipReadyStage(activeStageId);
+    }, SETUP_STAGE_SKIP_MS);
+    return () => window.clearTimeout(timeout);
+  }, [activeStageId, allDone]);
+
+  function handleSkipCurrentStage() {
+    const control = activeStageControlRef.current;
+    if (!control || control.stageId !== activeStage?.id) return;
+    control.skipped = true;
+    appendLog(control.stageId, "[warn] Skipped after timeout.");
+    cancelForegroundWork(control.runId);
+    control.skip();
+    setSkipReadyStage(null);
+  }
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1152,10 +1252,25 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         >
           {statusText}
         </p>
+
+        {showSkip && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-zinc-300">
+              This step is taking longer than expected.
+            </p>
+            <button
+              type="button"
+              onClick={handleSkipCurrentStage}
+              className="self-start px-4 py-2 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+            >
+              Skip this step
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* No flow-control buttons: failed stages are journaled and setup keeps
-          moving so the wizard always reaches Done. */}
+      {/* Skip appears only after a long-running active stage; failed or skipped
+          stages are journaled and setup keeps moving to Done. */}
     </div>
   );
 }

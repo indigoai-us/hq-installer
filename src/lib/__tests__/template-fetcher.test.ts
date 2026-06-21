@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { gzipSync } from "fflate";
 
 // template-fetcher.ts imports fetch from @tauri-apps/plugin-http so GitHub
@@ -28,6 +28,7 @@ import {
   TemplateFetchError,
   type ProgressEvent,
 } from "../template-fetcher.js";
+import { DOWNLOAD_HARD_STALL_MS } from "../timeouts.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -202,6 +203,10 @@ beforeEach(() => {
   mockInvoke.mockReset().mockResolvedValue(undefined);
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 function writeFileCalls(): Array<{
   absolutePath: string;
   relativePath: string;
@@ -363,6 +368,48 @@ describe("fetchAndExtract", () => {
         return true;
       },
     );
+  });
+
+  // -------------------------------------------------------------------------
+  it("aborts a stalled stream read and throws a stalled retriable error", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockImplementationOnce(async (_input, init) => {
+        requestSignal = init?.signal ?? undefined;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: new Headers({ "content-length": "1024" }),
+          body: {
+            getReader: () => ({
+              read: () => new Promise<ReadableStreamReadResult<Uint8Array>>(() => {}),
+              cancel: vi.fn().mockResolvedValue(undefined),
+            }),
+          },
+          arrayBuffer: async () => new ArrayBuffer(0),
+          json: async () => ({}),
+          text: async () => "",
+        } as unknown as Response;
+      });
+
+    const stalled = fetchAndExtract("/tmp/stalled").catch((err: unknown) => err);
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+
+    await vi.advanceTimersByTimeAsync(DOWNLOAD_HARD_STALL_MS);
+
+    const err = await stalled;
+    expect(err).toBeInstanceOf(TemplateFetchError);
+    expect((err as TemplateFetchError).retriable).toBe(true);
+    expect((err as TemplateFetchError).stalled).toBe(true);
+    expect(requestSignal?.aborted).toBe(true);
   });
 
   // -------------------------------------------------------------------------

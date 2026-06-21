@@ -4,10 +4,14 @@
 // wizard advances. The scaffold-fetch assertions are the regression guard for
 // the bug where the install step only created an empty ~/hq and skipped ahead.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DirectoryPicker } from "../06-directory.js";
+import {
+  DOWNLOAD_SLOW_NOTICE_MS,
+  DOWNLOAD_STALL_MS,
+} from "@/lib/timeouts";
 
 // ---------------------------------------------------------------------------
 // Tauri API mocks
@@ -39,13 +43,30 @@ vi.mock("@tauri-apps/plugin-http", () => ({
 // the regression assertions below verify the install step *calls* it correctly.
 vi.mock("@/lib/template-fetcher", () => ({
   fetchAndExtract: vi.fn().mockResolvedValue({ version: "v-test" }),
-  TemplateFetchError: class TemplateFetchError extends Error {},
+  TemplateFetchError: class TemplateFetchError extends Error {
+    constructor(
+      message: string,
+      public readonly retriable = true,
+      public readonly cause?: unknown,
+      public readonly stalled = false,
+    ) {
+      super(message);
+    }
+  },
 }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { fetchAndExtract } from "@/lib/template-fetcher";
 const mockInvoke = vi.mocked(invoke);
 const mockFetch = vi.mocked(fetchAndExtract);
+
+async function flushAsyncWork(cycles = 10) {
+  for (let i = 0; i < cycles; i += 1) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,6 +138,10 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
     setupInvokeMock();
     mockFetch.mockReset();
     mockFetch.mockResolvedValue({ version: "v-test" });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // -------------------------------------------------------------------------
@@ -247,6 +272,65 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
       );
       expect(screen.queryByRole("progressbar")).not.toBeNull();
       resolveFetch({ version: "v1" });
+    });
+
+    it("shows a slow-connection note for a progressing download and keeps going", async () => {
+      vi.useFakeTimers();
+      let progress:
+        | ((event: { bytes: number; total: number }) => void)
+        | undefined;
+      let signal: AbortSignal | undefined;
+      mockFetch.mockImplementation((_target, _token, onProgress, abortSignal) => {
+        progress = onProgress;
+        signal = abortSignal;
+        return new Promise(() => {});
+      });
+      const onNext = vi.fn();
+
+      render(<DirectoryPicker onNext={onNext} />);
+      await flushAsyncWork();
+      expect(progress).toBeDefined();
+
+      act(() => {
+        progress?.({ bytes: 1024 * 1024, total: 10 * 1024 * 1024 });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(DOWNLOAD_SLOW_NOTICE_MS / 2);
+      });
+      act(() => {
+        progress?.({ bytes: 2 * 1024 * 1024, total: 10 * 1024 * 1024 });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(DOWNLOAD_SLOW_NOTICE_MS / 2 + 1);
+      });
+
+      expect(screen.getByText(/slow internet connection/i)).toBeTruthy();
+      expect(signal?.aborted).toBe(false);
+      expect(onNext).not.toHaveBeenCalled();
+    });
+
+    it("shows a stalled internet message and Retry when download progress stops", async () => {
+      vi.useFakeTimers();
+      let progress:
+        | ((event: { bytes: number; total: number }) => void)
+        | undefined;
+      mockFetch.mockImplementation((_target, _token, onProgress) => {
+        progress = onProgress;
+        return new Promise(() => {});
+      });
+
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await flushAsyncWork();
+      expect(progress).toBeDefined();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(DOWNLOAD_STALL_MS);
+      });
+
+      expect(
+        screen.getByText(/internet connection appears to be down/i),
+      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
     });
   });
 

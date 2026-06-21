@@ -129,6 +129,7 @@ export interface DepsInstallSummary {
  */
 export async function runDepsInstall(
   onProgress?: (depId: string, line: string) => void,
+  onHandle?: (depId: string, handle: string) => void,
 ): Promise<DepsInstallSummary> {
   const results: DepInstallResult[] = [];
   // Track which deps succeeded so dependsOn gating works.
@@ -136,9 +137,19 @@ export async function runDepsInstall(
 
   // Register a single install:progress listener for the whole run.
   type ProgressPayload = { line?: string; handle?: string };
+  const seenHandles = new Set<string>();
   let activeDepId: string | null = null;
   const unlisten = await listen("install:progress", (event: { payload: unknown }) => {
     const payload = event.payload as ProgressPayload;
+    if (
+      activeDepId &&
+      payload?.handle &&
+      payload.handle !== "preflight" &&
+      !seenHandles.has(payload.handle)
+    ) {
+      seenHandles.add(payload.handle);
+      onHandle?.(activeDepId, payload.handle);
+    }
     const line = payload?.line ?? "";
     if (activeDepId && line && onProgress) {
       onProgress(activeDepId, line);
