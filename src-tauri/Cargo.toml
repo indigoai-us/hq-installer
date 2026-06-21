@@ -45,7 +45,7 @@ mac_address = "1.1"
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["signal"] }
+nix = { version = "0.29", features = ["fs", "signal"] }
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

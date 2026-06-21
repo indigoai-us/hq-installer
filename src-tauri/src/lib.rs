@@ -1,5 +1,6 @@
 pub mod commands;
 mod sentry_scrub;
+mod single_instance;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -44,6 +45,7 @@ pub fn run() {
     });
 
     let builder = tauri::Builder::default()
+        .manage(single_instance::SingleInstanceState::acquire_startup())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -170,6 +172,8 @@ pub fn run() {
                     commands::menubar::write_menubar_hq_path,
                     commands::staging::get_use_staging_source,
                     commands::staging::download_staging_tarball,
+                    single_instance::is_primary_instance,
+                    single_instance::recheck_primary_instance,
                 ]
             }
             #[cfg(windows)]
@@ -226,6 +230,8 @@ pub fn run() {
                     commands::menubar::write_menubar_hq_path,
                     commands::staging::get_use_staging_source,
                     commands::staging::download_staging_tarball,
+                    single_instance::is_primary_instance,
+                    single_instance::recheck_primary_instance,
                 ]
             }
         })

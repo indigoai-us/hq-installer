@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { createWizardRouter, WIZARD_STEPS } from "@/lib/wizard-router";
 import { pingStep } from "@/lib/telemetry";
 import { WizardShell } from "@/components/WizardShell";
@@ -13,8 +14,48 @@ import { CognitoAuth } from "@/screens/02-cognito-auth";
 import { DirectoryPicker } from "@/screens/06-directory";
 import { SetupProgress } from "@/screens/setup-progress";
 import { Summary } from "@/screens/11-summary";
+import { AnotherInstanceRunning } from "@/screens/AnotherInstanceRunning";
 
 function App() {
+  const [isPrimaryInstance, setIsPrimaryInstance] = useState<boolean | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke<boolean>("is_primary_instance")
+      .then((isPrimary) => {
+        if (!cancelled) {
+          setIsPrimaryInstance(isPrimary);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setIsPrimaryInstance(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (isPrimaryInstance === null) {
+    return <div className="min-h-screen bg-zinc-950" />;
+  }
+
+  if (!isPrimaryInstance) {
+    return (
+      <AnotherInstanceRunning
+        onPrimaryAcquired={() => setIsPrimaryInstance(true)}
+      />
+    );
+  }
+
+  return <WizardApp />;
+}
+
+function WizardApp() {
   const [router] = useState(() => createWizardRouter());
   const [, forceRender] = useState(0);
   // High-water mark of steps the user has actually reached. Lets the sidebar

@@ -1,12 +1,25 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { render, screen } from "@testing-library/react";
+import { clearWizardState, setTelemetryEnabled } from "@/lib/wizard-state";
 import App from "../../src/App";
 
 const repoRoot = process.cwd(); // vitest runs from repo root
+const invokeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
+}));
 
 describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
+  beforeEach(() => {
+    clearWizardState();
+    setTelemetryEnabled(false);
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(true);
+  });
+
   describe("Quality gate prerequisites", () => {
     it("package.json has all required quality gate scripts", () => {
       const pkg = JSON.parse(
@@ -45,37 +58,38 @@ describe("US-001: Scaffold hq-installer repo + Tauri 2 project + CI", () => {
   });
 
   describe("Monochrome React app rendering", () => {
-    it("renders Set up HQ heading without errors", () => {
+    it("renders Set up HQ heading without errors", async () => {
       render(<App />);
-      expect(screen.getByText(/Set up HQ/i)).toBeTruthy();
+      expect(await screen.findByText(/Set up HQ/i)).toBeTruthy();
     });
 
-    it("renders monochrome zinc dark background (no purple classes)", () => {
+    it("renders monochrome zinc dark background (no purple classes)", async () => {
       const { container } = render(<App />);
+      await screen.findByText(/Set up HQ/i);
       const html = container.innerHTML;
       expect(html).not.toMatch(/purple-/);
       expect(html).toContain("bg-zinc-950");
     });
 
-    it("renders Get Started primary button", () => {
+    it("renders Get Started primary button", async () => {
       render(<App />);
       expect(
-        screen.getByRole("button", { name: /Get Started/i })
+        await screen.findByRole("button", { name: /Get Started/i })
       ).toBeTruthy();
     });
 
-    it("renders wizard overview steps list (via sidebar ProgressIndicator)", () => {
+    it("renders wizard overview steps list (via sidebar ProgressIndicator)", async () => {
       render(<App />);
       // Steps moved from a duplicated body list into the persistent sidebar.
       // "Sign In" is a sidebar-exclusive label in the 5-step flow — confirms
       // the sidebar rendered.
-      expect(screen.getByText(/Sign In/i)).toBeTruthy();
+      expect(await screen.findByText(/Sign In/i)).toBeTruthy();
     });
 
-    it("renders telemetry opt-in label", () => {
+    it("renders telemetry opt-in label", async () => {
       render(<App />);
       expect(
-        screen.getByText(/sharing anonymous usage telemetry/i)
+        await screen.findByText(/sharing anonymous usage telemetry/i)
       ).toBeTruthy();
     });
   });
