@@ -204,13 +204,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Tauri updater bundle signing. Public half lives in
-          # tauri.conf.json → plugins.updater.pubkey. Users get auto-updates
-          # only if the .tar.gz's detached signature verifies against that
-          # pubkey, so rotating these means shipping a new pubkey and
-          # forcing manual reinstall for every existing user.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # build.rs reads this via env!("SENTRY_DSN") — must be present at compile time
           # so the signed binary has a wired DSN rather than the empty-string no-op path.
           HQ_INSTALLER_SENTRY_DSN: ${{ secrets.HQ_INSTALLER_SENTRY_DSN }}
@@ -228,14 +221,13 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target universal-apple-darwin
-          updaterJsonKeepUniversal: true
 
       # Sentry symbol upload is best-effort — it should never gate a release.
       # tauri-action's universal-apple-darwin build doesn't reliably emit
       # .dSYM bundles in the per-arch target dirs we search, so the prior
       # exit-1-on-zero-uploaded behavior wedged v0.1.24 with assets uploaded
       # but the publish step skipped. Step is allowed to fail loudly — the
-      # signed/notarized binary, latest.json, and .zip alias still ship.
+      # signed/notarized binary and .zip alias still ship.
       - name: Create Sentry release and upload Rust debug symbols
         continue-on-error: true
         env:
@@ -315,9 +307,8 @@ jobs:
           gh release upload "$TAG" "$VERSIONED_PATH" --clobber
 
       # tauri-action creates the release as a draft. The finalize job is the
-      # only job allowed to upload latest.json and publish the draft, after
-      # both macOS and Windows assets exist and every updater signature points
-      # at artifacts signed with the single updater keypair.
+      # only job allowed to publish the draft, after both macOS and Windows
+      # installer assets exist.
 
   build-windows:
     name: Build & Sign (${{ matrix.target }})
@@ -409,15 +400,6 @@ jobs:
           VITE_COGNITO_USER_POOL_ID: ${{ secrets.VITE_COGNITO_USER_POOL_ID }}
           VITE_COGNITO_CLIENT_ID: ${{ secrets.VITE_COGNITO_CLIENT_ID }}
           VITE_COGNITO_DOMAIN: ${{ secrets.VITE_COGNITO_DOMAIN }}
-          # Tauri updater bundle signing (minisign). The unified repo uses one
-          # updater keypair for both darwin and windows artifacts; the public
-          # half lives in tauri.conf.json -> plugins.updater.pubkey. The signed
-          # -setup.exe + .sig produced here are what finalize feeds into the
-          # combined latest.json. NB: this is distinct from Authenticode Trusted
-          # Signing below. The updater .sig is REGENERATED after Authenticode
-          # signing because Authenticode mutates the installer bytes.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Crash reporting. build.rs reads HQ_INSTALLER_SENTRY_DSN at compile
           # time and bakes it into env!("SENTRY_DSN") (src-tauri/src/lib.rs);
           # VITE_SENTRY_DSN is inlined for the React layer. SENTRY_* drive
@@ -427,7 +409,7 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: indigo-d0
           SENTRY_PROJECT: hq-installer-web
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi,nsis,updater
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles msi,nsis
 
       # -- Azure Trusted Signing (Artifact Signing) -------------------------
       # Authenticate to Azure via OIDC IMMEDIATELY before signing. A federated
@@ -479,46 +461,14 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      # Authenticode signing mutates the installer bytes, which invalidates the
-      # minisign updater .sig that `tauri build` wrote over the UNSIGNED bytes.
-      # Regenerate each .sig over the now-signed installer so the auto-updater's
-      # signature check passes against the bytes we actually distribute. Without
-      # this, enabling signing would silently break auto-updates.
-      - name: Regenerate updater signatures (post-Authenticode)
-        if: vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != ''
-        shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
-          # Only files that already have a .sig are updater artifacts worth
-          # re-signing (the NSIS -setup.exe always; the MSI when it carries one).
-          $targets = @()
-          $targets += Get-ChildItem -Path "$bundleDir\nsis" -Filter '*-setup.exe' -ErrorAction SilentlyContinue
-          $targets += Get-ChildItem -Path "$bundleDir\msi"  -Filter '*.msi'        -ErrorAction SilentlyContinue
-          $targets = $targets | Where-Object { Test-Path "$($_.FullName).sig" }
-          if (-not $targets) { Write-Error "No updater artifacts (.sig) found to regenerate"; exit 1 }
-          foreach ($t in $targets) {
-            Write-Host "Re-signing updater signature for $($t.Name)"
-            # `tauri signer sign` reads the key/password from the env vars above
-            # and rewrites <file>.sig next to the input.
-            pnpm exec tauri signer sign "$($t.FullName)"
-            if ($LASTEXITCODE -ne 0) { Write-Error "tauri signer sign failed on $($t.Name)"; exit 1 }
-          }
-
       - name: Stage release artifacts
         shell: pwsh
         run: |
           $stage = Join-Path $env:GITHUB_WORKSPACE "release-artifacts-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           $bundleDir = "src-tauri\target\${{ matrix.target }}\release\bundle"
-          # Tauri v2's Windows updater artifact IS the installer plus a `.sig`
-          # sidecar (e.g. `...-setup.exe` + `...-setup.exe.sig`). Stage the
-          # installers AND their `.sig` files so the publish job can build
-          # latest.json.
-          Get-ChildItem -Path "$bundleDir\msi" -Recurse -Include '*.msi','*.msi.sig' -ErrorAction SilentlyContinue | Copy-Item -Destination $stage
-          Get-ChildItem -Path "$bundleDir\nsis" -Recurse -Include '*-setup.exe','*-setup.exe.sig' -ErrorAction SilentlyContinue | Copy-Item -Destination $stage
+          Get-ChildItem -Path "$bundleDir\msi" -Recurse -Include '*.msi' -ErrorAction SilentlyContinue | Copy-Item -Destination $stage
+          Get-ChildItem -Path "$bundleDir\nsis" -Recurse -Include '*-setup.exe' -ErrorAction SilentlyContinue | Copy-Item -Destination $stage
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
 
       - name: Verify staged Authenticode signatures
@@ -581,8 +531,8 @@ jobs:
 
           # The macOS tauri-action job is responsible for creating the draft
           # release. Windows only uploads assets into that same draft so the
-          # finalizer can publish one cross-platform release and one combined
-          # latest.json after both platform pipelines are complete.
+          # finalizer can publish one cross-platform release after both
+          # platform pipelines are complete.
           $found = $false
           for ($i = 1; $i -le 120; $i++) {
             gh release view "$tag" 2>$null | Out-Null
@@ -629,32 +579,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Generate and upload combined latest.json
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          mkdir -p release-sigs
-
-          gh release view "$TAG" --json assets > release-assets.json
-          gh release download "$TAG" --pattern "*.sig" --dir release-sigs --clobber
-          VERSION="${TAG#v}"
-          node scripts/build-latest-json.mjs \
-            --assets release-assets.json \
-            --sig-dir release-sigs \
-            --version "$VERSION" \
-            --tag "$TAG" \
-            --repo "$REPO" \
-            --output latest.json
-
-          gh release upload "$TAG" latest.json --clobber
-
       - name: Verify release assets and publish draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -674,16 +598,11 @@ jobs:
             fi
           }
 
-          # Nothing goes live until all platform assets and the combined
-          # updater manifest are present in the same draft release.
-          require_asset "darwin updater tarball" '\.tar\.gz$'
-          require_asset "darwin updater signature" '\.tar\.gz\.sig$'
-          require_asset "combined latest.json" '^latest\.json$'
+          # Nothing goes live until all platform installer assets are present
+          # in the same draft release.
           require_asset "macOS versionless zip" '^hq-installer_universal\.zip$'
           require_asset "windows x64 setup" '_x64-setup\.exe$'
-          require_asset "windows x64 setup signature" '_x64-setup\.exe\.sig$'
           require_asset "windows arm64 setup" '_arm64-setup\.exe$'
-          require_asset "windows arm64 setup signature" '_arm64-setup\.exe\.sig$'
           require_asset "windows x64 versionless setup" '^HQ-Installer_x64-setup\.exe$'
           require_asset "windows arm64 versionless setup" '^HQ-Installer_arm64-setup\.exe$'
 

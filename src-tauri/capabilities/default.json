@@ -19,7 +19,6 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-message",
-    "updater:default",
     {
       "identifier": "http:default",
       "allow": [
