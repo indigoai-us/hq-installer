@@ -103,6 +103,9 @@ const FAKE_TOKENS: cognito.CognitoTokens = {
 describe("CognitoAuth screen — provider OAuth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockOpen.mockResolvedValue(undefined);
+    mockStoreTokens.mockResolvedValue({ keychain: "stored", sharedFile: "written" });
+    mockGetUserFromTokens.mockReturnValue(null);
   });
 
   it("renders Google and Microsoft provider buttons", () => {
@@ -210,6 +213,26 @@ describe("CognitoAuth screen — provider OAuth", () => {
     expect(mockStoreTokens).toHaveBeenCalledWith(FAKE_TOKENS);
   });
 
+  it("advances with a non-blocking warning when Keychain persistence fails", async () => {
+    const user = userEvent.setup();
+    const onNext = vi.fn();
+    mockInvoke.mockResolvedValue({ code: "c" });
+    mockExchange.mockResolvedValue(FAKE_TOKENS);
+    mockStoreTokens.mockResolvedValue({
+      keychain: "failed",
+      sharedFile: "written",
+      keychainError: new Error("locked keychain"),
+    });
+
+    render(<CognitoAuth onNext={onNext} />);
+    await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /signed in.*couldn't save to keychain/i,
+    );
+  });
+
   it("renders an error and does not advance when the listener rejects", async () => {
     const user = userEvent.setup();
     const onNext = vi.fn();
@@ -281,8 +304,56 @@ describe("CognitoAuth screen — provider OAuth", () => {
     await user.click(screen.getByRole("button", { name: /continue with google/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/token exchange/i);
+      expect(screen.getByRole("alert")).toHaveTextContent(/couldn't finish sign-in/i);
     });
+    expect(screen.getAllByRole("button", { name: /^retry$/i }).length).toBeGreaterThan(0);
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
+  it("cancels the listener and renders a copy-link fallback when browser open fails", async () => {
+    const user = userEvent.setup();
+    const onNext = vi.fn();
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === "oauth_listen_for_code") {
+        return new Promise(() => {});
+      }
+      if (cmd === "oauth_cancel_listen") {
+        return undefined;
+      }
+      throw new Error(`Unknown command: ${cmd}`);
+    });
+    mockOpen.mockRejectedValue(new Error("shell.open failed"));
+
+    render(<CognitoAuth onNext={onNext} />);
+    await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    expect(await screen.findByRole("button", { name: /copy sign-in link/i })).not.toBeNull();
+    expect(screen.getByText("https://auth.example.com/oauth2/authorize?stub")).not.toBeNull();
+    expect(screen.getAllByRole("button", { name: /^retry$/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /continue with google/i })).not.toBeNull();
+    expect(mockInvoke).toHaveBeenCalledWith("oauth_cancel_listen");
+    expect(mockExchange).not.toHaveBeenCalled();
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
+  it("maps an OAuth port conflict to a retryable message", async () => {
+    const user = userEvent.setup();
+    const onNext = vi.fn();
+    mockInvoke.mockRejectedValue(
+      JSON.stringify({
+        code: "OAUTH_PORT_IN_USE",
+        message:
+          "Sign-in needs local port 53682, but another process is already using it.",
+      }),
+    );
+
+    render(<CognitoAuth onNext={onNext} />);
+    await user.click(screen.getByRole("button", { name: /continue with google/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/port 53682/i);
+    });
+    expect(screen.getAllByRole("button", { name: /^retry$/i }).length).toBeGreaterThan(0);
     expect(onNext).not.toHaveBeenCalled();
   });
 

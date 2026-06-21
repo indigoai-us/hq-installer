@@ -141,6 +141,28 @@ beforeEach(() => {
   fakeKeychain.clear();
   fakeFs.clear();
   vi.clearAllMocks();
+  vi.mocked(invoke).mockImplementation(
+    async (command: string, args?: unknown) => {
+      const invokeArgs = args as Record<string, string> | undefined;
+      switch (command) {
+        case "keychain_set":
+          fakeKeychain.set(invokeArgs!.account, invokeArgs!.secret);
+          return null;
+        case "keychain_get": {
+          const val = fakeKeychain.get(invokeArgs!.account);
+          if (val === undefined) throw new Error("not found");
+          return val;
+        }
+        case "keychain_delete":
+          fakeKeychain.delete(invokeArgs!.account);
+          return null;
+        case "home_dir":
+          return FAKE_HOME;
+        default:
+          throw new Error(`Unknown command: ${command}`);
+      }
+    },
+  );
   // Reset the in-memory token cache — otherwise state leaks across tests
   // (the cache is module-scoped, not per-test).
   __resetCacheForTests();
@@ -182,6 +204,53 @@ describe("storeTokens", () => {
       .mock.calls.filter(([cmd]) => cmd === "keychain_set");
     expect(keychainSetCalls).toHaveLength(1);
     expect(keychainSetCalls[0][1]).toMatchObject({ account: "tokens" });
+  });
+
+  it("continues with memory cache and shared handoff when Keychain write fails", async () => {
+    const tokenFilePath = `${FAKE_HOME}/.hq/cognito-tokens.json`;
+    const tokens = makeTokens({
+      accessToken: "acc-after-keychain-failure",
+      idToken: makeIdToken("sub-keychain-failure", "keychain-failure@example.com"),
+      refreshToken: "ref-after-keychain-failure",
+    });
+
+    vi.mocked(invoke).mockImplementation(
+      async (command: string, args?: unknown) => {
+        const invokeArgs = args as Record<string, string> | undefined;
+        switch (command) {
+          case "keychain_set":
+            throw new Error("locked keychain");
+          case "keychain_get": {
+            const val = fakeKeychain.get(invokeArgs!.account);
+            if (val === undefined) throw new Error("not found");
+            return val;
+          }
+          case "keychain_delete":
+            fakeKeychain.delete(invokeArgs!.account);
+            return null;
+          case "home_dir":
+            return FAKE_HOME;
+          default:
+            throw new Error(`Unknown command: ${command}`);
+        }
+      },
+    );
+
+    const status = await storeTokens(tokens);
+    const user = await getCurrentUser();
+
+    expect(status.keychain).toBe("failed");
+    expect(status.sharedFile).toBe("written");
+    expect(fakeKeychain.size).toBe(0);
+    expect(fakeFs.has(tokenFilePath)).toBe(true);
+    expect(JSON.parse(fakeFs.get(tokenFilePath)!).accessToken).toBe(
+      "acc-after-keychain-failure",
+    );
+    expect(user?.email).toBe("keychain-failure@example.com");
+    const keychainGetCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "keychain_get");
+    expect(keychainGetCalls).toHaveLength(0);
   });
 });
 

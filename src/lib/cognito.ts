@@ -74,6 +74,12 @@ export interface CurrentUser {
   tokens: CognitoTokens;
 }
 
+export interface TokenPersistenceStatus {
+  keychain: "stored" | "failed";
+  sharedFile: "written" | "failed";
+  keychainError?: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Keychain helpers
 // ---------------------------------------------------------------------------
@@ -102,7 +108,7 @@ interface SharedTokenFile {
   tokenType: "Bearer";
 }
 
-async function writeSharedTokenFile(tokens: CognitoTokens): Promise<void> {
+async function writeSharedTokenFile(tokens: CognitoTokens): Promise<boolean> {
   let tmpPath: string | null = null;
   try {
     const home = await getHomeDirPath();
@@ -123,6 +129,7 @@ async function writeSharedTokenFile(tokens: CognitoTokens): Promise<void> {
     const bytes = new TextEncoder().encode(JSON.stringify(payload, null, 2));
     await writeFile(tmpPath, bytes, { mode: 0o600 });
     await rename(tmpPath, tokenPath);
+    return true;
   } catch (err) {
     if (tmpPath) {
       try {
@@ -132,6 +139,7 @@ async function writeSharedTokenFile(tokens: CognitoTokens): Promise<void> {
       }
     }
     console.warn("[cognito] shared token handoff write failed:", err);
+    return false;
   }
 }
 
@@ -178,17 +186,31 @@ function isMissingKeychainEntry(err: unknown): boolean {
   return err instanceof Error && /not found|no entry|not exist/i.test(err.message);
 }
 
-export async function storeTokens(tokens: CognitoTokens): Promise<void> {
-  await invoke("keychain_set", {
-    service: KC_SERVICE,
-    account: KC_ACCOUNT,
-    secret: JSON.stringify(tokens),
-  });
+export async function storeTokens(tokens: CognitoTokens): Promise<TokenPersistenceStatus> {
   cachedTokens = tokens;
   cacheWarmed = true;
   pendingLoad = null;
 
-  await writeSharedTokenFile(tokens);
+  const sharedFileWritten = await writeSharedTokenFile(tokens);
+
+  try {
+    await invoke("keychain_set", {
+      service: KC_SERVICE,
+      account: KC_ACCOUNT,
+      secret: JSON.stringify(tokens),
+    });
+    return {
+      keychain: "stored",
+      sharedFile: sharedFileWritten ? "written" : "failed",
+    };
+  } catch (err) {
+    console.warn("[cognito] keychain token write failed; continuing with in-memory session:", err);
+    return {
+      keychain: "failed",
+      sharedFile: sharedFileWritten ? "written" : "failed",
+      keychainError: err,
+    };
+  }
 }
 
 async function loadTokens(): Promise<CognitoTokens | null> {

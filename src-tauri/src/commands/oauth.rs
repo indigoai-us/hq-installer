@@ -21,6 +21,7 @@
 //   - 5-minute timeout so a stalled/abandoned flow doesn't leak a socket.
 
 use serde::Serialize;
+use serde_json::json;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -103,6 +104,27 @@ pub struct OAuthResult {
     pub code: String,
 }
 
+enum CallbackParams {
+    Code {
+        code: String,
+        state: String,
+    },
+    ProviderError {
+        error: String,
+        state: String,
+        description: Option<String>,
+    },
+}
+
+fn oauth_err(code: &str, message: impl std::fmt::Display) -> String {
+    let message = message.to_string();
+    serde_json::to_string(&json!({
+        "code": code,
+        "message": message.clone()
+    }))
+    .unwrap_or(message)
+}
+
 const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <head>
@@ -168,9 +190,11 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
     let _ = stream.shutdown(Shutdown::Both);
 }
 
-/// Parse `GET /callback?code=...&state=...` from the first request line.
-/// Returns (code, state) if both query params are present.
-fn parse_callback(request: &str) -> Option<(String, String, Option<String>)> {
+/// Parse `GET /callback?...` from the first request line.
+/// Returns either a successful authorization code callback or a provider
+/// error callback. Both forms must carry state so callers can validate the
+/// response belongs to the in-flight OAuth attempt.
+fn parse_callback(request: &str) -> Option<CallbackParams> {
     let first_line = request.lines().next()?;
     // "GET /callback?code=XYZ&state=ABC HTTP/1.1"
     let mut parts = first_line.split_whitespace();
@@ -183,6 +207,7 @@ fn parse_callback(request: &str) -> Option<(String, String, Option<String>)> {
     let mut code = None;
     let mut state = None;
     let mut error = None;
+    let mut description = None;
     for pair in query.split('&') {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let v_decoded = urldecode(v);
@@ -190,11 +215,17 @@ fn parse_callback(request: &str) -> Option<(String, String, Option<String>)> {
             "code" => code = Some(v_decoded),
             "state" => state = Some(v_decoded),
             "error" => error = Some(v_decoded),
+            "error_description" => description = Some(v_decoded),
             _ => {}
         }
     }
     match (code, state, error) {
-        (Some(c), Some(s), err) => Some((c, s, err)),
+        (Some(code), Some(state), None) => Some(CallbackParams::Code { code, state }),
+        (_, Some(state), Some(error)) => Some(CallbackParams::ProviderError {
+            error,
+            state,
+            description,
+        }),
         _ => None,
     }
 }
@@ -249,11 +280,21 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
     let flag_for_task = my_flag.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
         let listener = try_bind_with_retries().map_err(|e| {
-            format!(
-                "Failed to bind OAuth loopback listener on {}:{} — {}. \
-                 Another instance may already be waiting for sign-in.",
-                LOOPBACK_HOST, LOOPBACK_PORT, e
-            )
+            if e.kind() == io::ErrorKind::AddrInUse {
+                oauth_err(
+                    "OAUTH_PORT_IN_USE",
+                    format!(
+                        "Sign-in needs local port {LOOPBACK_PORT}, but another process is already using it. Close the other sign-in window or app using that port, then retry."
+                    ),
+                )
+            } else {
+                oauth_err(
+                    "OAUTH_LISTENER_ERROR",
+                    format!(
+                        "Failed to bind OAuth loopback listener on {LOOPBACK_HOST}:{LOOPBACK_PORT}: {e}"
+                    ),
+                )
+            }
         })?;
 
         // Non-blocking accept so we can poll the cancel flag + deadline every
@@ -291,13 +332,11 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                     };
 
                     match parse_callback(&request) {
-                        Some((_code, _state, Some(error))) => {
-                            let reason = format!("Provider error: {error}");
-                            log_line(&format!("[oauth] callback rejected — {reason}"));
-                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
-                            return Err(format!("OAuth provider returned error: {error}"));
-                        }
-                        Some((code, state, None)) => {
+                        Some(CallbackParams::ProviderError {
+                            error,
+                            state,
+                            description,
+                        }) => {
                             if state != state_copy {
                                 let reason = format!(
                                     "State mismatch: expected {} got {}",
@@ -309,9 +348,38 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
                                     "400 Bad Request",
                                     &error_html(&reason),
                                 );
-                                return Err(
-                                    "OAuth state mismatch — possible CSRF, aborting.".into()
+                                return Err(oauth_err(
+                                    "OAUTH_STATE_MISMATCH",
+                                    "OAuth state mismatch — possible CSRF, aborting.",
+                                ));
+                            }
+                            let detail = description
+                                .filter(|d| !d.trim().is_empty())
+                                .unwrap_or_else(|| error.clone());
+                            let reason = format!("Provider error: {detail}");
+                            log_line(&format!("[oauth] callback rejected — {reason}"));
+                            write_response(&mut stream, "400 Bad Request", &error_html(&reason));
+                            return Err(oauth_err(
+                                "OAUTH_PROVIDER_ERROR",
+                                format!("Sign-in was cancelled or denied by the provider ({error}). Retry when you're ready."),
+                            ));
+                        }
+                        Some(CallbackParams::Code { code, state }) => {
+                            if state != state_copy {
+                                let reason = format!(
+                                    "State mismatch: expected {} got {}",
+                                    state_copy, state
                                 );
+                                log_line(&format!("[oauth] callback rejected — {reason}"));
+                                write_response(
+                                    &mut stream,
+                                    "400 Bad Request",
+                                    &error_html(&reason),
+                                );
+                                return Err(oauth_err(
+                                    "OAUTH_STATE_MISMATCH",
+                                    "OAuth state mismatch — possible CSRF, aborting.",
+                                ));
                             }
                             log_line(&format!(
                                 "[oauth] callback accepted — code length {}",
@@ -352,6 +420,18 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
     result?
 }
 
+#[tauri::command]
+pub fn oauth_cancel_listen() {
+    let current = {
+        let slot = cancel_slot().lock().unwrap_or_else(|p| p.into_inner());
+        slot.clone()
+    };
+    if let Some(flag) = current {
+        flag.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect((LOOPBACK_HOST, LOOPBACK_PORT));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,17 +439,47 @@ mod tests {
     #[test]
     fn parse_callback_extracts_code_and_state() {
         let req = "GET /callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let (code, state, err) = parse_callback(req).unwrap();
-        assert_eq!(code, "abc123");
-        assert_eq!(state, "xyz");
-        assert!(err.is_none());
+        match parse_callback(req).unwrap() {
+            CallbackParams::Code { code, state } => {
+                assert_eq!(code, "abc123");
+                assert_eq!(state, "xyz");
+            }
+            CallbackParams::ProviderError { .. } => panic!("expected code callback"),
+        }
     }
 
     #[test]
-    fn parse_callback_captures_error() {
-        let req = "GET /callback?code=x&state=y&error=access_denied HTTP/1.1\r\n\r\n";
-        let (_, _, err) = parse_callback(req).unwrap();
-        assert_eq!(err.as_deref(), Some("access_denied"));
+    fn parse_callback_captures_error_only_callback() {
+        let req = "GET /callback?error=access_denied&state=y HTTP/1.1\r\n\r\n";
+        match parse_callback(req).unwrap() {
+            CallbackParams::ProviderError {
+                error,
+                state,
+                description,
+            } => {
+                assert_eq!(error, "access_denied");
+                assert_eq!(state, "y");
+                assert!(description.is_none());
+            }
+            CallbackParams::Code { .. } => panic!("expected provider error callback"),
+        }
+    }
+
+    #[test]
+    fn parse_callback_captures_error_description() {
+        let req = "GET /callback?error=access_denied&error_description=user+cancelled&state=y HTTP/1.1\r\n\r\n";
+        match parse_callback(req).unwrap() {
+            CallbackParams::ProviderError {
+                error,
+                state,
+                description,
+            } => {
+                assert_eq!(error, "access_denied");
+                assert_eq!(state, "y");
+                assert_eq!(description.as_deref(), Some("user cancelled"));
+            }
+            CallbackParams::Code { .. } => panic!("expected provider error callback"),
+        }
     }
 
     #[test]

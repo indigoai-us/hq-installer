@@ -106,6 +106,12 @@ const WIZARD_STATE_FIXTURE = {
 describe("Summary screen (11-summary.tsx)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
     // Default: Claude Desktop is installed. Tests covering the missing-tool
     // branch override via setupInvokeMock({ tools: makeAiTools() }).
     setupInvokeMock();
@@ -145,11 +151,14 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(screen.getByText("dev@acme.com")).toBeDefined();
   });
 
-  it("renders '—' for missing install path", () => {
-    const { getAllByText } = render(
+  it("falls back to ~/hq when the saved install path is missing", () => {
+    render(
       <Summary wizardState={{ ...WIZARD_STATE_FIXTURE, installPath: null }} />,
     );
-    expect(getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("~/hq").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/saved install path was not available/i),
+    ).toBeInTheDocument();
   });
 
   it("renders '—' for missing team", () => {
@@ -301,12 +310,11 @@ describe("Summary screen (11-summary.tsx)", () => {
   it("renders a 'Download Claude' CTA when no supported AI tool is detected", async () => {
     setupInvokeMock({ tools: makeAiTools() });
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
-    const btn = await screen.findByRole("button", {
-      name: /^download claude$/i,
-    });
-    expect(btn).not.toBeNull();
     expect(
-      screen.getByText(/a claude subscription is required to use hq\./i),
+      await screen.findAllByRole("button", { name: /^copy command$/i }),
+    ).not.toHaveLength(0);
+    expect(
+      screen.getByRole("button", { name: /^download claude$/i }),
     ).toBeInTheDocument();
     // Launch button should NOT be shown in this branch.
     expect(
@@ -318,10 +326,9 @@ describe("Summary screen (11-summary.tsx)", () => {
     setupInvokeMock({ tools: makeAiTools() });
     const user = userEvent.setup();
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
-    const btn = await screen.findByRole("button", {
-      name: /^download claude$/i,
-    });
-    await user.click(btn);
+    await screen.findAllByRole("button", { name: /^copy command$/i });
+    const download = screen.getByRole("button", { name: /^download claude$/i });
+    await user.click(download);
     await waitFor(() => {
       expect(mockOpenExternal).toHaveBeenCalledWith(
         "https://code.claude.com/docs/en/desktop-quickstart",
@@ -355,16 +362,53 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(btn).not.toBeNull();
   });
 
-  it("renders the Claude Code launch CTA when a non-Desktop supported tool is installed", async () => {
+  it("renders a Codex-specific command when Codex CLI is installed", async () => {
     setupInvokeMock({ tools: makeAiTools({ codex_cli: true }) });
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
     const btn = await screen.findByRole("button", {
-      name: /open claude code in terminal/i,
+      name: /copy codex command/i,
     });
     expect(btn).not.toBeNull();
-    expect(
-      screen.queryByText(/a claude subscription is required to use hq\./i),
-    ).toBeNull();
+    expect(screen.getByText('cd "/Users/testuser/HQ" && codex')).toBeInTheDocument();
+    expect(screen.queryByText(/open claude code in terminal/i)).toBeNull();
+  });
+
+  it("reveals the install folder from the always-visible manual path", async () => {
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+
+    await user.click(screen.getByRole("button", { name: /reveal in finder/i }));
+
+    expect(mockInvoke).toHaveBeenCalledWith("reveal_folder", {
+      path: "/Users/testuser/HQ",
+    });
+  });
+
+  it("times out hung AI-tool detection and keeps the manual path usable", async () => {
+    vi.useFakeTimers();
+    mockInvoke.mockImplementation((command: string): Promise<unknown> => {
+      if (command === "check_ai_tools") return new Promise(() => {});
+      return Promise.resolve(undefined);
+    });
+
+    try {
+      render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+      expect(screen.getByText('open "/Users/testuser/HQ"')).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+        await Promise.resolve();
+      });
+
+      expect(
+        screen.getByText(/couldn't verify installed ai tools/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getAllByRole("button", { name: /^copy command$/i }),
+      ).not.toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("polls until a supported AI tool appears, then flips to the launch CTA", async () => {
@@ -388,9 +432,6 @@ describe("Summary screen (11-summary.tsx)", () => {
       expect(
         screen.getByRole("button", { name: /^download claude$/i }),
       ).toBeInTheDocument();
-      expect(
-        screen.getByText(/a claude subscription is required to use hq\./i),
-      ).toBeInTheDocument();
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(3000);
@@ -401,9 +442,6 @@ describe("Summary screen (11-summary.tsx)", () => {
           name: /open claude code in terminal/i,
         }),
       ).toBeInTheDocument();
-      expect(
-        screen.queryByText(/a claude subscription is required to use hq\./i),
-      ).toBeNull();
       expect(probes).toBe(2);
 
       await act(async () => {
@@ -452,7 +490,7 @@ describe("Summary screen (11-summary.tsx)", () => {
     });
   });
 
-  it("does NOT call invoke('launch_claude_code') when installPath is null", async () => {
+  it("uses the fallback HQ path when opening Claude Code and installPath is null", async () => {
     const user = userEvent.setup();
     render(
       <Summary
@@ -460,16 +498,14 @@ describe("Summary screen (11-summary.tsx)", () => {
         onLaunch={vi.fn()}
       />,
     );
-    const link = screen.queryByRole("button", {
+    const link = await screen.findByRole("button", {
       name: /open claude code in terminal/i,
     });
-    if (link && !(link as HTMLButtonElement).disabled) {
-      await user.click(link);
-    }
-    expect(mockInvoke).not.toHaveBeenCalledWith(
-      "launch_claude_code",
-      expect.anything(),
-    );
+    expect(link).toBeInTheDocument();
+    await user.click(link);
+    expect(mockInvoke).toHaveBeenCalledWith("launch_claude_code", {
+      path: "~/hq",
+    });
   });
 
   // ── 5. Telemetry — pingSuccess on mount ───────────────────────────────────
