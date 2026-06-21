@@ -5,6 +5,7 @@
 // the bug where the install step only created an empty ~/hq and skipped ahead.
 
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DirectoryPicker } from "../06-directory.js";
 
@@ -52,19 +53,56 @@ const mockFetch = vi.mocked(fetchAndExtract);
 
 function setupInvokeMock({
   resolvedPath = "/Users/test/hq",
-  shouldFail = false,
+  shouldFailResolve = false,
   failMessage = "Failed to create ~/hq",
   useStaging = false,
+  pickPath = "/Users/test/Projects",
+  homeDir = "/Users/test",
+  nonWritablePaths = [],
+  filePaths = [],
+  nonEmptyNonHqPaths = [],
 }: {
   resolvedPath?: string;
-  shouldFail?: boolean;
+  shouldFailResolve?: boolean;
   failMessage?: string;
   useStaging?: boolean;
+  pickPath?: string | null;
+  homeDir?: string;
+  nonWritablePaths?: string[];
+  filePaths?: string[];
+  nonEmptyNonHqPaths?: string[];
 } = {}) {
-  mockInvoke.mockImplementation(async (command: string): Promise<unknown> => {
+  const nonWritable = new Set(nonWritablePaths);
+  const files = new Set(filePaths);
+  const nonEmpty = new Set(nonEmptyNonHqPaths);
+  mockInvoke.mockImplementation(async (command: string, payload?: unknown): Promise<unknown> => {
     if (command === "resolve_hq_path") {
-      if (shouldFail) throw new Error(failMessage);
+      if (shouldFailResolve) throw new Error(failMessage);
       return resolvedPath;
+    }
+    if (command === "home_dir") return homeDir;
+    if (command === "pick_directory") return pickPath;
+    if (command === "create_directory") {
+      const args = payload as { parent: string; name: string };
+      const separator = args.parent.includes("\\") ? "\\" : "/";
+      const parent = args.parent.replace(/[\\/]+$/, "");
+      const path = `${parent}${separator}${args.name}`;
+      return {
+        path,
+        already_existed: files.has(path) || nonEmpty.has(path),
+        non_empty: nonEmpty.has(path),
+      };
+    }
+    if (command === "detect_hq") {
+      const path = (payload as { path: string }).path;
+      return {
+        exists: files.has(path) || nonEmpty.has(path),
+        isHq: false,
+      };
+    }
+    if (command === "check_writable") {
+      const path = (payload as { path: string }).path;
+      return !nonWritable.has(path) && !files.has(path);
     }
     if (command === "get_use_staging_source") return useStaging;
     return null;
@@ -161,12 +199,12 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
   });
 
   // -------------------------------------------------------------------------
-  describe("no interactive controls rendered", () => {
-    it("does NOT render a folder picker / 'Choose location' button", () => {
+  describe("interactive controls", () => {
+    it("does NOT render recovery controls before a failure", () => {
       render(<DirectoryPicker onNext={vi.fn()} />);
       const btn =
-        screen.queryByRole("button", { name: /choose location/i }) ??
-        screen.queryByRole("button", { name: /choose folder/i });
+        screen.queryByRole("button", { name: /choose a different folder/i }) ??
+        screen.queryByRole("button", { name: /retry/i });
       expect(btn).toBeNull();
     });
 
@@ -213,28 +251,188 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
   });
 
   // -------------------------------------------------------------------------
-  describe("error handling", () => {
-    it("shows an error message when resolve_hq_path fails", async () => {
-      setupInvokeMock({ shouldFail: true, failMessage: "permission denied" });
+  describe("recovery handling", () => {
+    it("shows recovery actions when the resolved path is not writable", async () => {
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonWritablePaths: ["/Users/test/hq"],
+      });
       render(<DirectoryPicker onNext={vi.fn()} />);
       await waitFor(() => {
         const text = document.body.textContent ?? "";
-        expect(text.toLowerCase()).toContain("permission denied");
+        expect(text.toLowerCase()).toContain("isn't writable");
       });
+      expect(
+        screen.getByRole("button", { name: /choose a different folder/i }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it("does NOT call onNext when resolve_hq_path fails", async () => {
+    it("picks a writable folder, installs under it, updates state, and advances", async () => {
       const onNext = vi.fn();
-      setupInvokeMock({ shouldFail: true });
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonWritablePaths: ["/Users/test/hq"],
+        pickPath: "/Users/test/Projects",
+      });
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /choose a different folder/i }),
+        ).toBeTruthy();
+      });
+
+      await userEvent.click(
+        screen.getByRole("button", { name: /choose a different folder/i }),
+      );
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Projects/HQ");
+    });
+
+    it("treats a path that is a file as recoverable", async () => {
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        filePaths: ["/Users/test/hq"],
+      });
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text.toLowerCase()).toContain("is a file");
+      });
+      expect(
+        screen.getByRole("button", { name: /choose a different folder/i }),
+      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+    });
+
+    it("uses ~/Documents/HQ as a one-click fallback and advances", async () => {
+      const onNext = vi.fn();
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonWritablePaths: ["/Users/test/hq"],
+        homeDir: "/Users/test",
+      });
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+        ).toBeTruthy();
+      });
+
+      await userEvent.click(
+        screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+      );
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/HQ");
+    });
+
+    it("finishes the Documents extraction after install state updates rerender the component", async () => {
+      let resolveFetch!: (v: { version: string }) => void;
+      let progress:
+        | ((event: { bytes: number; total: number }) => void)
+        | undefined;
+      let signal: AbortSignal | undefined;
+      mockFetch.mockImplementation((targetDir, _token, onProgress, abortSignal) => {
+        if (targetDir === "/Users/test/Documents/HQ") {
+          progress = onProgress;
+          signal = abortSignal;
+          return new Promise((res) => {
+            resolveFetch = res;
+          });
+        }
+        return Promise.resolve({ version: "v-test" });
+      });
+      const onNext = vi.fn();
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonWritablePaths: ["/Users/test/hq"],
+        homeDir: "/Users/test",
+      });
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+        ).toBeTruthy();
+      });
+
+      await userEvent.click(
+        screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+      );
+
+      await waitFor(() => expect(signal).toBeDefined());
+      progress?.({ bytes: 1, total: 2 });
+      await waitFor(() => expect(screen.getByText("50%")).toBeTruthy());
+      expect(signal?.aborted).toBe(false);
+      expect(
+        mockInvoke.mock.calls.filter(([command]) => command === "resolve_hq_path"),
+      ).toHaveLength(1);
+
+      resolveFetch({ version: "v-test" });
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/HQ");
+      expect(signal?.aborted).toBe(false);
+    });
+
+    it("does not retry a case-folded copy of the failed path during Documents recovery", async () => {
+      const onNext = vi.fn();
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonWritablePaths: ["/Users/test/hq", "/Users/test/Documents/HQ"],
+        homeDir: "/Users/test",
+      });
+      render(<DirectoryPicker onNext={onNext} />);
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+        ).toBeTruthy();
+      });
+
+      await userEvent.click(
+        screen.getByRole("button", { name: /use ~\/documents\/hq instead/i }),
+      );
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      const createdPaths = mockInvoke.mock.calls
+        .filter(([command]) => command === "create_directory")
+        .map(([, payload]) => {
+          const args = payload as { parent: string; name: string };
+          const parent = args.parent.replace(/[\\/]+$/, "");
+          const separator = args.parent.includes("\\") ? "\\" : "/";
+          return `${parent}${separator}${args.name}`;
+        });
+      expect(createdPaths).toContain("/Users/test/Documents/HQ");
+      expect(createdPaths).toContain("/Users/test/Documents/HQ-Recovery");
+      expect(createdPaths).not.toContain("/Users/test/HQ");
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe(
+        "/Users/test/Documents/HQ-Recovery",
+      );
+    });
+
+    it("shows a warning for an existing non-HQ non-empty folder and can use it anyway", async () => {
+      const onNext = vi.fn();
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        nonEmptyNonHqPaths: ["/Users/test/hq"],
+      });
       render(<DirectoryPicker onNext={onNext} />);
       await waitFor(() => {
         const text = document.body.textContent ?? "";
-        expect(text.toLowerCase()).toContain("setup failed");
+        expect(text.toLowerCase()).toContain("already has files");
       });
-      expect(onNext).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole("button", { name: /use anyway/i }));
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/hq");
     });
 
-    it("shows an error and does NOT advance when scaffold extraction fails", async () => {
+    it("shows recovery actions when scaffold extraction fails instead of dead-ending", async () => {
       mockFetch.mockRejectedValue(new Error("network down"));
       const onNext = vi.fn();
       render(<DirectoryPicker onNext={onNext} />);
@@ -243,6 +441,7 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
         expect(text.toLowerCase()).toContain("network down");
       });
       expect(onNext).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
     });
   });
 

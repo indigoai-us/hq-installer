@@ -1,5 +1,5 @@
-import { exists, readTextFile, rename, writeTextFile } from "@tauri-apps/plugin-fs";
 import { parse, stringify } from "yaml";
+import { readInstallTextFile, writeInstallTextFile } from "./install-fs";
 
 export interface ManifestEntrySeed {
   /** Slug used as the key in `companies.{slug}`. */
@@ -47,8 +47,8 @@ interface ManifestShape {
  *  - Existing slug → skip (preserves user-edited fields).
  *  - New slug → append entry mirroring the hq-core template schema.
  *
- * Atomic write: serialize to a `.tmp` sibling, then rename — partial
- * writes never touch the canonical file.
+ * Atomic write: routed through the install `write_file` command, which writes
+ * a temp sibling and renames it inside Rust after root validation.
  */
 export async function ensureManifestEntries(
   installPath: string,
@@ -58,17 +58,16 @@ export async function ensureManifestEntries(
   if (seeds.length === 0) return result;
 
   const manifestPath = `${installPath}/companies/manifest.yaml`;
-  const tmpPath = `${manifestPath}.tmp`;
 
   let manifest: ManifestShape;
-  if (await exists(manifestPath)) {
-    const raw = await readTextFile(manifestPath);
+  try {
+    const raw = await readInstallTextFile(installPath, manifestPath);
     const parsed = parse(raw) as unknown;
     manifest =
       parsed && typeof parsed === "object" && !Array.isArray(parsed)
         ? (parsed as ManifestShape)
         : {};
-  } else {
+  } catch {
     manifest = {};
   }
 
@@ -105,8 +104,7 @@ export async function ensureManifestEntries(
   if (!mutated) return result;
 
   const serialized = stringify(manifest, { indent: 2, lineWidth: 0 });
-  await writeTextFile(tmpPath, serialized);
-  await rename(tmpPath, manifestPath);
+  await writeInstallTextFile(installPath, manifestPath, serialized);
 
   return result;
 }

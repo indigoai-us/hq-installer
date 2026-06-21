@@ -1,19 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
-// Mock @tauri-apps/plugin-fs BEFORE importing the module under test
+// Mock root-validated install fs helpers BEFORE importing the module under test
 // ---------------------------------------------------------------------------
 
-const mockExists = vi.fn();
-const mockReadTextFile = vi.fn();
-const mockWriteTextFile = vi.fn();
-const mockRename = vi.fn();
+const mockReadInstallTextFile = vi.fn();
+const mockWriteInstallTextFile = vi.fn();
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  exists: (...args: unknown[]) => mockExists(...args),
-  readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
-  writeTextFile: (...args: unknown[]) => mockWriteTextFile(...args),
-  rename: (...args: unknown[]) => mockRename(...args),
+vi.mock("./install-fs", () => ({
+  readInstallTextFile: (...args: unknown[]) => mockReadInstallTextFile(...args),
+  writeInstallTextFile: (...args: unknown[]) => mockWriteInstallTextFile(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -127,29 +123,27 @@ describe("mergeManifestEntries", () => {
 
 describe("ensureManifestEntries", () => {
   beforeEach(() => {
-    mockExists.mockReset();
-    mockReadTextFile.mockReset();
-    mockWriteTextFile.mockReset();
-    mockRename.mockReset();
+    mockReadInstallTextFile.mockReset();
+    mockWriteInstallTextFile.mockReset();
   });
 
   it("creates manifest from scratch when file is missing", async () => {
-    mockExists.mockResolvedValue(false);
-    mockWriteTextFile.mockResolvedValue(undefined);
-    mockRename.mockResolvedValue(undefined);
+    mockReadInstallTextFile.mockRejectedValue(new Error("ENOENT"));
+    mockWriteInstallTextFile.mockResolvedValue(undefined);
 
     const result = await ensureManifestEntries("/hq", [
       { slug: "indigo", name: "Indigo" },
     ]);
 
     expect(result.added).toEqual(["indigo"]);
-    expect(mockWriteTextFile).toHaveBeenCalledTimes(1);
-    expect(mockRename).toHaveBeenCalledWith(
-      "/hq/companies/manifest.yaml.tmp",
+    expect(mockWriteInstallTextFile).toHaveBeenCalledTimes(1);
+    expect(mockWriteInstallTextFile).toHaveBeenCalledWith(
+      "/hq",
       "/hq/companies/manifest.yaml",
+      expect.any(String),
     );
 
-    const [, written] = mockWriteTextFile.mock.calls[0];
+    const [, , written] = mockWriteInstallTextFile.mock.calls[0];
     const parsed = parse(written as string) as {
       companies: Record<string, unknown>;
     };
@@ -168,17 +162,15 @@ describe("ensureManifestEntries", () => {
     qmd_collections:
       - personal
 `;
-    mockExists.mockResolvedValue(true);
-    mockReadTextFile.mockResolvedValue(existing);
-    mockWriteTextFile.mockResolvedValue(undefined);
-    mockRename.mockResolvedValue(undefined);
+    mockReadInstallTextFile.mockResolvedValue(existing);
+    mockWriteInstallTextFile.mockResolvedValue(undefined);
 
     const result = await ensureManifestEntries("/hq", [
       { slug: "voyage", name: "Voyage", cloudUid: "cmp_x", bucketName: "b" },
     ]);
 
     expect(result.added).toEqual(["voyage"]);
-    const [, written] = mockWriteTextFile.mock.calls[0];
+    const [, , written] = mockWriteInstallTextFile.mock.calls[0];
     const parsed = parse(written as string) as {
       companies: Record<string, { name: string; cloud_uid?: string }>;
     };
@@ -192,8 +184,7 @@ describe("ensureManifestEntries", () => {
     name: Indigo
     path: companies/indigo
 `;
-    mockExists.mockResolvedValue(true);
-    mockReadTextFile.mockResolvedValue(existing);
+    mockReadInstallTextFile.mockResolvedValue(existing);
 
     const result = await ensureManifestEntries("/hq", [
       { slug: "indigo", name: "Should Not Replace" },
@@ -201,28 +192,25 @@ describe("ensureManifestEntries", () => {
 
     expect(result.added).toEqual([]);
     expect(result.skipped).toEqual(["indigo"]);
-    expect(mockWriteTextFile).not.toHaveBeenCalled();
-    expect(mockRename).not.toHaveBeenCalled();
+    expect(mockWriteInstallTextFile).not.toHaveBeenCalled();
   });
 
   it("is a no-op when seeds is empty", async () => {
     await ensureManifestEntries("/hq", []);
-    expect(mockExists).not.toHaveBeenCalled();
-    expect(mockWriteTextFile).not.toHaveBeenCalled();
+    expect(mockReadInstallTextFile).not.toHaveBeenCalled();
+    expect(mockWriteInstallTextFile).not.toHaveBeenCalled();
   });
 
   it("recovers from malformed root by treating manifest as empty", async () => {
-    mockExists.mockResolvedValue(true);
-    mockReadTextFile.mockResolvedValue("- not\n- a\n- mapping\n");
-    mockWriteTextFile.mockResolvedValue(undefined);
-    mockRename.mockResolvedValue(undefined);
+    mockReadInstallTextFile.mockResolvedValue("- not\n- a\n- mapping\n");
+    mockWriteInstallTextFile.mockResolvedValue(undefined);
 
     const result = await ensureManifestEntries("/hq", [
       { slug: "fresh", name: "Fresh" },
     ]);
 
     expect(result.added).toEqual(["fresh"]);
-    const [, written] = mockWriteTextFile.mock.calls[0];
+    const [, , written] = mockWriteInstallTextFile.mock.calls[0];
     const parsed = parse(written as string) as {
       companies: Record<string, unknown>;
     };

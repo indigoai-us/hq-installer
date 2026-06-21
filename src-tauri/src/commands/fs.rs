@@ -2,6 +2,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
 #[cfg(windows)]
@@ -32,14 +34,54 @@ const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
 pub const PRIVILEGE_ERROR_TAG: &str = "HQ_SYMLINK_PRIVILEGE";
 
 #[tauri::command]
-pub fn write_file(path: String, contents: Vec<u8>, install_root: String) -> Result<(), String> {
+pub fn write_file(
+    path: String,
+    contents: Vec<u8>,
+    install_root: String,
+    mode: Option<u32>,
+) -> Result<(), String> {
     let file_path = guard_relative_path_under_root(&path, &install_root)?;
 
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {e}"))?;
     }
 
-    atomic_write(&file_path, &contents)
+    atomic_write(&file_path, &contents)?;
+
+    #[cfg(not(unix))]
+    let _ = mode;
+
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(mode & 0o7777))
+            .map_err(|e| format!("Failed to set file permissions: {e}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn make_dir(path: String, install_root: String) -> Result<(), String> {
+    let dir_path = if has_unsafe_relative_prefix(&path) {
+        guard_absolute_path_under_root(&path, &install_root)?
+    } else {
+        guard_relative_path_under_root(&path, &install_root)?
+    };
+
+    fs::create_dir_all(&dir_path)
+        .map_err(|e| format!("Failed to create directory {}: {e}", dir_path.display()))
+}
+
+#[tauri::command]
+pub fn read_text_file(path: String, install_root: String) -> Result<String, String> {
+    let file_path = if has_unsafe_relative_prefix(&path) {
+        guard_absolute_path_under_root(&path, &install_root)?
+    } else {
+        guard_relative_path_under_root(&path, &install_root)?
+    };
+
+    fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read file {}: {e}", file_path.display()))
 }
 
 #[tauri::command]
@@ -644,6 +686,7 @@ mod validation_tests {
             outside.to_string_lossy().to_string(),
             b"nope".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect_err("absolute renderer path must be rejected");
 
@@ -654,29 +697,39 @@ mod validation_tests {
     #[test]
     fn write_file_rejects_parent_traversal_destination() {
         let dir = setup();
+        let outside_name = format!(
+            "outside-{}.txt",
+            dir.path().file_name().unwrap().to_string_lossy()
+        );
         let err = write_file(
-            "../outside.txt".to_string(),
+            format!("../{outside_name}"),
             b"nope".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect_err("parent traversal must be rejected");
 
         assert!(err.contains("outside install root"), "got: {err}");
-        assert!(!dir.path().parent().unwrap().join("outside.txt").exists());
+        assert!(!dir.path().parent().unwrap().join(outside_name).exists());
     }
 
     #[test]
     fn write_file_rejects_destination_that_escapes_root() {
         let dir = setup();
+        let outside_name = format!(
+            "outside-{}.txt",
+            dir.path().file_name().unwrap().to_string_lossy()
+        );
         let err = write_file(
-            "nested/../../outside.txt".to_string(),
+            format!("nested/../../{outside_name}"),
             b"nope".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect_err("lexical root escape must be rejected");
 
         assert!(err.contains("outside install root"), "got: {err}");
-        assert!(!dir.path().parent().unwrap().join("outside.txt").exists());
+        assert!(!dir.path().parent().unwrap().join(outside_name).exists());
     }
 
     #[test]
@@ -686,6 +739,7 @@ mod validation_tests {
             "nested/file.txt".to_string(),
             b"hello hq".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect("in-root relative path should write");
 
@@ -693,6 +747,115 @@ mod validation_tests {
             fs::read(dir.path().join("nested/file.txt")).expect("read"),
             b"hello hq"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_preserves_requested_mode() {
+        let dir = setup();
+        write_file(
+            "scripts/run.sh".to_string(),
+            b"#!/bin/sh\n".to_vec(),
+            dir.path().to_string_lossy().to_string(),
+            Some(0o755),
+        )
+        .expect("in-root file should write");
+
+        let mode = fs::metadata(dir.path().join("scripts/run.sh"))
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn make_dir_accepts_absolute_path_outside_home_hq_when_under_install_root() {
+        let dir = setup();
+        let install_root = dir.path().join("Documents").join("HQ");
+        let target = install_root.join("nested").join("template");
+
+        make_dir(
+            target.to_string_lossy().to_string(),
+            install_root.to_string_lossy().to_string(),
+        )
+        .expect("custom install mkdir should not depend on plugin fs scope");
+
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn make_dir_accepts_relative_path_under_install_root() {
+        let dir = setup();
+        make_dir(
+            "nested/template".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect("relative in-root mkdir should succeed");
+
+        assert!(dir.path().join("nested/template").is_dir());
+    }
+
+    #[test]
+    fn make_dir_rejects_parent_traversal_destination() {
+        let dir = setup();
+        let err = make_dir(
+            "../outside-dir".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("parent traversal must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!dir.path().parent().unwrap().join("outside-dir").exists());
+    }
+
+    #[test]
+    fn make_dir_rejects_absolute_path_outside_install_root() {
+        let dir = setup();
+        let outside = dir.path().parent().unwrap().join("outside-dir");
+        let err = make_dir(
+            outside.to_string_lossy().to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("absolute out-of-root mkdir must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn read_text_file_accepts_absolute_path_outside_home_hq_when_under_install_root() {
+        let dir = setup();
+        let install_root = dir.path().join("Documents").join("HQ");
+        let target = install_root.join(".hq").join("install-manifest.json");
+        fs::create_dir_all(target.parent().unwrap()).expect("mkdir");
+        fs::write(&target, "{\"ok\":true}").expect("write");
+
+        let raw = read_text_file(
+            target.to_string_lossy().to_string(),
+            install_root.to_string_lossy().to_string(),
+        )
+        .expect("custom install read should not depend on plugin fs scope");
+
+        assert_eq!(raw, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn read_text_file_rejects_absolute_path_outside_install_root() {
+        let dir = setup();
+        let outside = dir.path().parent().unwrap().join(format!(
+            "outside-read-{}.txt",
+            dir.path().file_name().unwrap().to_string_lossy()
+        ));
+        fs::write(&outside, "nope").expect("write outside");
+
+        let err = read_text_file(
+            outside.to_string_lossy().to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("absolute out-of-root read must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
     }
 
     #[test]

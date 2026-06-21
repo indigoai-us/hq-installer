@@ -13,7 +13,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-fs", () => ({
   mkdir: vi.fn(),
   readTextFile: vi.fn(),
-  rename: vi.fn(),
   writeTextFile: vi.fn(),
 }));
 
@@ -66,13 +65,6 @@ function createFs(initialFiles: Record<string, string> = {}): {
       writeTextFile: vi.fn(async (path: string, contents: string) => {
         calls.push(`write:${path}`);
         files.set(path, contents);
-      }),
-      rename: vi.fn(async (from: string, to: string) => {
-        calls.push(`rename:${from}->${to}`);
-        const value = files.get(from);
-        if (value == null) throw new Error(`ENOENT:${from}`);
-        files.delete(from);
-        files.set(to, value);
       }),
     },
   };
@@ -149,19 +141,14 @@ describe("runExistingImport", () => {
       "workspace/imports/2026-06-18T12-34-56-000Z/report.json",
     );
     const readIndex = calls.indexOf(`read:${reportPath}`);
-    const renameIndex = calls.indexOf(
-      `rename:${resolvePath(
-        INSTALL_PATH,
-        "workspace/imports/2026-06-18T12-34-56-000Z/report.redacted.json",
-      )}->${reportPath}`,
-    );
+    const writeIndex = calls.indexOf(`write:${reportPath}`);
     const redactIndex = calls.indexOf(
       "spawn:.claude/skills/import-claude/redact.sh",
     );
     expect(redactIndex).toBeGreaterThan(-1);
-    expect(renameIndex).toBeGreaterThan(-1);
-    expect(renameIndex).toBeGreaterThan(redactIndex);
-    expect(readIndex).toBeGreaterThan(renameIndex);
+    expect(writeIndex).toBeGreaterThan(-1);
+    expect(writeIndex).toBeGreaterThan(redactIndex);
+    expect(readIndex).toBeGreaterThan(writeIndex);
 
     expect(result).toEqual({
       codexApplied: true,

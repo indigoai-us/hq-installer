@@ -9,24 +9,7 @@ vi.mock("@tauri-apps/plugin-http", () => ({
     globalThis.fetch(input, init),
 }));
 
-// ---------------------------------------------------------------------------
-// Mock @tauri-apps/plugin-fs BEFORE importing the module under test
-// ---------------------------------------------------------------------------
-
-const mockMkdir = vi.fn<(path: string, opts?: { recursive?: boolean }) => Promise<void>>(
-  async () => undefined,
-);
-const mockWriteFile = vi.fn<(path: string, data: Uint8Array) => Promise<void>>(
-  async () => undefined,
-);
-
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  mkdir: (path: string, opts?: { recursive?: boolean }) => mockMkdir(path, opts),
-  writeFile: (path: string, data: Uint8Array) => mockWriteFile(path, data),
-}));
-
-// template-fetcher invokes a Rust command (`create_symlink`) for tar entries
-// with typeflag '2' since Tauri's plugin-fs doesn't expose `symlink` from JS.
+// template-fetcher invokes Rust filesystem commands for install-path writes.
 // Capture invocations so tests can assert what was sent without booting Tauri.
 const mockInvoke = vi.fn<(cmd: string, args?: Record<string, unknown>) => Promise<unknown>>(
   async () => undefined,
@@ -216,10 +199,44 @@ vi.stubGlobal("fetch", mockFetch);
 
 beforeEach(() => {
   mockFetch.mockReset();
-  mockMkdir.mockReset().mockResolvedValue(undefined);
-  mockWriteFile.mockReset().mockResolvedValue(undefined);
   mockInvoke.mockReset().mockResolvedValue(undefined);
 });
+
+function writeFileCalls(): Array<{
+  absolutePath: string;
+  relativePath: string;
+  contents: Uint8Array;
+  installRoot: string;
+  mode?: number;
+}> {
+  return mockInvoke.mock.calls
+    .filter(([cmd]) => cmd === "write_file")
+    .map(([, args]) => {
+      const payload = args as {
+        path: string;
+        contents: number[];
+        installRoot: string;
+        mode?: number;
+      };
+      return {
+        absolutePath: `${payload.installRoot.replace(/[\\/]+$/, "")}/${payload.path}`,
+        relativePath: payload.path,
+        contents: Uint8Array.from(payload.contents),
+        installRoot: payload.installRoot,
+        mode: payload.mode,
+      };
+    });
+}
+
+function writePaths(): string[] {
+  return writeFileCalls().map((call) => call.absolutePath);
+}
+
+function makeDirCalls(): Array<{ path: string; installRoot: string }> {
+  return mockInvoke.mock.calls
+    .filter(([cmd]) => cmd === "make_dir")
+    .map(([, args]) => args as { path: string; installRoot: string });
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -262,22 +279,25 @@ describe("fetchAndExtract", () => {
     expect(progressEvents.length).toBeGreaterThan(0);
     expect(progressEvents[progressEvents.length - 1].bytes).toBeGreaterThan(0);
 
-    // mkdir called for targetDir
-    expect(mockMkdir).toHaveBeenCalledWith("/tmp/target", { recursive: true });
+    // targetDir is created through the root-validated Rust command
+    expect(makeDirCalls()).toContainEqual({
+      path: "/tmp/target",
+      installRoot: "/tmp/target",
+    });
 
     // All entries extracted with the tarball wrapper stripped
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/core.yaml");
-    expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
-    expect(writePaths).toContain("/tmp/target/README.md");
-    expect(writePaths).toContain("/tmp/target/companies/sample/page.md");
+    const paths = writePaths();
+    expect(paths).toContain("/tmp/target/core.yaml");
+    expect(paths).toContain("/tmp/target/.claude/CLAUDE.md");
+    expect(paths).toContain("/tmp/target/README.md");
+    expect(paths).toContain("/tmp/target/companies/sample/page.md");
 
     // Correct content for core.yaml
-    const coreCall = mockWriteFile.mock.calls.find(
-      (c) => c[0] === "/tmp/target/core.yaml",
+    const coreCall = writeFileCalls().find(
+      (c) => c.absolutePath === "/tmp/target/core.yaml",
     );
     expect(coreCall).toBeDefined();
-    const coreContent = new TextDecoder().decode(coreCall![1]);
+    const coreContent = new TextDecoder().decode(coreCall!.contents);
     expect(coreContent).toBe("version: 10.2.0");
   });
 
@@ -304,8 +324,7 @@ describe("fetchAndExtract", () => {
     expect(firstUrl).toContain("releases/tags/v0.9.0");
 
     // After stripping the tarball wrapper, README lands at the root of targetDir.
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/pinned/README.md");
+    expect(writePaths()).toContain("/tmp/pinned/README.md");
   });
 
   // -------------------------------------------------------------------------
@@ -397,12 +416,12 @@ describe("fetchAndExtract", () => {
     await fetchAndExtract("/tmp/target");
 
     // Only the safe file should have been written
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/safe.txt");
+    const paths = writePaths();
+    expect(paths).toContain("/tmp/target/safe.txt");
     // Neither traversal path must ever have been written
-    expect(writePaths.every((p) => !p.includes("passwd"))).toBe(true);
-    expect(writePaths.every((p) => !p.includes("shadow"))).toBe(true);
-    expect(writePaths.every((p) => !p.includes("/etc/"))).toBe(true);
+    expect(paths.every((p) => !p.includes("passwd"))).toBe(true);
+    expect(paths.every((p) => !p.includes("shadow"))).toBe(true);
+    expect(paths.every((p) => !p.includes("/etc/"))).toBe(true);
   });
 
   // -------------------------------------------------------------------------
@@ -490,8 +509,7 @@ describe("fetchAndExtract", () => {
     );
 
     // Entries land at the root of targetDir on the fallback path too.
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/core.yaml");
+    expect(writePaths()).toContain("/tmp/target/core.yaml");
   });
 
   // -------------------------------------------------------------------------
@@ -524,9 +542,9 @@ describe("fetchAndExtract", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockInvoke).toHaveBeenCalledWith("download_staging_tarball", undefined);
 
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/core.yaml");
-    expect(writePaths).toContain("/tmp/target/README.md");
+    const paths = writePaths();
+    expect(paths).toContain("/tmp/target/core.yaml");
+    expect(paths).toContain("/tmp/target/README.md");
   });
 
   // -------------------------------------------------------------------------
@@ -555,9 +573,7 @@ describe("fetchAndExtract", () => {
 
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockInvoke).toHaveBeenCalledWith("download_staging_tarball", undefined);
-    expect(mockWriteFile.mock.calls.map((c) => c[0])).toContain(
-      "/tmp/target/core.yaml",
-    );
+    expect(writePaths()).toContain("/tmp/target/core.yaml");
   });
 
   // -------------------------------------------------------------------------
@@ -640,14 +656,14 @@ describe("fetchAndExtract", () => {
       },
     ]);
 
-    // Regular files still go through writeFile (NOT through invoke).
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/real-file.txt");
+    // Regular files still go through write_file; symlinks do not.
+    const paths = writePaths();
+    expect(paths).toContain("/tmp/target/real-file.txt");
 
     // Critically: writeFile must NOT have been called for the symlink paths.
     // Today's bug is that empty-data symlinks become zero-byte regular files.
-    expect(writePaths).not.toContain("/tmp/target/AGENTS.md");
-    expect(writePaths).not.toContain("/tmp/target/.codex/output-style.md");
+    expect(paths).not.toContain("/tmp/target/AGENTS.md");
+    expect(paths).not.toContain("/tmp/target/.codex/output-style.md");
   });
 
   // -------------------------------------------------------------------------
@@ -740,20 +756,20 @@ describe("fetchAndExtract", () => {
 
     await fetchAndExtract("/tmp/target");
 
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+    const paths = writePaths();
 
     // All entries kept, landing at root of targetDir
-    expect(writePaths).toContain("/tmp/target/core.yaml");
-    expect(writePaths).toContain("/tmp/target/nested/deep.txt");
-    expect(writePaths).toContain("/tmp/target/docs/architecture.md");
-    expect(writePaths).toContain("/tmp/target/companies/sample/page.md");
-    expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
-    expect(writePaths).toContain("/tmp/target/README.md");
+    expect(paths).toContain("/tmp/target/core.yaml");
+    expect(paths).toContain("/tmp/target/nested/deep.txt");
+    expect(paths).toContain("/tmp/target/docs/architecture.md");
+    expect(paths).toContain("/tmp/target/companies/sample/page.md");
+    expect(paths).toContain("/tmp/target/.claude/CLAUDE.md");
+    expect(paths).toContain("/tmp/target/README.md");
 
     // The wrapper dir itself must never appear in an extraction path
     expect(
-      writePaths.every((p) => !p.includes("indigoai-us-hq-core-")),
-      `expected wrapper dir to be stripped, got: ${writePaths.join(", ")}`,
+      paths.every((p) => !p.includes("indigoai-us-hq-core-")),
+      `expected wrapper dir to be stripped, got: ${paths.join(", ")}`,
     ).toBe(true);
   });
 });

@@ -22,10 +22,8 @@
 // (packages, personalization, company detection).
 //
 // Each stage outcome is journaled to the install-manifest so a later /setup
-// can resume any failed stage. On failure the bar freezes — prior stages keep
-// their `ok` status and the user gets a Retry that resumes from the failure
-// point. (initial-sync and import are the exceptions: kickoff/discovery
-// failures are journaled but never fail the stage.)
+// can resume any failed stage. Stage failures are non-fatal: the dispatcher
+// records the failure and continues so the wizard can always reach Done.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -33,8 +31,6 @@ import { listen } from "@tauri-apps/api/event";
 import {
   BaseDirectory,
   mkdir,
-  readTextFile,
-  rename,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
@@ -63,6 +59,7 @@ import {
 } from "@/lib/install-manifest";
 import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 import { runExistingImport } from "@/lib/import-existing";
+import { writeInstallTextFile } from "@/lib/install-fs";
 import { markSetupStepCompleted } from "@/lib/wizard-router";
 
 // ---------------------------------------------------------------------------
@@ -126,7 +123,7 @@ function buildInitialStages(): StageState[] {
 
 const SETUP_PROCESS_EXIT_TIMEOUT_MS = 5 * 60 * 1000;
 
-type SetupSessionStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
+type SetupSessionStatus = "idle" | "running" | "completed" | "cancelled";
 
 interface SetupSession {
   installPath: string | null;
@@ -187,13 +184,6 @@ function completeSetupSession(runId: number): void {
   setupSession.activeHandles.clear();
   setupSession.cancelListeners.delete(runId);
   markSetupStepCompleted();
-}
-
-function failSetupSession(runId: number): void {
-  if (!isCurrentSetupRun(runId)) return;
-  setupSession.status = "failed";
-  setupSession.activeHandles.clear();
-  setupSession.cancelListeners.delete(runId);
 }
 
 function registerForegroundHandle(runId: number, handle: string): void {
@@ -258,8 +248,7 @@ export interface SetupProgressProps {
 
 export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   const [stages, setStages] = useState<StageState[]>(buildInitialStages);
-  const [failedStage, setFailedStage] = useState<StageId | null>(null);
-  const [running, setRunning] = useState(false);
+  const [, setRunning] = useState(false);
   const [allDone, setAllDone] = useState(false);
   const mountedRef = useRef(true);
   const activeRunRef = useRef<number | null>(null);
@@ -600,12 +589,6 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         onLog: (line) => appendLog("import", line),
         spawn: (program, args, cwd) =>
           spawnAndCapture(runId, "import", program as "bash", args, cwd),
-        fs: {
-          mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
-          readTextFile,
-          writeTextFile,
-          rename,
-        },
       });
 
       if (
@@ -889,7 +872,8 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       reason: "post-install",
     });
     try {
-      await writeTextFile(
+      await writeInstallTextFile(
+        installPath,
         `${installPath.replace(/\/+$/, "")}/.hq-embeddings-pending.json`,
         payload,
       );
@@ -1036,7 +1020,6 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
           })),
         );
         setRunning(false);
-        setFailedStage(null);
         setAllDone(true);
         return;
       }
@@ -1045,7 +1028,6 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
 
       if (!mountedRef.current) return;
       setRunning(true);
-      setFailedStage(null);
       setAllDone(false);
 
       // Reset the failing stage onward; keep earlier stages' final status.
@@ -1072,17 +1054,9 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
           return;
         }
         const id = STAGE_ORDER[i];
-        const ok = await runStage(id, session.runId);
+        await runStage(id, session.runId);
         if (isSetupRunCancelled(session.runId)) {
           if (mountedRef.current) setRunning(false);
-          return;
-        }
-        if (!ok) {
-          failSetupSession(session.runId);
-          if (mountedRef.current) {
-            setFailedStage(id);
-            setRunning(false);
-          }
           return;
         }
       }
@@ -1125,24 +1099,21 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   // ── Derived progress + status line ──────────────────────────────────────
   //
   // Single progress bar + one explanatory line. The bar counts completed
-  // (ok) stages; a failed stage freezes it so the retry semantics are obvious.
+  // (ok or failed) stages so non-fatal failures still move the user to Done.
 
-  const settledCount = stages.filter((s) => s.status === "ok").length;
+  const settledCount = stages.filter(
+    (s) => s.status === "ok" || s.status === "failed",
+  ).length;
   const percent = Math.round((settledCount / STAGE_ORDER.length) * 100);
 
   const activeStage = stages.find((s) => s.status === "running");
-  const failed = failedStage
-    ? (stages.find((s) => s.id === failedStage) ?? null)
-    : null;
   const statusText = allDone
     ? "All set. Continuing…"
-    : failed
-      ? (failed.error ?? `${failed.label} needs attention.`)
-      : activeStage
+    : activeStage
         ? `${activeStage.label}…`
         : "Starting…";
-  const statusStage = failed?.id ?? activeStage?.id ?? null;
-  const statusKind = failed ? "failed" : allDone ? "done" : "running";
+  const statusStage = activeStage?.id ?? null;
+  const statusKind = allDone ? "done" : "running";
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1176,32 +1147,15 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
           data-stage={statusStage ?? undefined}
           data-status={statusKind}
           className={`text-sm break-words ${
-            failed
-              ? "text-red-400"
-              : allDone
-                ? "text-zinc-400"
-                : "text-zinc-400 hq-text-shimmer"
+            allDone ? "text-zinc-400" : "text-zinc-400 hq-text-shimmer"
           }`}
         >
           {statusText}
         </p>
       </div>
 
-      {/* Retry — appears only when a stage has failed and we're idle. The
-          orchestrator never renders Next / Continue / Skip controls; the
-          unified bar advances to Done automatically on success. */}
-      {failedStage && !running && (
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={() => void runFromStage(failedStage)}
-            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
-            data-testid="retry-button"
-          >
-            Retry
-          </button>
-        </div>
-      )}
+      {/* No flow-control buttons: failed stages are journaled and setup keeps
+          moving so the wizard always reaches Done. */}
     </div>
   );
 }
