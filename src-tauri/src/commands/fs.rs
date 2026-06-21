@@ -62,6 +62,11 @@ pub fn write_file(
                 .map_err(|e| format!("Failed to set mode: {e}"))?;
         }
     }
+    // `mode` is a POSIX permission concept, consumed only in the unix block
+    // above. Non-unix targets (Windows) have no equivalent — explicitly drop it
+    // so `-D warnings` clippy doesn't flag it as unused.
+    #[cfg(not(unix))]
+    let _ = mode;
 
     Ok(())
 }

@@ -236,6 +236,14 @@ const TAURI_MOCK_SCRIPT = `
     if (cmd === 'plugin:fs|read_text_file' || cmd === 'plugin:fs|read_file') return '';
     if (cmd === 'plugin:fs|read_dir') return [];
     if (cmd === 'plugin:fs|exists') return false;
+
+    // ── Install-root-guarded custom FS commands (install-anywhere) ──────
+    // These replaced the plugin:fs|* calls for every install-tree write so
+    // the install location can be anywhere. Mock them with the same
+    // semantics the plugin:fs mocks above used (void writes, empty reads).
+    if (cmd === 'write_file' || cmd === 'create_dir' || cmd === 'rename') return null;
+    if (cmd === 'read_text_file') return '';
+    if (cmd === 'path_exists') return false;
     if (cmd === 'plugin:path|resolve_path' || cmd === 'plugin:path|resolve_resource') {
       return '/mock-resource-path';
     }
