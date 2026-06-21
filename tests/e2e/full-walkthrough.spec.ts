@@ -138,6 +138,11 @@ const TAURI_MOCK_SCRIPT = `
       return null;
     }
 
+    // ── Single-instance guard — this run is the primary instance ─────────
+    if (cmd === 'is_primary_instance' || cmd === 'recheck_primary_instance') {
+      return true;
+    }
+
     // ── Install step (US-001) — silent ~/hq resolution ──────────────────
     if (cmd === 'resolve_hq_path') {
       return '/tmp/hq-e2e-test';
