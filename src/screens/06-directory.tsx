@@ -407,6 +407,12 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
     return () => {
       mountedRef.current = false;
       controllerRef.current?.abort();
+      // Allow a genuine remount to re-run the auto-resolve. React StrictMode
+      // (dev) mounts → unmounts → remounts; without this reset the first run's
+      // controller is aborted by this cleanup while the run-once guard blocks
+      // the remount from starting a fresh one, leaving the installer wedged on
+      // "Preparing". Prod mounts once, so this only matters under StrictMode.
+      hasAutoResolvedRef.current = false;
     };
   }, []);
 
