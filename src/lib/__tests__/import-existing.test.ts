@@ -10,12 +10,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  mkdir: vi.fn(),
-  readTextFile: vi.fn(),
-  rename: vi.fn(),
-  writeTextFile: vi.fn(),
-}));
+// import-existing.ts no longer imports plugin-fs — its default fs now routes
+// through the install-root-guarded Rust commands via invoke (mocked above).
 
 import {
   IMPORT_PROCESS_EXIT_TIMEOUT_MS,
@@ -303,6 +299,96 @@ describe("runExistingImport", () => {
     expect(mockInvoke).toHaveBeenCalledWith("cancel_process", {
       handle: "handle-2",
     });
+  });
+
+  it("routes the default fs through the install-root-guarded Rust commands for a non-~/hq install path", async () => {
+    // No `fs` injected — exercise createDefaultFs, which must invoke the
+    // install-root-guarded Rust commands (create_dir / write_file / rename /
+    // read_text_file) instead of plugin-fs. The install path lives OUTSIDE
+    // $HOME to prove containment keys off the chosen root, not a fixed ~/hq.
+    const OUTSIDE_HOME_INSTALL_PATH = "/opt/acme/hq-install";
+    const fixture = loadFixture("import-scan.report.json");
+
+    // In-memory backing store for the Rust fs commands, keyed by the
+    // root-relative `path` the helper passes (toInstallRelative strips the
+    // install root). Records every invoke so we can assert installRoot wiring.
+    const store = new Map<string, string>();
+    const fsInvokes: Array<{ command: string; args: Record<string, unknown> }> = [];
+    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      fsInvokes.push({ command, args: a });
+      switch (command) {
+        case "create_dir":
+          return undefined;
+        case "write_file": {
+          const bytes = a.contents as number[];
+          store.set(
+            a.path as string,
+            Buffer.from(bytes).toString("utf8"),
+          );
+          return undefined;
+        }
+        case "rename": {
+          const value = store.get(a.from as string);
+          if (value == null) throw new Error(`ENOENT:${a.from as string}`);
+          store.delete(a.from as string);
+          store.set(a.to as string, value);
+          return undefined;
+        }
+        case "read_text_file": {
+          const value = store.get(a.path as string);
+          if (value == null) throw new Error(`ENOENT:${a.path as string}`);
+          return value;
+        }
+        default:
+          throw new Error(`unexpected invoke: ${command}`);
+      }
+    });
+
+    const spawn = vi.fn(async (cmd: string, args: string[], cwd: string) => {
+      expect(cmd).toBe("bash");
+      expect(cwd).toBe(OUTSIDE_HOME_INSTALL_PATH);
+      if (args[0] === "core/scripts/convert-codex.sh") return { ok: true };
+      if (args[0] === ".claude/skills/import-claude/scan.sh") return { ok: true };
+      if (args[0] === ".claude/skills/import-claude/redact.sh") {
+        return { ok: true, stdout: fixture };
+      }
+      throw new Error(`unexpected spawn: ${args.join(" ")}`);
+    });
+
+    const result = await runExistingImport({
+      installPath: OUTSIDE_HOME_INSTALL_PATH,
+      spawn,
+      now: () => new Date("2026-06-18T12:34:56.000Z"),
+    });
+
+    expect(result.codexApplied).toBe(true);
+    expect(result.discoveryOk).toBe(true);
+    expect(result.totalClaudeArtifacts).toBe(9);
+    expect(result.issues).toEqual([]);
+
+    // Every fs invoke carried installRoot = the chosen (outside-$HOME) root, and
+    // the path was root-relative (no leading slash, no install-root prefix).
+    expect(fsInvokes.length).toBeGreaterThan(0);
+    for (const { args } of fsInvokes) {
+      expect(args.installRoot).toBe(OUTSIDE_HOME_INSTALL_PATH);
+      const paths = [args.path, args.from, args.to].filter(
+        (p): p is string => typeof p === "string",
+      );
+      for (const p of paths) {
+        expect(p.startsWith("/")).toBe(false);
+        expect(p.startsWith(OUTSIDE_HOME_INSTALL_PATH)).toBe(false);
+      }
+    }
+
+    // The breadcrumb landed via write_file at the root-relative path and reads
+    // back through read_text_file (default fs, same Rust-guarded round-trip).
+    expect(store.has("workspace/imports/.installer-import.json")).toBe(true);
+    const breadcrumb = await readInstallerImportBreadcrumb(
+      OUTSIDE_HOME_INSTALL_PATH,
+    );
+    expect(breadcrumb?.scanId).toBe("2026-06-18T12-34-56-000Z");
+    expect(breadcrumb?.totalClaudeArtifacts).toBe(9);
   });
 
   it("treats discovery.ok=false as unknown counts instead of claiming zero", async () => {

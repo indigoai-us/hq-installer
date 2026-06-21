@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  mkdir,
-  readTextFile,
-  rename,
-  writeTextFile,
-} from "@tauri-apps/plugin-fs";
+  makeInstallDir,
+  readInstallText,
+  renameInstall,
+  writeInstallText,
+} from "./install-fs";
 
 const IMPORTS_DIR = "workspace/imports";
 const BREADCRUMB_PATH = `${IMPORTS_DIR}/.installer-import.json`;
@@ -71,12 +71,21 @@ interface ScanReport {
   categories?: Record<string, unknown> | ScanReportEntry[];
 }
 
-const defaultFs: ImportFs = {
-  mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
-  readTextFile,
-  writeTextFile,
-  rename,
-};
+// The ImportFs methods receive ABSOLUTE paths (built via resolvePath against
+// installPath), so the default impl routes them through the install-root-guarded
+// Rust commands with installPath as the root — install.fs.toInstallRelative
+// strips the root prefix before handing the relative path to the guard. We need
+// installPath to build it, so defaultFs is a factory closed over the root rather
+// than a module-level const.
+function createDefaultFs(installPath: string): ImportFs {
+  return {
+    mkdir: (path) => makeInstallDir(installPath, path),
+    readTextFile: (path) => readInstallText(installPath, path),
+    writeTextFile: (path, contents) =>
+      writeInstallText(installPath, path, contents),
+    rename: (from, to) => renameInstall(installPath, from, to),
+  };
+}
 
 function normalizePath(path: string): string {
   return path.replace(/\/+$/, "");
@@ -252,7 +261,7 @@ export async function runExistingImport(
 ): Promise<ExistingImportResult> {
   const installPath = normalizePath(opts.installPath);
   const spawn = opts.spawn ?? defaultSpawn;
-  const fs = opts.fs ?? defaultFs;
+  const fs = opts.fs ?? createDefaultFs(installPath);
   const now = opts.now ?? (() => new Date());
   const onLog = opts.onLog ?? (() => {});
   const startedAt = now();
@@ -397,10 +406,11 @@ function isNumberRecord(value: unknown): value is Record<string, number> {
 
 export async function readInstallerImportBreadcrumb(
   installPath: string,
-  fs: ImportFs = defaultFs,
+  fs?: ImportFs,
 ): Promise<InstallerImportBreadcrumb | null> {
+  const resolvedFs = fs ?? createDefaultFs(installPath);
   try {
-    const raw = await fs.readTextFile(
+    const raw = await resolvedFs.readTextFile(
       resolvePath(installPath, BREADCRUMB_PATH),
     );
     const parsed = JSON.parse(raw) as Partial<InstallerImportBreadcrumb>;

@@ -6,10 +6,10 @@ import {
   ListObjectsV2Command,
   GetObjectCommand,
 } from "@aws-sdk/client-s3";
-import { invoke } from "@tauri-apps/api/core";
 import { fetch } from "@tauri-apps/plugin-http";
 import { TauriHttpHandler } from "./tauri-http-handler";
 import { CLIENT_HEADERS } from "./client-info";
+import { writeInstallFile } from "./install-fs";
 
 interface StsVendResponse {
   credentials: {
@@ -213,8 +213,9 @@ export async function vendStsCredentials(
 /**
  * Sync files from S3 to the local install directory.
  *
- * Uses Tauri's `invoke("write_file")` to write downloaded content to disk
- * since browser-context S3Client can't write to the filesystem directly.
+ * Uses the install-root-guarded `writeInstallFile` helper to write downloaded
+ * content to disk since browser-context S3Client can't write to the filesystem
+ * directly.
  *
  * @param destSubpath Optional relative path under `installPath` where the
  *   bucket contents should land. Callers syncing a company bucket should pass
@@ -307,19 +308,12 @@ export async function syncFromS3(
     }
 
     if (getRes.Body) {
-      // Read body as bytes and write via Tauri
+      // Read body as bytes and write via the install-root-guarded helper.
+      // `filePath` is already an absolute path under `installPath`;
+      // writeInstallFile converts it to the root-relative form the Rust
+      // guard expects (mirroring the prefix-strip we used to do inline).
       const bytes = await getRes.Body.transformToByteArray();
-      const installRoot = normalizeTrustedPath(installPath);
-      const writePath =
-        installRoot && filePath.startsWith(`${installRoot.replace(/\/+$/, "")}/`)
-          ? filePath.slice(installRoot.replace(/\/+$/, "").length + 1)
-          : filePath;
-
-      await invoke("write_file", {
-        path: writePath,
-        contents: Array.from(bytes),
-        installRoot: installPath,
-      });
+      await writeInstallFile(installPath, filePath, bytes);
     }
 
     progress.downloadedFiles += 1;

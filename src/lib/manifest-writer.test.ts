@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
-// Mock @tauri-apps/plugin-fs BEFORE importing the module under test
+// Mock the Tauri invoke bridge BEFORE importing the module under test.
+//
+// manifest-writer routes its filesystem access through `src/lib/install-fs.ts`,
+// which calls install-root-guarded Rust commands over `invoke()` — NOT
+// `@tauri-apps/plugin-fs`. So we intercept `invoke` and dispatch each command
+// to a per-operation mock, reconstructing the absolute paths the assertions
+// expect from `installRoot` + the root-relative `path` install-fs passes.
 // ---------------------------------------------------------------------------
 
 const mockExists = vi.fn();
@@ -9,11 +15,35 @@ const mockReadTextFile = vi.fn();
 const mockWriteTextFile = vi.fn();
 const mockRename = vi.fn();
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  exists: (...args: unknown[]) => mockExists(...args),
-  readTextFile: (...args: unknown[]) => mockReadTextFile(...args),
-  writeTextFile: (...args: unknown[]) => mockWriteTextFile(...args),
-  rename: (...args: unknown[]) => mockRename(...args),
+/** Re-join a root-relative path with the install root into an absolute path. */
+function toAbsolute(installRoot: string, relative: string): string {
+  return `${installRoot.replace(/\/+$/, "")}/${relative}`;
+}
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args: Record<string, unknown>) => {
+    const installRoot = args.installRoot as string;
+    switch (cmd) {
+      case "path_exists":
+        return mockExists(toAbsolute(installRoot, args.path as string));
+      case "read_text_file":
+        return mockReadTextFile(toAbsolute(installRoot, args.path as string));
+      case "write_file": {
+        // install-fs encodes text as a number[]; decode back to the string the
+        // YAML assertions parse.
+        const bytes = Uint8Array.from(args.contents as number[]);
+        const text = new TextDecoder().decode(bytes);
+        return mockWriteTextFile(toAbsolute(installRoot, args.path as string), text);
+      }
+      case "rename":
+        return mockRename(
+          toAbsolute(installRoot, args.from as string),
+          toAbsolute(installRoot, args.to as string),
+        );
+      default:
+        throw new Error(`unexpected invoke command in test: ${cmd}`);
+    }
+  },
 }));
 
 // ---------------------------------------------------------------------------

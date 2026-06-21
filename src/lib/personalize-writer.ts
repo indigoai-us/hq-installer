@@ -1,5 +1,5 @@
 import Handlebars from "handlebars";
-import { mkdir, writeTextFile } from "@tauri-apps/plugin-fs";
+import { makeInstallDir, writeInstallText } from "./install-fs";
 import profileTemplate from "../../templates/profile.md.hbs";
 import voiceStyleTemplate from "../../templates/voice-style.md.hbs";
 import {
@@ -111,24 +111,32 @@ export async function personalize(
   // 3. Write knowledge files under core/knowledge/{name}/
   // -----------------------------------------------------------------------
   const knowledgeDir = `${baseDir}/core/knowledge/${name}`;
-  await mkdir(knowledgeDir, { recursive: true });
-  await writeTextFile(`${knowledgeDir}/profile.md`, profileContent);
-  await writeTextFile(`${knowledgeDir}/voice-style.md`, voiceStyleContent);
+  await makeInstallDir(baseDir, knowledgeDir);
+  await writeInstallText(baseDir, `${knowledgeDir}/profile.md`, profileContent);
+  await writeInstallText(
+    baseDir,
+    `${knowledgeDir}/voice-style.md`,
+    voiceStyleContent,
+  );
 
   // -----------------------------------------------------------------------
   // 4. Scaffold personal/settings/ (top-level, NOT companies/personal/)
   // -----------------------------------------------------------------------
   const settingsDir = `${baseDir}/personal/settings`;
-  await mkdir(settingsDir, { recursive: true });
-  await writeTextFile(`${settingsDir}/cognito.json`, JSON.stringify({}));
-  await writeTextFile(`${settingsDir}/.gitkeep`, "");
+  await makeInstallDir(baseDir, settingsDir);
+  await writeInstallText(
+    baseDir,
+    `${settingsDir}/cognito.json`,
+    JSON.stringify({}),
+  );
+  await writeInstallText(baseDir, `${settingsDir}/.gitkeep`, "");
 
   // -----------------------------------------------------------------------
   // 5. Scaffold personal/workers/
   // -----------------------------------------------------------------------
   const workersDir = `${baseDir}/personal/workers`;
-  await mkdir(workersDir, { recursive: true });
-  await writeTextFile(`${workersDir}/.gitkeep`, "");
+  await makeInstallDir(baseDir, workersDir);
+  await writeInstallText(baseDir, `${workersDir}/.gitkeep`, "");
 
   // -----------------------------------------------------------------------
   // 6. Scaffold user-supplied companies (optional)
@@ -177,8 +185,8 @@ export async function personalize(
       for (const sub of ["knowledge", "settings", "workers", "projects"]) {
         const subDir = `${coBase}/${sub}`;
         try {
-          await mkdir(subDir, { recursive: true });
-          await writeTextFile(`${subDir}/.gitkeep`, "");
+          await makeInstallDir(baseDir, subDir);
+          await writeInstallText(baseDir, `${subDir}/.gitkeep`, "");
         } catch {
           // Non-fatal: the folder may already exist or be sync-owned. The
           // manifest seed below keeps the company discoverable regardless.
@@ -191,7 +199,7 @@ export async function personalize(
         : "";
       const yaml = `name: ${displayName}\n` + `slug: ${slug}\n` + websiteLine;
       try {
-        await writeTextFile(`${coBase}/company.yaml`, yaml);
+        await writeInstallText(baseDir, `${coBase}/company.yaml`, yaml);
       } catch {
         // Non-fatal — see above.
       }

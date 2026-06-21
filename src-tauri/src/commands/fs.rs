@@ -32,14 +32,96 @@ const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
 pub const PRIVILEGE_ERROR_TAG: &str = "HQ_SYMLINK_PRIVILEGE";
 
 #[tauri::command]
-pub fn write_file(path: String, contents: Vec<u8>, install_root: String) -> Result<(), String> {
+pub fn write_file(
+    path: String,
+    contents: Vec<u8>,
+    install_root: String,
+    mode: Option<u32>,
+) -> Result<(), String> {
     let file_path = guard_relative_path_under_root(&path, &install_root)?;
 
     if let Some(parent) = file_path.parent() {
+        // Resolve symlinks before creating anything — a symlinked ancestor that
+        // escapes the root must be caught here, not after we've written through it.
+        assert_canonical_within_root(parent, &install_root)?;
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {e}"))?;
     }
 
-    atomic_write(&file_path, &contents)
+    atomic_write(&file_path, &contents)?;
+
+    // Apply the requested mode AFTER the atomic rename — the temp file the
+    // atomic write created carries the OS default mask, so a tar entry's
+    // executable bit (e.g. hook scripts shipped 0o755) would otherwise be
+    // lost. Tar modes carry type bits (0o100755), so mask to the permission
+    // bits before applying. Non-unix has no POSIX permission model — ignore.
+    #[cfg(unix)]
+    {
+        if let Some(m) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(m & 0o777))
+                .map_err(|e| format!("Failed to set mode: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Tauri command: create a directory (and any missing ancestors) under the
+/// install root. The renderer passes a root-relative path; the guard rejects
+/// absolute paths, `..` traversal, and drive/colon prefixes before we touch
+/// the filesystem. Never called with `""` (the root itself) — the directory
+/// screen's preflight pre-creates the root.
+#[tauri::command]
+pub fn create_dir(path: String, install_root: String) -> Result<(), String> {
+    let dir = guard_relative_path_under_root(&path, &install_root)?;
+    assert_canonical_within_root(&dir, &install_root)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create directory: {e}"))
+}
+
+/// Tauri command: rename/move a file or directory within the install root.
+/// BOTH endpoints are guarded — a rename that targeted (or originated from)
+/// outside the root would escape containment, so each side is independently
+/// validated against the root before the move. The destination's parent is
+/// created first so a rename into a not-yet-existing subtree succeeds.
+#[tauri::command]
+pub fn rename(from: String, to: String, install_root: String) -> Result<(), String> {
+    let from_path = guard_relative_path_under_root(&from, &install_root)?;
+    let to_path = guard_relative_path_under_root(&to, &install_root)?;
+
+    // Rename never follows the final component as a symlink, but a symlinked
+    // PARENT on either side would redirect the move outside the root — so
+    // resolve both containing directories before touching the filesystem.
+    if let Some(parent) = from_path.parent() {
+        assert_canonical_within_root(parent, &install_root)?;
+    }
+    if let Some(parent) = to_path.parent() {
+        assert_canonical_within_root(parent, &install_root)?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {e}"))?;
+    }
+
+    std::fs::rename(&from_path, &to_path).map_err(|e| format!("Failed to rename: {e}"))
+}
+
+/// Tauri command: read a UTF-8 text file from within the install root. The
+/// guard rejects any path that would escape the root before the read.
+#[tauri::command]
+pub fn read_text_file(path: String, install_root: String) -> Result<String, String> {
+    let p = guard_relative_path_under_root(&path, &install_root)?;
+    // `read_to_string` follows the final symlink, so resolve `p` itself.
+    assert_canonical_within_root(&p, &install_root)?;
+    std::fs::read_to_string(&p).map_err(|e| format!("Failed to read file: {e}"))
+}
+
+/// Tauri command: report whether a path exists within the install root. The
+/// guard rejects out-of-root paths up front, so a `false` here always means
+/// "absent inside the install tree" rather than "blocked by containment".
+#[tauri::command]
+pub fn path_exists(path: String, install_root: String) -> Result<bool, String> {
+    let p = guard_relative_path_under_root(&path, &install_root)?;
+    // `exists()` follows symlinks; an existing link that escapes the root is a
+    // containment violation, not a plain "present" — resolve `p` itself.
+    assert_canonical_within_root(&p, &install_root)?;
+    Ok(p.exists())
 }
 
 #[tauri::command]
@@ -486,6 +568,58 @@ pub(super) fn guard_absolute_path_under_root(path: &str, root: &str) -> Result<P
     Ok(PathBuf::from(destination))
 }
 
+/// Defense-in-depth beyond the lexical guards: resolve symlinks on the real
+/// on-disk path and confirm the destination still lands inside the install
+/// root. `guard_relative_path_under_root` does pure string math, so a path
+/// whose ancestor directory is a symlink pointing outside the tree would pass
+/// the textual check yet have the OS write outside the root once it follows the
+/// link. We canonicalize the deepest ALREADY-EXISTING ancestor of `path`
+/// (symlinks resolved) and require it to sit within the canonicalized root.
+///
+/// Checking the existing ancestor — rather than `path` itself, which may not
+/// exist yet — means callers MUST invoke this BEFORE any `create_dir_all`, so we
+/// never materialize directories through an escaping symlink. In-tree symlinks
+/// (the HQ template ships e.g. `.codex/claude → ../.claude`) resolve to paths
+/// still under the root and pass; only links that escape the root are rejected.
+///
+/// Failure modes are biased toward not inventing new errors: if the root itself
+/// cannot be canonicalized (e.g. it does not exist yet) we fall back to the
+/// lexical guarantee, and an existing-but-unresolvable ancestor (a dangling
+/// symlink) is skipped in favor of checking its real parent directory.
+fn assert_canonical_within_root(path: &Path, root: &str) -> Result<(), String> {
+    let canon_root = match fs::canonicalize(root) {
+        Ok(p) => p,
+        // Root not resolvable (shouldn't happen — preflight creates it). The
+        // lexical guard already ran; don't add a new failure mode.
+        Err(_) => return Ok(()),
+    };
+
+    let mut ancestor = path;
+    loop {
+        // A successful canonicalize means the path exists and its symlinks
+        // resolved; check it and return. A failure (path absent, or a dangling /
+        // unreadable symlink) falls through to its real parent directory.
+        if fs::symlink_metadata(ancestor).is_ok() {
+            if let Ok(canon) = fs::canonicalize(ancestor) {
+                // `Path::starts_with` is component-wise, so `/a/bc` does NOT
+                // match prefix `/a/b` — and it also covers exact equality.
+                return if canon.starts_with(&canon_root) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "Refusing to write outside install root: {canon:?} \
+                         escapes {canon_root:?}"
+                    ))
+                };
+            }
+        }
+        match ancestor.parent() {
+            Some(parent) => ancestor = parent,
+            None => return Ok(()),
+        }
+    }
+}
+
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -644,6 +778,7 @@ mod validation_tests {
             outside.to_string_lossy().to_string(),
             b"nope".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect_err("absolute renderer path must be rejected");
 
@@ -658,6 +793,7 @@ mod validation_tests {
             "../outside.txt".to_string(),
             b"nope".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect_err("parent traversal must be rejected");
 
@@ -672,6 +808,7 @@ mod validation_tests {
             "nested/../../outside.txt".to_string(),
             b"nope".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect_err("lexical root escape must be rejected");
 
@@ -686,6 +823,7 @@ mod validation_tests {
             "nested/file.txt".to_string(),
             b"hello hq".to_vec(),
             dir.path().to_string_lossy().to_string(),
+            None,
         )
         .expect("in-root relative path should write");
 
@@ -693,6 +831,205 @@ mod validation_tests {
             fs::read(dir.path().join("nested/file.txt")).expect("read"),
             b"hello hq"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_applies_mode_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = setup();
+        write_file(
+            "hook.sh".to_string(),
+            b"#!/bin/sh\n".to_vec(),
+            dir.path().to_string_lossy().to_string(),
+            Some(0o755),
+        )
+        .expect("in-root write with mode should succeed");
+
+        let mode = fs::metadata(dir.path().join("hook.sh"))
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755, "executable bit must survive the atomic write");
+    }
+
+    #[test]
+    fn create_dir_creates_nested_in_root_dir() {
+        let dir = setup();
+        create_dir(
+            "a/b/c".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect("nested in-root dir should be created");
+
+        assert!(dir.path().join("a/b/c").is_dir());
+    }
+
+    #[test]
+    fn create_dir_rejects_absolute_path() {
+        let dir = setup();
+        let outside = dir.path().parent().unwrap().join("outside-dir");
+        let err = create_dir(
+            outside.to_string_lossy().to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("absolute path must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn create_dir_rejects_parent_traversal() {
+        let dir = setup();
+        let err = create_dir(
+            "../escape".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("parent traversal must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!dir.path().parent().unwrap().join("escape").exists());
+    }
+
+    #[test]
+    fn rename_moves_in_root_file() {
+        let dir = setup();
+        write_file(
+            "src/old.txt".to_string(),
+            b"payload".to_vec(),
+            dir.path().to_string_lossy().to_string(),
+            None,
+        )
+        .expect("seed in-root file");
+
+        rename(
+            "src/old.txt".to_string(),
+            "dst/new.txt".to_string(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect("in-root rename should succeed");
+
+        assert!(!dir.path().join("src/old.txt").exists());
+        assert_eq!(
+            fs::read(dir.path().join("dst/new.txt")).expect("read"),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn rename_rejects_absolute_endpoint() {
+        let dir = setup();
+        let root = dir.path().to_string_lossy().to_string();
+        let outside = dir.path().parent().unwrap().join("escape.txt");
+
+        // Absolute `from`.
+        let err = rename(
+            outside.to_string_lossy().to_string(),
+            "dst.txt".to_string(),
+            root.clone(),
+        )
+        .expect_err("absolute source must be rejected");
+        assert!(err.contains("outside install root"), "got: {err}");
+
+        // Absolute `to`.
+        let err = rename(
+            "src.txt".to_string(),
+            outside.to_string_lossy().to_string(),
+            root,
+        )
+        .expect_err("absolute destination must be rejected");
+        assert!(err.contains("outside install root"), "got: {err}");
+    }
+
+    #[test]
+    fn rename_rejects_parent_traversal_endpoint() {
+        let dir = setup();
+        let root = dir.path().to_string_lossy().to_string();
+
+        // `..` in `from`.
+        let err = rename(
+            "../escape.txt".to_string(),
+            "dst.txt".to_string(),
+            root.clone(),
+        )
+        .expect_err("traversal source must be rejected");
+        assert!(err.contains("outside install root"), "got: {err}");
+
+        // `..` in `to`.
+        let err = rename("src.txt".to_string(), "../escape.txt".to_string(), root)
+            .expect_err("traversal destination must be rejected");
+        assert!(err.contains("outside install root"), "got: {err}");
+    }
+
+    // The lexical guard passes a textually-clean path like "escape/evil.txt",
+    // but if `escape` is a symlink pointing OUT of the install root, the OS
+    // would follow it and write outside. assert_canonical_within_root must
+    // resolve the link and reject — this is the self-sufficient-Rust-boundary
+    // guarantee (no reliance on the JS layer for symlink containment).
+    #[cfg(unix)]
+    #[test]
+    fn write_file_rejects_symlinked_ancestor_escaping_root() {
+        let root_dir = setup();
+        let outside_dir = setup();
+        // Inside the root, a symlink whose target is a real dir OUTSIDE the root.
+        let escape = root_dir.path().join("escape");
+        std::os::unix::fs::symlink(outside_dir.path(), &escape).expect("seed escaping symlink");
+
+        let err = write_file(
+            "escape/evil.txt".to_string(),
+            b"pwned".to_vec(),
+            root_dir.path().to_string_lossy().to_string(),
+            None,
+        )
+        .expect_err("write through an escaping symlinked ancestor must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        // Crucially: nothing was written into the real outside directory.
+        assert!(!outside_dir.path().join("evil.txt").exists());
+    }
+
+    // A symlink that stays WITHIN the tree (the HQ template ships these, e.g.
+    // `.codex/claude → ../.claude`) must still resolve and be allowed.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_allows_in_tree_symlink_ancestor() {
+        let root_dir = setup();
+        let real = root_dir.path().join("real");
+        fs::create_dir(&real).expect("seed real dir");
+        // `link → real`, both inside the root.
+        let link = root_dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("seed in-tree symlink");
+
+        write_file(
+            "link/ok.txt".to_string(),
+            b"fine".to_vec(),
+            root_dir.path().to_string_lossy().to_string(),
+            None,
+        )
+        .expect("write through an in-tree symlink should succeed");
+
+        // The bytes land at the resolved in-root location.
+        assert_eq!(fs::read(real.join("ok.txt")).expect("read"), b"fine");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_dir_rejects_symlinked_ancestor_escaping_root() {
+        let root_dir = setup();
+        let outside_dir = setup();
+        let escape = root_dir.path().join("escape");
+        std::os::unix::fs::symlink(outside_dir.path(), &escape).expect("seed escaping symlink");
+
+        let err = create_dir(
+            "escape/sub".to_string(),
+            root_dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("mkdir through an escaping symlinked ancestor must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!outside_dir.path().join("sub").exists());
     }
 
     #[test]

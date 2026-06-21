@@ -38,24 +38,12 @@
     {
       "identifier": "fs:allow-mkdir",
       "allow": [
-        { "path": "$HOME/hq" },
-        { "path": "$HOME/hq/**" },
-        { "path": "$HOME/hq/.*" },
-        { "path": "$HOME/hq/.*/**" },
-        { "path": "$HOME/hq/**/.*" },
-        { "path": "$HOME/hq/**/.*/**" },
         { "path": "$HOME/.hq" }
       ]
     },
     {
       "identifier": "fs:allow-write-file",
       "allow": [
-        { "path": "$HOME/hq" },
-        { "path": "$HOME/hq/**" },
-        { "path": "$HOME/hq/.*" },
-        { "path": "$HOME/hq/.*/**" },
-        { "path": "$HOME/hq/**/.*" },
-        { "path": "$HOME/hq/**/.*/**" },
         { "path": "$HOME/.hq/cognito-tokens.json" },
         { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
       ]
@@ -63,24 +51,12 @@
     {
       "identifier": "fs:allow-write-text-file",
       "allow": [
-        { "path": "$HOME/hq" },
-        { "path": "$HOME/hq/**" },
-        { "path": "$HOME/hq/.*" },
-        { "path": "$HOME/hq/.*/**" },
-        { "path": "$HOME/hq/**/.*" },
-        { "path": "$HOME/hq/**/.*/**" },
         { "path": "$HOME/.hq/embeddings-pending.json" }
       ]
     },
     {
       "identifier": "fs:allow-exists",
       "allow": [
-        { "path": "$HOME/hq" },
-        { "path": "$HOME/hq/**" },
-        { "path": "$HOME/hq/.*" },
-        { "path": "$HOME/hq/.*/**" },
-        { "path": "$HOME/hq/**/.*" },
-        { "path": "$HOME/hq/**/.*/**" },
         { "path": "$HOME/.hq" },
         { "path": "$HOME/.hq/cognito-tokens.json" },
         { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
@@ -89,24 +65,12 @@
     {
       "identifier": "fs:allow-read-text-file",
       "allow": [
-        { "path": "$RESOURCE/templates/**" },
-        { "path": "$HOME/hq" },
-        { "path": "$HOME/hq/**" },
-        { "path": "$HOME/hq/.*" },
-        { "path": "$HOME/hq/.*/**" },
-        { "path": "$HOME/hq/**/.*" },
-        { "path": "$HOME/hq/**/.*/**" }
+        { "path": "$RESOURCE/templates/**" }
       ]
     },
     {
       "identifier": "fs:allow-rename",
       "allow": [
-        { "path": "$HOME/hq" },
-        { "path": "$HOME/hq/**" },
-        { "path": "$HOME/hq/.*" },
-        { "path": "$HOME/hq/.*/**" },
-        { "path": "$HOME/hq/**/.*" },
-        { "path": "$HOME/hq/**/.*/**" },
         { "path": "$HOME/.hq/cognito-tokens.json" },
         { "path": "$HOME/.hq/.cognito-tokens.json.tmp.*" }
       ]

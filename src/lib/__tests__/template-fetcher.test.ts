@@ -10,24 +10,15 @@ vi.mock("@tauri-apps/plugin-http", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Mock @tauri-apps/plugin-fs BEFORE importing the module under test
+// Mock @tauri-apps/api/core BEFORE importing the module under test
 // ---------------------------------------------------------------------------
 
-const mockMkdir = vi.fn<(path: string, opts?: { recursive?: boolean }) => Promise<void>>(
-  async () => undefined,
-);
-const mockWriteFile = vi.fn<(path: string, data: Uint8Array) => Promise<void>>(
-  async () => undefined,
-);
-
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  mkdir: (path: string, opts?: { recursive?: boolean }) => mockMkdir(path, opts),
-  writeFile: (path: string, data: Uint8Array) => mockWriteFile(path, data),
-}));
-
-// template-fetcher invokes a Rust command (`create_symlink`) for tar entries
-// with typeflag '2' since Tauri's plugin-fs doesn't expose `symlink` from JS.
-// Capture invocations so tests can assert what was sent without booting Tauri.
+// Every install-tree write now routes through the install-root-guarded Rust
+// commands via the `install-fs` helper (which itself calls `invoke`): directory
+// entries → `create_dir`, regular files → `write_file`, symlinks →
+// `create_symlink`. Capturing `invoke` lets us assert the exact command, the
+// ROOT-RELATIVE path, the `installRoot`, and (for files) the preserved mode —
+// all without booting Tauri.
 const mockInvoke = vi.fn<(cmd: string, args?: Record<string, unknown>) => Promise<unknown>>(
   async () => undefined,
 );
@@ -35,6 +26,28 @@ const mockInvoke = vi.fn<(cmd: string, args?: Record<string, unknown>) => Promis
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) => mockInvoke(cmd, args),
 }));
+
+/** Args shape shared by the `write_file` and `create_dir` invocations. */
+interface InstallWriteArgs {
+  path: string;
+  installRoot: string;
+  contents?: number[];
+  mode?: number | null;
+}
+
+/** Collect every `write_file` invocation's args for path/mode assertions. */
+function writeFileCalls(): InstallWriteArgs[] {
+  return mockInvoke.mock.calls
+    .filter(([cmd]) => cmd === "write_file")
+    .map(([, args]) => args as unknown as InstallWriteArgs);
+}
+
+/** Collect every `create_dir` invocation's args. */
+function createDirCalls(): InstallWriteArgs[] {
+  return mockInvoke.mock.calls
+    .filter(([cmd]) => cmd === "create_dir")
+    .map(([, args]) => args as unknown as InstallWriteArgs);
+}
 
 // ---------------------------------------------------------------------------
 // Import module under test AFTER mocks are registered
@@ -216,8 +229,6 @@ vi.stubGlobal("fetch", mockFetch);
 
 beforeEach(() => {
   mockFetch.mockReset();
-  mockMkdir.mockReset().mockResolvedValue(undefined);
-  mockWriteFile.mockReset().mockResolvedValue(undefined);
   mockInvoke.mockReset().mockResolvedValue(undefined);
 });
 
@@ -262,22 +273,31 @@ describe("fetchAndExtract", () => {
     expect(progressEvents.length).toBeGreaterThan(0);
     expect(progressEvents[progressEvents.length - 1].bytes).toBeGreaterThan(0);
 
-    // mkdir called for targetDir
-    expect(mockMkdir).toHaveBeenCalledWith("/tmp/target", { recursive: true });
+    // The install root itself is pre-created by the directory screen, so the
+    // fetcher must NOT mkdir it (its root-relative form "" would be rejected by
+    // the Rust guard). No `create_dir` may target the root.
+    const dirPaths = createDirCalls().map((a) => a.path);
+    expect(dirPaths).not.toContain("");
 
-    // All entries extracted with the tarball wrapper stripped
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/core.yaml");
-    expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
-    expect(writePaths).toContain("/tmp/target/README.md");
-    expect(writePaths).toContain("/tmp/target/companies/sample/page.md");
+    // All entries extracted with the tarball wrapper stripped. Paths are
+    // ROOT-RELATIVE (the Rust guard rejoins them under installRoot), and every
+    // call carries the chosen install root.
+    const writes = writeFileCalls();
+    const writePaths = writes.map((a) => a.path);
+    expect(writePaths).toContain("core.yaml");
+    expect(writePaths).toContain(".claude/CLAUDE.md");
+    expect(writePaths).toContain("README.md");
+    expect(writePaths).toContain("companies/sample/page.md");
+    expect(writes.every((a) => a.installRoot === "/tmp/target")).toBe(true);
 
-    // Correct content for core.yaml
-    const coreCall = mockWriteFile.mock.calls.find(
-      (c) => c[0] === "/tmp/target/core.yaml",
-    );
+    // Correct content for core.yaml — `contents` is a number array (matches the
+    // s3-sync convention; a raw Uint8Array misserializes through `invoke`).
+    const coreCall = writes.find((a) => a.path === "core.yaml");
     expect(coreCall).toBeDefined();
-    const coreContent = new TextDecoder().decode(coreCall![1]);
+    expect(Array.isArray(coreCall!.contents)).toBe(true);
+    const coreContent = new TextDecoder().decode(
+      Uint8Array.from(coreCall!.contents!),
+    );
     expect(coreContent).toBe("version: 10.2.0");
   });
 
@@ -303,9 +323,11 @@ describe("fetchAndExtract", () => {
     const firstUrl = mockFetch.mock.calls[0][0] as string;
     expect(firstUrl).toContain("releases/tags/v0.9.0");
 
-    // After stripping the tarball wrapper, README lands at the root of targetDir.
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/pinned/README.md");
+    // After stripping the tarball wrapper, README lands at the root of
+    // targetDir — written as the root-relative "README.md" under /tmp/pinned.
+    const writes = writeFileCalls();
+    expect(writes.map((a) => a.path)).toContain("README.md");
+    expect(writes.every((a) => a.installRoot === "/tmp/pinned")).toBe(true);
   });
 
   // -------------------------------------------------------------------------
@@ -396,9 +418,9 @@ describe("fetchAndExtract", () => {
 
     await fetchAndExtract("/tmp/target");
 
-    // Only the safe file should have been written
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/safe.txt");
+    // Only the safe file should have been written (root-relative "safe.txt").
+    const writePaths = writeFileCalls().map((a) => a.path);
+    expect(writePaths).toContain("safe.txt");
     // Neither traversal path must ever have been written
     expect(writePaths.every((p) => !p.includes("passwd"))).toBe(true);
     expect(writePaths.every((p) => !p.includes("shadow"))).toBe(true);
@@ -489,9 +511,10 @@ describe("fetchAndExtract", () => {
       "https://api.github.com/repos/indigoai-us/hq-core/tarball/HEAD",
     );
 
-    // Entries land at the root of targetDir on the fallback path too.
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/core.yaml");
+    // Entries land at the root of targetDir on the fallback path too
+    // (root-relative "core.yaml").
+    const writePaths = writeFileCalls().map((a) => a.path);
+    expect(writePaths).toContain("core.yaml");
   });
 
   // -------------------------------------------------------------------------
@@ -524,9 +547,9 @@ describe("fetchAndExtract", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockInvoke).toHaveBeenCalledWith("download_staging_tarball", undefined);
 
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/core.yaml");
-    expect(writePaths).toContain("/tmp/target/README.md");
+    const writePaths = writeFileCalls().map((a) => a.path);
+    expect(writePaths).toContain("core.yaml");
+    expect(writePaths).toContain("README.md");
   });
 
   // -------------------------------------------------------------------------
@@ -555,9 +578,7 @@ describe("fetchAndExtract", () => {
 
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockInvoke).toHaveBeenCalledWith("download_staging_tarball", undefined);
-    expect(mockWriteFile.mock.calls.map((c) => c[0])).toContain(
-      "/tmp/target/core.yaml",
-    );
+    expect(writeFileCalls().map((a) => a.path)).toContain("core.yaml");
   });
 
   // -------------------------------------------------------------------------
@@ -640,14 +661,15 @@ describe("fetchAndExtract", () => {
       },
     ]);
 
-    // Regular files still go through writeFile (NOT through invoke).
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
-    expect(writePaths).toContain("/tmp/target/real-file.txt");
+    // Regular files go through `write_file` (root-relative path), NOT
+    // `create_symlink`.
+    const writePaths = writeFileCalls().map((a) => a.path);
+    expect(writePaths).toContain("real-file.txt");
 
-    // Critically: writeFile must NOT have been called for the symlink paths.
+    // Critically: `write_file` must NOT have been invoked for the symlink paths.
     // Today's bug is that empty-data symlinks become zero-byte regular files.
-    expect(writePaths).not.toContain("/tmp/target/AGENTS.md");
-    expect(writePaths).not.toContain("/tmp/target/.codex/output-style.md");
+    expect(writePaths).not.toContain("AGENTS.md");
+    expect(writePaths).not.toContain(".codex/output-style.md");
   });
 
   // -------------------------------------------------------------------------
@@ -740,20 +762,95 @@ describe("fetchAndExtract", () => {
 
     await fetchAndExtract("/tmp/target");
 
-    const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
+    // Paths are root-relative — the Rust guard rejoins them under installRoot.
+    const writePaths = writeFileCalls().map((a) => a.path);
 
     // All entries kept, landing at root of targetDir
-    expect(writePaths).toContain("/tmp/target/core.yaml");
-    expect(writePaths).toContain("/tmp/target/nested/deep.txt");
-    expect(writePaths).toContain("/tmp/target/docs/architecture.md");
-    expect(writePaths).toContain("/tmp/target/companies/sample/page.md");
-    expect(writePaths).toContain("/tmp/target/.claude/CLAUDE.md");
-    expect(writePaths).toContain("/tmp/target/README.md");
+    expect(writePaths).toContain("core.yaml");
+    expect(writePaths).toContain("nested/deep.txt");
+    expect(writePaths).toContain("docs/architecture.md");
+    expect(writePaths).toContain("companies/sample/page.md");
+    expect(writePaths).toContain(".claude/CLAUDE.md");
+    expect(writePaths).toContain("README.md");
 
     // The wrapper dir itself must never appear in an extraction path
     expect(
       writePaths.every((p) => !p.includes("indigoai-us-hq-core-")),
       `expected wrapper dir to be stripped, got: ${writePaths.join(", ")}`,
     ).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  it("exec bit: file mode from the tar header is forwarded to write_file (regression)", async () => {
+    // Load-bearing: scripts under `scripts/` ship as 0o755 in the tar header.
+    // The migration must forward `entry.mode` to the Rust `write_file` command
+    // (which applies it via set_permissions on unix) — otherwise later
+    // `bash -c <path>` invocations fail with exit code 126. buildTarBuffer
+    // writes mode 0o644 into every header, so that's what we expect to surface
+    // on each write_file call.
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "scripts/run.sh", content: "#!/bin/sh\necho hi" },
+      { name: "core.yaml", content: "version: 1" },
+    ]);
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/target");
+
+    // Every file write carries the parsed tar mode (0o644 from the test fixture
+    // header) — never a dropped/undefined mode.
+    const writes = writeFileCalls();
+    const scriptWrite = writes.find((a) => a.path === "scripts/run.sh");
+    expect(scriptWrite).toBeDefined();
+    expect(scriptWrite!.mode).toBe(0o644);
+    expect(scriptWrite!.installRoot).toBe("/tmp/target");
+    expect(writes.every((a) => a.mode === 0o644)).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  it("custom install root: routes writes/dirs under a non-~/hq targetDir", async () => {
+    // The install root is user-chosen and may live anywhere (even outside
+    // $HOME). Containment is enforced in Rust against that chosen root, so the
+    // renderer must pass the chosen root through as `installRoot` and strip it
+    // to a ROOT-RELATIVE path — never hard-code ~/hq. This drives extraction
+    // into "/tmp/custom-hq" and asserts the same routing as the ~/hq case.
+    const tarGzBytes = buildGitHubTarGz([
+      { name: "core.yaml", content: "custom root" },
+      { name: "nested/deep/file.txt", content: "deep" },
+    ]);
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [makeRelease()],
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+
+    await fetchAndExtract("/tmp/custom-hq");
+
+    // write_file invocations carry root-relative paths + the chosen install
+    // root. The absolute "/tmp/custom-hq/" prefix is stripped, never embedded
+    // in `path`.
+    const writes = writeFileCalls();
+    const writePaths = writes.map((a) => a.path);
+    expect(writePaths).toContain("core.yaml");
+    expect(writePaths).toContain("nested/deep/file.txt");
+    expect(writes.every((a) => a.installRoot === "/tmp/custom-hq")).toBe(true);
+    expect(writePaths.every((p) => !p.startsWith("/"))).toBe(true);
+    expect(writePaths.every((p) => !p.includes("/tmp/custom-hq"))).toBe(true);
+
+    // Any directory entries route through create_dir with the same convention.
+    const dirs = createDirCalls();
+    expect(dirs.every((a) => a.installRoot === "/tmp/custom-hq")).toBe(true);
+    expect(dirs.every((a) => !a.path.startsWith("/"))).toBe(true);
+    // Never create_dir the root itself ("" would be rejected by the guard).
+    expect(dirs.every((a) => a.path !== "")).toBe(true);
   });
 });

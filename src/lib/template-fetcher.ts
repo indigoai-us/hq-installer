@@ -1,7 +1,7 @@
 import { gunzipSync } from "fflate";
-import { mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { fetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
+import { makeInstallDir, writeInstallFile } from "./install-fs";
 import { CLIENT_HEADERS } from "./client-info";
 
 // ---------------------------------------------------------------------------
@@ -419,7 +419,7 @@ function parseTar(buf: Uint8Array): TarEntry[] {
 }
 
 // ---------------------------------------------------------------------------
-// Extraction using @tauri-apps/plugin-fs
+// Extraction using install-root-guarded Rust commands (install-fs)
 // ---------------------------------------------------------------------------
 
 /**
@@ -585,9 +585,9 @@ async function extractTarball(
   // 2. Parse tar entries
   const entries = parseTar(tarBytes);
 
-  // 3. Write each entry via Tauri plugin-fs. hq-core is a standalone template
-  //    repo, so we strip only the tarball wrapper (indigoai-us-hq-core-<sha>/)
-  //    and extract everything inside it.
+  // 3. Write each entry via the install-root-guarded Rust commands (install-fs).
+  //    hq-core is a standalone template repo, so we strip only the tarball
+  //    wrapper (indigoai-us-hq-core-<sha>/) and extract everything inside it.
   const symlinkRelatives = new Set<string>();
   for (const entry of entries) {
     const relative = mapEntryToTemplatePath(entry.name);
@@ -615,7 +615,7 @@ async function extractTarball(
     }
 
     if (isDir) {
-      await mkdir(destPath, { recursive: true });
+      await makeInstallDir(targetDir, destPath);
       continue;
     }
 
@@ -647,17 +647,12 @@ async function extractTarball(
       continue;
     }
 
-    // Regular file — ensure parent dir exists, then write.
-    // `recursive: true` means repeated mkdir of the same parent is a no-op,
-    // so we don't bother deduping across siblings.
-    const lastSlash = destPath.lastIndexOf("/");
-    if (lastSlash > 0) {
-      await mkdir(destPath.slice(0, lastSlash), { recursive: true });
-    }
+    // Regular file. The Rust `write_file` command create_dir_all's the parent
+    // internally, so there's no separate parent-mkdir here.
     // Preserve the executable bit from the tar header — shell scripts under
     // `scripts/` are 0o755 and need to stay that way, or later
     // `bash -c <path>` invocations fail with exit code 126.
-    await writeFile(destPath, entry.data, { mode: entry.mode });
+    await writeInstallFile(targetDir, destPath, entry.data, entry.mode);
   }
 }
 
@@ -809,10 +804,10 @@ export async function fetchAndExtract(
     throw new TemplateFetchError("Template download did not return bytes", false);
   }
 
-  // 3. Ensure target directory exists
-  await mkdir(targetDir, { recursive: true });
-
-  // 4. Extract (strips tarball wrapper internally)
+  // 3. Extract (strips tarball wrapper internally). The install root itself is
+  //    pre-created by the directory screen's preflight, so we don't mkdir it
+  //    here — and must not, since its root-relative form ("") is rejected by
+  //    the Rust install-root guard.
   await extractTarball(compressedBytes, targetDir);
 
   return { version };

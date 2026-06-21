@@ -105,6 +105,10 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   const [downloaded, setDownloaded] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  // True only while the native folder picker dialog is open. The happy-path
+  // "Choose a different folder…" affordance stays clickable during install
+  // (busy is true throughout install), so we gate re-entry on this instead.
+  const [picking, setPicking] = useState(false);
   const [currentPath, setCurrentPath] = useState("");
 
   const mountedRef = useRef(true);
@@ -411,17 +415,26 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   }, []);
 
   async function handleChooseDifferentFolder() {
+    if (picking) return;
+    setPicking(true);
     setBusy(true);
     try {
       const picked = await invoke<string | null>("pick_directory", {
         defaultPath: currentPath || undefined,
       });
       if (!picked) {
-        if (mountedRef.current) setBusy(false);
+        // User cancelled the picker. Restore the prior state: if an install was
+        // already running we leave busy as-is, otherwise release it.
+        if (mountedRef.current) {
+          setPicking(false);
+          setBusy(phase === "preparing" || phase === "installing");
+        }
         return;
       }
-      await installAt(joinPath(picked, "HQ"));
+      if (mountedRef.current) setPicking(false);
+      await installAt(joinPath(picked, "hq"));
     } catch (err) {
+      if (mountedRef.current) setPicking(false);
       await fail(
         currentPath,
         "directory",
@@ -438,10 +451,10 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
       const home = await invoke<string>("home_dir");
       const documentsDir = joinPath(home, "Documents");
       const fallbackPaths = [
-        joinPath(documentsDir, "HQ"),
-        joinPath(home, "HQ"),
-        joinPath(documentsDir, "HQ-Recovery"),
-        joinPath(home, "HQ-Recovery"),
+        joinPath(documentsDir, "hq"),
+        joinPath(home, "hq"),
+        joinPath(documentsDir, "hq-recovery"),
+        joinPath(home, "hq-recovery"),
       ];
 
       let attempted = false;
@@ -568,6 +581,14 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
             {pct !== null ? `${pct}%` : "Preparing…"}
           </span>
         </div>
+        <button
+          type="button"
+          onClick={() => void handleChooseDifferentFolder()}
+          disabled={picking}
+          className="self-start text-xs text-zinc-400 underline underline-offset-2 hover:text-zinc-200 transition-colors disabled:opacity-40 disabled:no-underline"
+        >
+          Choose a different folder…
+        </button>
       </div>
     );
   }
@@ -585,6 +606,14 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
         <div className="animate-spin h-4 w-4 border-2 border-white/30 border-t-white rounded-full" />
         <span className="text-sm text-zinc-300">Creating HQ folder</span>
       </div>
+      <button
+        type="button"
+        onClick={() => void handleChooseDifferentFolder()}
+        disabled={picking}
+        className="self-start text-xs text-zinc-400 underline underline-offset-2 hover:text-zinc-200 transition-colors disabled:opacity-40 disabled:no-underline"
+      >
+        Choose a different folder…
+      </button>
     </div>
   );
 }

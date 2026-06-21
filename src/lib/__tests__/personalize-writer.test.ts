@@ -1,23 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
-// Mock @tauri-apps/plugin-fs BEFORE importing the module under test
+// Mock @tauri-apps/api/core's `invoke` BEFORE importing the module under test
 // ---------------------------------------------------------------------------
+//
+// personalize-writer now routes every install-tree write through the
+// install-root-guarded Rust commands (via src/lib/install-fs.ts), so the unit
+// under test ultimately calls `invoke("create_dir" | "write_file", args)`. We
+// mock `invoke` and assert on the command name + the root-relative `path` /
+// `installRoot` payload the Rust guard receives.
 
-const mockMkdir = vi.fn<(path: string, opts?: { recursive?: boolean }) => Promise<void>>(
-  async () => undefined,
-);
-const mockWriteTextFile = vi.fn<(path: string, data: string) => Promise<void>>(
-  async () => undefined,
-);
-const mockWriteFile = vi.fn<(path: string, data: Uint8Array) => Promise<void>>(
+const mockInvoke = vi.fn<(cmd: string, args?: Record<string, unknown>) => Promise<unknown>>(
   async () => undefined,
 );
 
-vi.mock("@tauri-apps/plugin-fs", () => ({
-  mkdir: (path: string, opts?: { recursive?: boolean }) => mockMkdir(path, opts),
-  writeTextFile: (path: string, data: string) => mockWriteTextFile(path, data),
-  writeFile: (path: string, data: Uint8Array) => mockWriteFile(path, data),
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args?: Record<string, unknown>) => mockInvoke(cmd, args),
 }));
 
 // Mock the manifest writer so company seeds can be asserted without touching
@@ -44,17 +42,42 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Collect all paths that were written (both text and binary) */
-function allWrittenPaths(): string[] {
-  const textPaths = mockWriteTextFile.mock.calls.map((c) => c[0]);
-  const binaryPaths = mockWriteFile.mock.calls.map((c) => c[0]);
-  return [...textPaths, ...binaryPaths].sort();
+/** Calls routed through `invoke("write_file", ...)` (text + binary writes). */
+function writeFileCalls(): { path: string; contents: unknown; installRoot: string }[] {
+  return mockInvoke.mock.calls
+    .filter((c) => c[0] === "write_file")
+    .map((c) => c[1] as { path: string; contents: unknown; installRoot: string });
 }
 
-/** Get the content written to a specific path (text only) */
-function getWrittenText(path: string): string | undefined {
-  const call = mockWriteTextFile.mock.calls.find((c) => c[0] === path);
-  return call ? call[1] : undefined;
+/** Calls routed through `invoke("create_dir", ...)`. */
+function createDirCalls(): { path: string; installRoot: string }[] {
+  return mockInvoke.mock.calls
+    .filter((c) => c[0] === "create_dir")
+    .map((c) => c[1] as { path: string; installRoot: string });
+}
+
+/** Root-relative paths that were written (write_file only). */
+function writtenRelativePaths(): string[] {
+  return writeFileCalls()
+    .map((c) => c.path)
+    .sort();
+}
+
+/** Root-relative paths that had a directory created (create_dir only). */
+function createdRelativeDirs(): string[] {
+  return createDirCalls().map((c) => c.path);
+}
+
+/**
+ * Decode the bytes written to a given root-relative path back into text.
+ * personalize-writer writes via writeInstallText, which TextEncoder-encodes the
+ * string and passes `Array.from(bytes)` to invoke — so contents is a number[].
+ */
+function getWrittenText(relativePath: string): string | undefined {
+  const call = writeFileCalls().find((c) => c.path === relativePath);
+  if (!call) return undefined;
+  const bytes = Uint8Array.from(call.contents as number[]);
+  return new TextDecoder().decode(bytes);
 }
 
 /** Minimal profile Handlebars template (mirrors what templates/profile.md.hbs will contain) */
@@ -90,16 +113,15 @@ const BASE_ANSWERS: PersonalizationAnswers = {
   },
 };
 
-const BASE_DIR = "/tmp/hq-personalize-test";
+// Default ~/hq-style install root.
+const BASE_DIR = "/Users/alice/hq";
 
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  mockMkdir.mockReset().mockResolvedValue(undefined);
-  mockWriteTextFile.mockReset().mockResolvedValue(undefined);
-  mockWriteFile.mockReset().mockResolvedValue(undefined);
+  mockInvoke.mockReset().mockResolvedValue(undefined);
   mockEnsureManifestEntries
     .mockReset()
     .mockResolvedValue({ added: [], skipped: [] });
@@ -112,16 +134,19 @@ beforeEach(() => {
 describe("personalize", () => {
   // -------------------------------------------------------------------------
   describe("profile.md and voice-style.md", () => {
-    it("writes profile.md to core/knowledge/{name}/profile.md under baseDir", async () => {
+    it("writes profile.md to core/knowledge/{name}/profile.md (root-relative)", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const expectedPath = `${BASE_DIR}/core/knowledge/alice/profile.md`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
-        expectedPath,
-        expect.stringContaining("alice"),
+      const call = writeFileCalls().find(
+        (c) => c.path === "core/knowledge/alice/profile.md",
+      );
+      expect(call).toBeDefined();
+      expect(call!.installRoot).toBe(BASE_DIR);
+      expect(getWrittenText("core/knowledge/alice/profile.md")).toContain(
+        "alice",
       );
     });
 
@@ -131,24 +156,24 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/profile.md`);
+      const content = getWrittenText("core/knowledge/alice/profile.md");
       expect(content).toBeDefined();
       expect(content).toContain("alice");
       expect(content).toContain("Software engineer and indie hacker");
       expect(content).toContain("Automate repetitive tasks and ship faster");
     });
 
-    it("writes voice-style.md to core/knowledge/{name}/voice-style.md under baseDir", async () => {
+    it("writes voice-style.md to core/knowledge/{name}/voice-style.md (root-relative)", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const expectedPath = `${BASE_DIR}/core/knowledge/alice/voice-style.md`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
-        expectedPath,
-        expect.any(String),
+      const call = writeFileCalls().find(
+        (c) => c.path === "core/knowledge/alice/voice-style.md",
       );
+      expect(call).toBeDefined();
+      expect(call!.installRoot).toBe(BASE_DIR);
     });
 
     it("renders voice-style.md with customizations from answers", async () => {
@@ -157,23 +182,24 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/voice-style.md`);
+      const content = getWrittenText("core/knowledge/alice/voice-style.md");
       expect(content).toBeDefined();
       expect(content).toContain("alice");
       expect(content).toContain("concise and direct");
       expect(content).toContain("America/New_York");
     });
 
-    it("creates parent core/knowledge/{name} directory recursively", async () => {
+    it("creates parent core/knowledge/{name} directory via create_dir", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      expect(mockMkdir).toHaveBeenCalledWith(
-        `${BASE_DIR}/core/knowledge/alice`,
-        { recursive: true },
+      const call = createDirCalls().find(
+        (c) => c.path === "core/knowledge/alice",
       );
+      expect(call).toBeDefined();
+      expect(call!.installRoot).toBe(BASE_DIR);
     });
 
     it("handles answers with no customizations without error", async () => {
@@ -189,7 +215,7 @@ describe("personalize", () => {
         }),
       ).resolves.toBeUndefined();
 
-      const content = getWrittenText(`${BASE_DIR}/core/knowledge/alice/voice-style.md`);
+      const content = getWrittenText("core/knowledge/alice/voice-style.md");
       expect(content).toBeDefined();
     });
   });
@@ -202,13 +228,12 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const expectedPath = `${BASE_DIR}/personal/settings/cognito.json`;
-      expect(mockWriteTextFile).toHaveBeenCalledWith(
-        expectedPath,
-        expect.any(String),
-      );
+      const relativePath = "personal/settings/cognito.json";
+      const call = writeFileCalls().find((c) => c.path === relativePath);
+      expect(call).toBeDefined();
+      expect(call!.installRoot).toBe(BASE_DIR);
 
-      const content = getWrittenText(expectedPath);
+      const content = getWrittenText(relativePath);
       expect(content).toBeDefined();
       // Should be valid JSON and parse to an empty object
       expect(() => JSON.parse(content!)).not.toThrow();
@@ -221,24 +246,20 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const writtenPaths = allWrittenPaths();
-      expect(
-        writtenPaths.some(
-          (p) => p === `${BASE_DIR}/personal/settings/.gitkeep`,
-        ),
-      ).toBe(true);
+      expect(writtenRelativePaths()).toContain("personal/settings/.gitkeep");
     });
 
-    it("creates personal/settings/ directory recursively", async () => {
+    it("creates personal/settings/ directory via create_dir", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      expect(mockMkdir).toHaveBeenCalledWith(
-        `${BASE_DIR}/personal/settings`,
-        { recursive: true },
+      const call = createDirCalls().find(
+        (c) => c.path === "personal/settings",
       );
+      expect(call).toBeDefined();
+      expect(call!.installRoot).toBe(BASE_DIR);
     });
 
     it("writes .gitkeep to personal/workers/ directory", async () => {
@@ -247,12 +268,72 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const writtenPaths = allWrittenPaths();
-      expect(
-        writtenPaths.some(
-          (p) => p === `${BASE_DIR}/personal/workers/.gitkeep`,
-        ),
-      ).toBe(true);
+      expect(writtenRelativePaths()).toContain("personal/workers/.gitkeep");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("install root routing", () => {
+    // The install root is user-chosen and may live anywhere — including outside
+    // $HOME. Containment is enforced in Rust against that root, so every write
+    // must carry the chosen root as `installRoot` and a path that is *relative*
+    // to it (the Rust guard rejects absolute paths). Regression guard for the
+    // "install anywhere" contract.
+    const OPT_DIR = "/opt/hq";
+
+    it("routes writes through write_file with root-relative path + installRoot for a non-~/hq root", async () => {
+      await personalize(BASE_ANSWERS, OPT_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+      });
+
+      // The chosen root is passed verbatim as installRoot on every command,
+      // and never leaks into the relative `path`.
+      for (const call of writeFileCalls()) {
+        expect(call.installRoot).toBe(OPT_DIR);
+        expect(call.path.startsWith("/")).toBe(false);
+        expect(call.path.startsWith(OPT_DIR)).toBe(false);
+      }
+      for (const call of createDirCalls()) {
+        expect(call.installRoot).toBe(OPT_DIR);
+        expect(call.path.startsWith("/")).toBe(false);
+        expect(call.path.startsWith(OPT_DIR)).toBe(false);
+      }
+
+      // The relative paths are identical to the default-root case — only the
+      // installRoot differs.
+      expect(writtenRelativePaths()).toContain("core/knowledge/alice/profile.md");
+      expect(writtenRelativePaths()).toContain(
+        "core/knowledge/alice/voice-style.md",
+      );
+      expect(createdRelativeDirs()).toContain("core/knowledge/alice");
+    });
+
+    it("routes create_dir for settings/workers with installRoot = chosen root", async () => {
+      await personalize(BASE_ANSWERS, OPT_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+      });
+
+      const settings = createDirCalls().find(
+        (c) => c.path === "personal/settings",
+      );
+      const workers = createDirCalls().find(
+        (c) => c.path === "personal/workers",
+      );
+      expect(settings?.installRoot).toBe(OPT_DIR);
+      expect(workers?.installRoot).toBe(OPT_DIR);
+    });
+
+    it("never asks the Rust guard to create the install root itself (empty relative path)", async () => {
+      await personalize(BASE_ANSWERS, OPT_DIR, {
+        profileTemplate: PROFILE_TEMPLATE,
+        voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
+      });
+
+      // A "" relative path would be the root itself, which the guard rejects.
+      expect(createdRelativeDirs()).not.toContain("");
+      expect(writtenRelativePaths()).not.toContain("");
     });
   });
 
@@ -264,25 +345,21 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const writtenPaths = allWrittenPaths();
-
-      // Normalise to paths relative to baseDir for a stable snapshot
-      const relativePaths = writtenPaths
-        .map((p) => p.replace(`${BASE_DIR}/`, ""))
-        .sort();
-
-      expect(relativePaths).toMatchSnapshot();
+      // Paths are already root-relative (that's what the Rust guard receives),
+      // so the snapshot is stable regardless of where HQ is installed.
+      expect(writtenRelativePaths()).toMatchSnapshot();
     });
 
-    it("every written path is under baseDir (no path traversal)", async () => {
+    it("every written path is root-relative (no absolute paths, no traversal)", async () => {
       await personalize(BASE_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const writtenPaths = allWrittenPaths();
-      for (const p of writtenPaths) {
-        expect(p).toMatch(new RegExp(`^${BASE_DIR.replace(/[/\\]/g, "\\$&")}`));
+      for (const path of [...writtenRelativePaths(), ...createdRelativeDirs()]) {
+        expect(path.startsWith("/")).toBe(false);
+        expect(path.startsWith(BASE_DIR)).toBe(false);
+        expect(path.split("/")).not.toContain("..");
       }
     });
   });
@@ -300,9 +377,8 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const writtenPaths = allWrittenPaths();
       expect(
-        writtenPaths.some((p) => p.includes("Alice Wonderland")),
+        writtenRelativePaths().some((p) => p.includes("Alice Wonderland")),
       ).toBe(true);
     });
 
@@ -315,8 +391,11 @@ describe("personalize", () => {
       expect(result).toBeUndefined();
     });
 
-    it("propagates error if writeTextFile rejects", async () => {
-      mockWriteTextFile.mockRejectedValueOnce(new Error("disk full"));
+    it("propagates error if a write_file invoke rejects", async () => {
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "write_file") throw new Error("disk full");
+        return undefined;
+      });
 
       await expect(
         personalize(BASE_ANSWERS, BASE_DIR, {
@@ -326,8 +405,11 @@ describe("personalize", () => {
       ).rejects.toThrow("disk full");
     });
 
-    it("propagates error if mkdir rejects", async () => {
-      mockMkdir.mockRejectedValueOnce(new Error("permission denied"));
+    it("propagates error if a create_dir invoke rejects", async () => {
+      mockInvoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "create_dir") throw new Error("permission denied");
+        return undefined;
+      });
 
       await expect(
         personalize(BASE_ANSWERS, BASE_DIR, {
@@ -348,23 +430,24 @@ describe("personalize", () => {
     };
 
     // Regression: a cloud company's knowledge/ dir is sync-owned and usually a
-    // symlink, so scaffolding it via the scope-restricted fs plugin threw
-    // "forbidden path: …/companies/broya/knowledge" and hard-failed Setup.
-    it("never touches any on-disk path under the cloud company's folder", async () => {
+    // symlink, so scaffolding it threw "forbidden path: …/companies/broya/
+    // knowledge" and hard-failed Setup. The folder must never be touched.
+    it("never touches any path under the cloud company's folder", async () => {
       await personalize(CLOUD_ANSWERS, BASE_DIR, {
         profileTemplate: PROFILE_TEMPLATE,
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const companyPrefix = `${BASE_DIR}/companies/broya`;
-      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
+      const companyPrefix = "companies/broya";
 
-      expect(mkdirPaths.some((p) => p.startsWith(companyPrefix))).toBe(false);
-      expect(allWrittenPaths().some((p) => p.startsWith(companyPrefix))).toBe(
-        false,
-      );
-      // The exact path Tauri's fs scope rejected must never be requested.
-      expect(mkdirPaths).not.toContain(`${companyPrefix}/knowledge`);
+      expect(
+        createdRelativeDirs().some((p) => p.startsWith(companyPrefix)),
+      ).toBe(false);
+      expect(
+        writtenRelativePaths().some((p) => p.startsWith(companyPrefix)),
+      ).toBe(false);
+      // The exact path the fs guard rejected must never be requested.
+      expect(createdRelativeDirs()).not.toContain(`${companyPrefix}/knowledge`);
     });
 
     it("still registers the cloud company in the manifest with its cloud uid", async () => {
@@ -404,11 +487,10 @@ describe("personalize", () => {
         voiceStyleTemplate: VOICE_STYLE_TEMPLATE,
       });
 
-      const base = `${BASE_DIR}/companies/acme-co`;
-      const mkdirPaths = mockMkdir.mock.calls.map((c) => c[0]);
+      const base = "companies/acme-co";
       for (const sub of ["knowledge", "settings", "workers", "projects"]) {
-        expect(mkdirPaths).toContain(`${base}/${sub}`);
-        expect(allWrittenPaths()).toContain(`${base}/${sub}/.gitkeep`);
+        expect(createdRelativeDirs()).toContain(`${base}/${sub}`);
+        expect(writtenRelativePaths()).toContain(`${base}/${sub}/.gitkeep`);
       }
 
       const yaml = getWrittenText(`${base}/company.yaml`);
@@ -420,8 +502,12 @@ describe("personalize", () => {
     // Best-effort: a failed scaffold write must not abort Setup — the manifest
     // entry (what makes the company discoverable) is still registered.
     it("does not abort Setup when a company scaffold write fails", async () => {
-      mockWriteTextFile.mockImplementation(async (path: string) => {
-        if (path.includes("/companies/acme-co/")) {
+      mockInvoke.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+        const path = (args?.path as string | undefined) ?? "";
+        if (
+          (cmd === "write_file" || cmd === "create_dir") &&
+          path.startsWith("companies/acme-co")
+        ) {
           throw new Error(`forbidden path: ${path}`);
         }
         return undefined;

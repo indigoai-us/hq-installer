@@ -200,12 +200,16 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
 
   // -------------------------------------------------------------------------
   describe("interactive controls", () => {
-    it("does NOT render recovery controls before a failure", () => {
+    it("does NOT render recovery-only controls before a failure", () => {
       render(<DirectoryPicker onNext={vi.fn()} />);
-      const btn =
-        screen.queryByRole("button", { name: /choose a different folder/i }) ??
-        screen.queryByRole("button", { name: /retry/i });
-      expect(btn).toBeNull();
+      // The happy-path "Choose a different folder…" affordance is intentionally
+      // present (see the "location choice" block); the *recovery-only* controls
+      // — Retry, Use anyway, Documents fallback — must not be shown yet.
+      expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /use anyway/i })).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: /use ~\/documents\/hq instead/i }),
+      ).toBeNull();
     });
 
     it("does NOT render a folder name input", () => {
@@ -220,6 +224,61 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
       await waitFor(() => expect(mockInvoke).toHaveBeenCalled());
       expect(screen.queryByRole("button", { name: /graft/i })).toBeNull();
       expect(screen.queryByRole("button", { name: /overwrite/i })).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The install location is a first-class choice now: the picker is reachable
+  // on the happy path (preparing / installing), not just after a failure.
+  describe("location choice (happy path)", () => {
+    it("renders a 'Choose a different folder' affordance during a normal install", async () => {
+      // Hold the fetch open so the component stays in the installing state.
+      let resolveFetch!: (v: { version: string }) => void;
+      mockFetch.mockImplementation(
+        () =>
+          new Promise((res) => {
+            resolveFetch = res;
+          }),
+      );
+      render(<DirectoryPicker onNext={vi.fn()} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: /choose a different folder/i }),
+        ).toBeTruthy(),
+      );
+      // It is shown alongside the install progress, not in a recovery screen.
+      expect(screen.queryByRole("progressbar")).not.toBeNull();
+      expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
+      resolveFetch({ version: "v-test" });
+    });
+
+    it("redirects the install to <picked>/hq when a folder is chosen on the happy path", async () => {
+      const onNext = vi.fn();
+      // First install (auto-resolved ~/hq) hangs so the picker stays reachable;
+      // the picked install resolves normally and advances the wizard.
+      let resolveFirst!: (v: { version: string }) => void;
+      mockFetch.mockImplementation((targetDir) => {
+        if (targetDir === "/Users/test/hq") {
+          return new Promise((res) => {
+            resolveFirst = res;
+          });
+        }
+        return Promise.resolve({ version: "v-test" });
+      });
+      setupInvokeMock({
+        resolvedPath: "/Users/test/hq",
+        pickPath: "/Users/test/Projects",
+      });
+      render(<DirectoryPicker onNext={onNext} />);
+
+      await waitFor(() => expect(resolveFirst).toBeDefined());
+      await userEvent.click(
+        screen.getByRole("button", { name: /choose a different folder/i }),
+      );
+
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
+      // Lowercase "hq" — matches the ~/hq default and the case-collision fix.
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Projects/hq");
     });
   });
 
@@ -291,7 +350,7 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
       );
 
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
-      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Projects/HQ");
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Projects/hq");
     });
 
     it("treats a path that is a file as recoverable", async () => {
@@ -329,7 +388,7 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
       );
 
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
-      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/HQ");
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/hq");
     });
 
     it("finishes the Documents extraction after install state updates rerender the component", async () => {
@@ -339,7 +398,7 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
         | undefined;
       let signal: AbortSignal | undefined;
       mockFetch.mockImplementation((targetDir, _token, onProgress, abortSignal) => {
-        if (targetDir === "/Users/test/Documents/HQ") {
+        if (targetDir === "/Users/test/Documents/hq") {
           progress = onProgress;
           signal = abortSignal;
           return new Promise((res) => {
@@ -375,7 +434,7 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
 
       resolveFetch({ version: "v-test" });
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
-      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/HQ");
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/Users/test/Documents/hq");
       expect(signal?.aborted).toBe(false);
     });
 
@@ -383,7 +442,7 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
       const onNext = vi.fn();
       setupInvokeMock({
         resolvedPath: "/Users/test/hq",
-        nonWritablePaths: ["/Users/test/hq", "/Users/test/Documents/HQ"],
+        nonWritablePaths: ["/Users/test/hq", "/Users/test/Documents/hq"],
         homeDir: "/Users/test",
       });
       render(<DirectoryPicker onNext={onNext} />);
@@ -406,11 +465,16 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
           const separator = args.parent.includes("\\") ? "\\" : "/";
           return `${parent}${separator}${args.name}`;
         });
-      expect(createdPaths).toContain("/Users/test/Documents/HQ");
-      expect(createdPaths).toContain("/Users/test/Documents/HQ-Recovery");
-      expect(createdPaths).not.toContain("/Users/test/HQ");
+      expect(createdPaths).toContain("/Users/test/Documents/hq");
+      expect(createdPaths).toContain("/Users/test/Documents/hq-recovery");
+      // The home-dir fallback (~/hq) shares a case-folded key with the failed
+      // resolved path, so it must not be re-attempted during recovery: ~/hq is
+      // created once (the initial auto-resolve) and never again.
+      expect(
+        createdPaths.filter((p) => p === "/Users/test/hq"),
+      ).toHaveLength(1);
       expect(mockFetch.mock.calls.at(-1)?.[0]).toBe(
-        "/Users/test/Documents/HQ-Recovery",
+        "/Users/test/Documents/hq-recovery",
       );
     });
 

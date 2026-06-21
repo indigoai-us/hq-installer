@@ -85,45 +85,29 @@ describe("Tauri renderer security config", () => {
     ]);
   });
 
-  it("scopes home .hq filesystem grants to the files used by renderer callsites", () => {
+  it("grants the renderer only the genuine $HOME/.hq carve-outs, not the install tree", () => {
+    // The install tree now lives at a USER-CHOSEN root (default ~/hq, but
+    // anywhere — including outside $HOME). Containment there is enforced in
+    // Rust against the chosen root by the install-root-guarded fs commands, so
+    // NO static `$HOME/hq*` capability grant exists anymore. The only remaining
+    // plugin-fs grants are the fixed $HOME/.hq/* locations that legitimately
+    // bypass the install tree (cognito-tokens handoff + the embeddings-pending
+    // fallback) plus the bundled-template read grant. See
+    // `no-direct-plugin-fs-writes.test.ts` for the companion source invariant.
     expect(allowedPaths(capability.permissions, "fs:allow-mkdir")).toEqual([
-      "$HOME/hq",
-      "$HOME/hq/**",
-      "$HOME/hq/.*",
-      "$HOME/hq/.*/**",
-      "$HOME/hq/**/.*",
-      "$HOME/hq/**/.*/**",
       "$HOME/.hq",
     ]);
 
     expect(allowedPaths(capability.permissions, "fs:allow-write-file")).toEqual([
-      "$HOME/hq",
-      "$HOME/hq/**",
-      "$HOME/hq/.*",
-      "$HOME/hq/.*/**",
-      "$HOME/hq/**/.*",
-      "$HOME/hq/**/.*/**",
       "$HOME/.hq/cognito-tokens.json",
       "$HOME/.hq/.cognito-tokens.json.tmp.*",
     ]);
 
     expect(allowedPaths(capability.permissions, "fs:allow-write-text-file")).toEqual([
-      "$HOME/hq",
-      "$HOME/hq/**",
-      "$HOME/hq/.*",
-      "$HOME/hq/.*/**",
-      "$HOME/hq/**/.*",
-      "$HOME/hq/**/.*/**",
       "$HOME/.hq/embeddings-pending.json",
     ]);
 
     expect(allowedPaths(capability.permissions, "fs:allow-exists")).toEqual([
-      "$HOME/hq",
-      "$HOME/hq/**",
-      "$HOME/hq/.*",
-      "$HOME/hq/.*/**",
-      "$HOME/hq/**/.*",
-      "$HOME/hq/**/.*/**",
       "$HOME/.hq",
       "$HOME/.hq/cognito-tokens.json",
       "$HOME/.hq/.cognito-tokens.json.tmp.*",
@@ -131,23 +115,41 @@ describe("Tauri renderer security config", () => {
 
     expect(allowedPaths(capability.permissions, "fs:allow-read-text-file")).toEqual([
       "$RESOURCE/templates/**",
-      "$HOME/hq",
-      "$HOME/hq/**",
-      "$HOME/hq/.*",
-      "$HOME/hq/.*/**",
-      "$HOME/hq/**/.*",
-      "$HOME/hq/**/.*/**",
     ]);
 
     expect(allowedPaths(capability.permissions, "fs:allow-rename")).toEqual([
-      "$HOME/hq",
-      "$HOME/hq/**",
-      "$HOME/hq/.*",
-      "$HOME/hq/.*/**",
-      "$HOME/hq/**/.*",
-      "$HOME/hq/**/.*/**",
       "$HOME/.hq/cognito-tokens.json",
       "$HOME/.hq/.cognito-tokens.json.tmp.*",
     ]);
+  });
+
+  it("retires every install-tree ($HOME/hq*) and broad ($HOME/**) fs grant", () => {
+    // Defense-in-depth on top of the exact-match assertions above: no fs
+    // capability — across every verb — may grant any `$HOME/hq*` path (the old
+    // static install-tree allowlist) or a broad `$HOME/**`. A regression that
+    // re-adds one would re-open the forbidden-path surface this refactor closed.
+    const fsIdentifiers = [
+      "fs:allow-mkdir",
+      "fs:allow-write-file",
+      "fs:allow-write-text-file",
+      "fs:allow-exists",
+      "fs:allow-read-text-file",
+      "fs:allow-rename",
+      "fs:allow-remove",
+    ];
+
+    for (const identifier of fsIdentifiers) {
+      const paths = allowedPaths(capability.permissions, identifier);
+      for (const path of paths) {
+        expect(
+          path.startsWith("$HOME/hq"),
+          `${identifier} must not grant install-tree path ${path}`,
+        ).toBe(false);
+        expect(
+          path === "$HOME/**" || path === "$HOME" || path === "$HOME/*",
+          `${identifier} must not grant a broad home path ${path}`,
+        ).toBe(false);
+      }
+    }
   });
 });

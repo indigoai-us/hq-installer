@@ -8,8 +8,13 @@
 // state on completion or failure. Best-effort: write errors are logged but
 // never block the wizard.
 
-import { mkdir, readTextFile, writeTextFile, exists } from "@tauri-apps/plugin-fs";
 import { getVersion } from "@tauri-apps/api/app";
+import {
+  installPathExists,
+  makeInstallDir,
+  readInstallText,
+  writeInstallText,
+} from "./install-fs";
 
 const MANIFEST_DIR = ".hq";
 const MANIFEST_FILE = "install-manifest.json";
@@ -113,10 +118,10 @@ export async function readManifest(
 ): Promise<InstallManifest> {
   try {
     const path = manifestPath(installPath);
-    if (!(await exists(path))) {
+    if (!(await installPathExists(installPath, path))) {
       return emptyManifest(installPath, installerVersion);
     }
-    const raw = await readTextFile(path);
+    const raw = await readInstallText(installPath, path);
     const parsed = JSON.parse(raw) as InstallManifest;
     // Defensive: if any required field is missing, fall back to fresh.
     if (!parsed.schemaVersion || !parsed.steps) {
@@ -131,10 +136,12 @@ export async function readManifest(
 /** Write the manifest to disk. Best-effort — never throws. */
 export async function writeManifest(manifest: InstallManifest): Promise<void> {
   try {
-    const dir = `${manifest.installPath}/${MANIFEST_DIR}`;
-    await mkdir(dir, { recursive: true });
-    await writeTextFile(
-      manifestPath(manifest.installPath),
+    const root = manifest.installPath;
+    const dir = `${root}/${MANIFEST_DIR}`;
+    await makeInstallDir(root, dir);
+    await writeInstallText(
+      root,
+      manifestPath(root),
       JSON.stringify(manifest, null, 2) + "\n",
     );
   } catch (err) {

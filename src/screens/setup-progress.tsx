@@ -31,8 +31,6 @@ import { listen } from "@tauri-apps/api/event";
 import {
   BaseDirectory,
   mkdir,
-  readTextFile,
-  rename,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
@@ -61,6 +59,7 @@ import {
 } from "@/lib/install-manifest";
 import { getDefaultPacks, type DefaultPack } from "@/lib/default-packs";
 import { runExistingImport } from "@/lib/import-existing";
+import { writeInstallText } from "@/lib/install-fs";
 import { markSetupStepCompleted } from "@/lib/wizard-router";
 
 // ---------------------------------------------------------------------------
@@ -590,12 +589,9 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
         onLog: (line) => appendLog("import", line),
         spawn: (program, args, cwd) =>
           spawnAndCapture(runId, "import", program as "bash", args, cwd),
-        fs: {
-          mkdir: (path, opts) => mkdir(path, { recursive: opts?.recursive ?? false }),
-          readTextFile,
-          writeTextFile,
-          rename,
-        },
+        // No `fs` override — runExistingImport's default routes every
+        // install-tree write through the install-root-guarded Rust commands
+        // (install-fs), keyed to installPath.
       });
 
       if (
@@ -879,12 +875,17 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       reason: "post-install",
     });
     try {
-      await writeTextFile(
+      // Primary marker lives inside the install tree, so it goes through the
+      // install-root-guarded Rust command (install-fs) keyed to installPath.
+      await writeInstallText(
+        installPath,
         `${installPath.replace(/\/+$/, "")}/.hq-embeddings-pending.json`,
         payload,
       );
     } catch {
       try {
+        // Fallback writes to the fixed $HOME/.hq location, OUTSIDE any install
+        // tree, so it stays on plugin-fs (BaseDirectory.Home).
         await mkdir(".hq", { baseDir: BaseDirectory.Home, recursive: true });
         await writeTextFile(".hq/embeddings-pending.json", payload, {
           baseDir: BaseDirectory.Home,

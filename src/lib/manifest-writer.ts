@@ -1,5 +1,10 @@
-import { exists, readTextFile, rename, writeTextFile } from "@tauri-apps/plugin-fs";
 import { parse, stringify } from "yaml";
+import {
+  installPathExists,
+  readInstallText,
+  renameInstall,
+  writeInstallText,
+} from "./install-fs";
 
 export interface ManifestEntrySeed {
   /** Slug used as the key in `companies.{slug}`. */
@@ -61,8 +66,8 @@ export async function ensureManifestEntries(
   const tmpPath = `${manifestPath}.tmp`;
 
   let manifest: ManifestShape;
-  if (await exists(manifestPath)) {
-    const raw = await readTextFile(manifestPath);
+  if (await installPathExists(installPath, manifestPath)) {
+    const raw = await readInstallText(installPath, manifestPath);
     const parsed = parse(raw) as unknown;
     manifest =
       parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -105,8 +110,8 @@ export async function ensureManifestEntries(
   if (!mutated) return result;
 
   const serialized = stringify(manifest, { indent: 2, lineWidth: 0 });
-  await writeTextFile(tmpPath, serialized);
-  await rename(tmpPath, manifestPath);
+  await writeInstallText(installPath, tmpPath, serialized);
+  await renameInstall(installPath, tmpPath, manifestPath);
 
   return result;
 }
