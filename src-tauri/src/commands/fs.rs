@@ -48,6 +48,9 @@ pub fn write_file(
 
     atomic_write(&file_path, &contents)?;
 
+    #[cfg(not(unix))]
+    let _ = mode;
+
     #[cfg(unix)]
     if let Some(mode) = mode {
         fs::set_permissions(&file_path, fs::Permissions::from_mode(mode & 0o7777))

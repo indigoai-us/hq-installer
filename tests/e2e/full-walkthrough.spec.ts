@@ -142,6 +142,22 @@ const TAURI_MOCK_SCRIPT = `
     if (cmd === 'resolve_hq_path') {
       return '/tmp/hq-e2e-test';
     }
+    if (cmd === 'create_directory') {
+      const parent = String((args && args.parent) || '').replace(/[\\\\/]+$/, '');
+      const name = String((args && args.name) || '');
+      const separator = parent.indexOf('\\\\') === -1 ? '/' : '\\\\';
+      return {
+        path: parent + separator + name,
+        already_existed: false,
+        non_empty: false,
+      };
+    }
+    if (cmd === 'detect_hq') {
+      return { exists: false, isHq: false };
+    }
+    if (cmd === 'check_writable') {
+      return true;
+    }
 
     // ── Sign-in step (US-003-ish) — OAuth loopback stub ─────────────────
     // The real command binds 127.0.0.1:53682 and blocks until the browser
