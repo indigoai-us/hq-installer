@@ -13,7 +13,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { postOptIn, pingStep, getInstallSessionId } from "../telemetry.js";
+import {
+  postOptIn,
+  pingStep,
+  getInstallSessionId,
+  __resetTelemetryCachesForTests,
+} from "../telemetry.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +180,12 @@ describe("postOptIn — local cache on final failure", () => {
 // ---------------------------------------------------------------------------
 
 describe("pingStep", () => {
+  beforeEach(() => {
+    // The session id + device id are memoized at module scope; clear them so
+    // a success cached by one case doesn't leak into the next.
+    __resetTelemetryCachesForTests();
+  });
+
   it("POSTs the step with a stable session id, personUid, and best-effort device id", async () => {
     vi.useRealTimers();
     // device_fingerprint resolves to a hash for this test.

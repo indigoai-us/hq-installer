@@ -19,18 +19,27 @@ export function getInstallSessionId(): string {
 }
 
 // Stable, privacy-preserving device id (a hashed MAC from the Rust side) used to
-// spot the same machine installing again. Best-effort + memoized: if the command
-// is unavailable the funnel still records, just without the device dimension.
-let deviceIdCache: string | null | undefined;
+// spot the same machine installing again. Best-effort: only a SUCCESSFUL, non-
+// empty id is memoized — a failure/empty returns undefined WITHOUT caching, so a
+// transient miss is retried on the next ping (and never permanently disables the
+// device dimension).
+let deviceIdCache: string | undefined;
 async function getDeviceId(): Promise<string | undefined> {
-  if (deviceIdCache !== undefined) return deviceIdCache ?? undefined;
-  try {
-    const id = await invoke<string>("device_fingerprint");
-    deviceIdCache = typeof id === "string" && id ? id : null;
-  } catch {
-    deviceIdCache = null;
+  if (deviceIdCache) return deviceIdCache;
+  // Command unavailable / failed → "" → the funnel records without a device id
+  // and retries on the next ping (no negative caching).
+  const id = await invoke<string>("device_fingerprint").catch(() => "");
+  if (typeof id === "string" && id) {
+    deviceIdCache = id;
+    return id;
   }
-  return deviceIdCache ?? undefined;
+  return undefined;
+}
+
+/** Test-only: clear the memoized session id + device id between cases. */
+export function __resetTelemetryCachesForTests(): void {
+  installSessionId = null;
+  deviceIdCache = undefined;
 }
 
 /**
