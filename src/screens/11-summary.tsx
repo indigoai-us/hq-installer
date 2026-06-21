@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { WizardFooterSlot } from "@/components/WizardFooter";
+import { invokeWithTimeout } from "@/lib/invoke-timeout";
 import { pingSuccess } from "../lib/telemetry";
 import {
   getInstallerVersion,
@@ -32,6 +33,7 @@ const CLAUDE_DESKTOP_QUICKSTART_URL =
   "https://code.claude.com/docs/en/desktop-quickstart";
 
 const AI_TOOLS_POLL_MS = 3000;
+const AI_TOOLS_TIMEOUT_MS = 10_000;
 
 interface AiTools {
   claude_cli: boolean;
@@ -75,7 +77,14 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   const [launchingDesktop, setLaunchingDesktop] = useState(false);
   const [launchingCode, setLaunchingCode] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
+  const [commandCopied, setCommandCopied] = useState(false);
   const [importPromptCopied, setImportPromptCopied] = useState(false);
+  const [revealingFolder, setRevealingFolder] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const [detectionFailed, setDetectionFailed] = useState(false);
+  const [resolvedInstallPath, setResolvedInstallPath] = useState<string | null>(
+    wizardState.installPath,
+  );
   const [installerImport, setInstallerImport] =
     useState<InstallerImportBreadcrumb | null>(null);
   const [setupFailures, setSetupFailures] = useState<FailureRecord[]>([]);
@@ -88,18 +97,53 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
     if (detectorProbeInFlightRef.current) return;
     detectorProbeInFlightRef.current = true;
     try {
-      const tools = await invoke<AiTools>("check_ai_tools");
+      const tools = await invokeWithTimeout<AiTools>(
+        "check_ai_tools",
+        undefined,
+        AI_TOOLS_TIMEOUT_MS,
+      );
       if (detectorMountedRef.current) {
+        setDetectionFailed(false);
         setAiTools(tools);
       }
     } catch {
       if (detectorMountedRef.current) {
+        setDetectionFailed(true);
         setAiTools(NO_AI_TOOLS);
       }
     } finally {
       detectorProbeInFlightRef.current = false;
     }
   }, []);
+
+  useEffect(() => {
+    if (wizardState.installPath) {
+      setResolvedInstallPath(wizardState.installPath);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      let fallbackPath = "~/hq";
+      try {
+        const home = await invoke<string>("home_dir");
+        fallbackPath = `${home.replace(/[\\/]+$/, "")}/hq`;
+        const v = await getInstallerVersion();
+        const manifest = await readManifest(fallbackPath, v);
+        if (!cancelled) {
+          setResolvedInstallPath(manifest.installPath || fallbackPath);
+        }
+      } catch {
+        if (!cancelled) {
+          setResolvedInstallPath(fallbackPath);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [wizardState.installPath]);
 
   // ── Telemetry + manifest finalize on mount ──────────────────────────────
   useEffect(() => {
@@ -165,7 +209,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
       // lands in the onboarding flow instead of an empty prompt. Claude
       // Desktop is the registered handler for `claude://` on macOS.
       const params = new URLSearchParams({ q: "/setup" });
-      if (wizardState.installPath) params.set("folder", wizardState.installPath);
+      if (resolvedInstallPath) params.set("folder", resolvedInstallPath);
       const url = `claude://code/new?${params.toString()}`;
       await invoke("open_claude_code_link", { url });
     } catch (err) {
@@ -204,11 +248,11 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   }
 
   async function handleLaunchClaudeCode() {
-    if (!wizardState.installPath) return;
+    if (!resolvedInstallPath) return;
     setLaunchError(null);
     setLaunchingCode(true);
     try {
-      await invoke("launch_claude_code", { path: wizardState.installPath });
+      await invoke("launch_claude_code", { path: resolvedInstallPath });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setLaunchError(`Couldn't open Terminal: ${msg}`);
@@ -219,8 +263,27 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   }
 
   async function handleCopyPath() {
-    if (!wizardState.installPath) return;
-    await copyText(wizardState.installPath, setPathCopied);
+    if (!resolvedInstallPath) return;
+    await copyText(resolvedInstallPath, setPathCopied);
+  }
+
+  async function handleCopyCommand() {
+    const command = openCommandFor(resolvedInstallPath, aiTools);
+    await copyText(command, setCommandCopied);
+  }
+
+  async function handleRevealFolder() {
+    const path = resolvedInstallPath ?? "~/hq";
+    setRevealError(null);
+    setRevealingFolder(true);
+    try {
+      await invoke("reveal_folder", { path });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setRevealError(`Couldn't reveal HQ folder: ${msg}`);
+    } finally {
+      setRevealingFolder(false);
+    }
   }
 
   async function handleCopyImportPrompt() {
@@ -247,6 +310,11 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
     installerImport.totalClaudeArtifacts > 0;
   const aiToolsDetected = aiTools?.any === true;
   const claudeDesktopAvailable = aiTools?.claude_desktop === true;
+  const claudeCliAvailable = aiTools?.claude_cli === true;
+  const primaryCliTool = primaryCli(aiTools);
+  const nonClaudeToolName = primaryNonClaudeToolName(aiTools);
+  const manualCommand = openCommandFor(resolvedInstallPath, aiTools);
+  const displayInstallPath = resolvedInstallPath ?? "~/hq";
 
   return (
     <div className="flex flex-col gap-6 max-w-lg">
@@ -267,7 +335,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         <div className="flex flex-col gap-3">
           <SummaryRow
             label="Install path"
-            value={wizardState.installPath ?? "—"}
+            value={displayInstallPath}
             mono
           />
           {wizardState.isPersonal && !wizardState.team ? (
@@ -315,16 +383,56 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           Open HQ
         </p>
 
-        {aiTools === null && (
-          <p className="text-sm text-zinc-300">
-            Checking for a supported AI coding tool…
-          </p>
-        )}
+        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/30 px-3 py-3">
+          <div className="flex flex-col gap-1">
+            <p className="text-xs text-zinc-500">HQ folder</p>
+            <p className="select-all text-xs font-mono text-zinc-200 break-all">
+              {displayInstallPath}
+            </p>
+            {!wizardState.installPath && (
+              <p className="text-xs text-zinc-500">
+                The saved install path was not available, so this screen is
+                using the default HQ folder.
+              </p>
+            )}
+          </div>
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-zinc-500">Ready-to-run command</p>
+            <p className="select-all text-xs font-mono text-zinc-200 break-all">
+              {manualCommand}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleCopyCommand}
+                className="text-xs px-3 py-1.5 rounded-full bg-white/10 text-zinc-100 hover:bg-white/20 transition-colors"
+              >
+                {commandCopied ? "Copied" : "Copy command"}
+              </button>
+              <button
+                type="button"
+                onClick={handleRevealFolder}
+                disabled={revealingFolder}
+                className="text-xs px-3 py-1.5 rounded-full bg-white/10 text-zinc-100 hover:bg-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {revealingFolder ? "Revealing…" : "Reveal in Finder"}
+              </button>
+            </div>
+          </div>
+        </div>
 
         {aiTools?.any === false && (
           <p className="text-sm text-zinc-300">
-            No supported AI tool detected. Download Claude below; this screen
-            will update automatically after a tool is installed.
+            {detectionFailed
+              ? "We couldn't verify installed AI tools. Use the folder and command above to open HQ manually."
+              : "No supported AI tool detected. Use the folder and command above, or download Claude below."}
+          </p>
+        )}
+
+        {aiTools === null && (
+          <p className="text-sm text-zinc-300">
+            Checking for a supported AI coding tool. The manual path above is
+            ready if detection takes too long.
           </p>
         )}
 
@@ -333,15 +441,15 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             <li>Launch Claude Desktop.</li>
             <li>
               Open <span className="font-medium">Claude Code</span>, choose the
-              local filesystem, and select your HQ folder:
+                  local filesystem, and select your HQ folder:
               <div className="mt-2 flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
                 <span className="text-xs font-mono text-zinc-200 break-all flex-1">
-                  {wizardState.installPath ?? "—"}
+                  {displayInstallPath}
                 </span>
                 <button
                   type="button"
                   onClick={handleCopyPath}
-                  disabled={!wizardState.installPath}
+                  disabled={!resolvedInstallPath}
                   className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors disabled:opacity-40"
                 >
                   {pathCopied ? "Copied" : "Copy"}
@@ -351,23 +459,31 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           </ol>
         )}
 
-        {aiToolsDetected && !claudeDesktopAvailable && (
+        {aiToolsDetected && !claudeDesktopAvailable && claudeCliAvailable && (
           <div className="flex flex-col gap-2 text-sm text-zinc-300">
             <p>Open Claude Code in Terminal from your HQ folder:</p>
             <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
               <span className="text-xs font-mono text-zinc-200 break-all flex-1">
-                {wizardState.installPath ?? "—"}
+                {displayInstallPath}
               </span>
               <button
                 type="button"
                 onClick={handleCopyPath}
-                disabled={!wizardState.installPath}
+                disabled={!resolvedInstallPath}
                 className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors disabled:opacity-40"
               >
                 {pathCopied ? "Copied" : "Copy"}
               </button>
             </div>
           </div>
+        )}
+
+        {aiToolsDetected && !claudeDesktopAvailable && !claudeCliAvailable && (
+          <p className="text-sm text-zinc-300">
+            {nonClaudeToolName
+              ? `${nonClaudeToolName} is installed. Copy the command above and run it in Terminal from your HQ folder.`
+              : "A supported AI tool is installed. Use the folder and command above to open HQ."}
+          </p>
         )}
 
         {claudeDesktopAvailable && (
@@ -434,7 +550,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           <button
             type="button"
             onClick={handleLaunchClaudeCode}
-            disabled={launchingCode || !wizardState.installPath}
+            disabled={launchingCode || !resolvedInstallPath}
             className="underline underline-offset-2 text-zinc-300 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {launchingCode ? "Opening…" : "Open Claude Code in Terminal"}
@@ -442,12 +558,12 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         </p>
       )}
 
-      {launchError && (
+      {(launchError || revealError) && (
         <div
           role="alert"
           className="text-xs text-zinc-400 bg-white/5 border border-white/10 rounded-xl px-3 py-2"
         >
-          {launchError}
+          {launchError ?? revealError}
         </div>
       )}
 
@@ -463,37 +579,94 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           </button>
         )}
         {aiToolsDetected && !claudeDesktopAvailable && (
-          <button
-            type="button"
-            onClick={handleLaunchClaudeCode}
-            disabled={launchingCode || !wizardState.installPath}
-            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {launchingCode ? "Opening…" : "Open Claude Code in Terminal"}
-          </button>
+          claudeCliAvailable ? (
+            <button
+              type="button"
+              onClick={handleLaunchClaudeCode}
+              disabled={launchingCode || !resolvedInstallPath}
+              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {launchingCode ? "Opening…" : "Open Claude Code in Terminal"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleCopyCommand}
+              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+            >
+              {commandCopied
+                ? "Copied"
+                : primaryCliTool
+                  ? `Copy ${toolDisplayName(primaryCliTool)} command`
+                  : "Copy command"}
+            </button>
+          )
         )}
         {aiTools?.any === false && (
           <div className="flex flex-col items-end gap-2">
             <button
               type="button"
-              onClick={handleDownloadClaude}
+              onClick={handleCopyCommand}
               className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+            >
+              {commandCopied ? "Copied" : "Copy command"}
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadClaude}
+              className="text-xs text-zinc-400 underline underline-offset-2 hover:text-white transition-colors"
             >
               Download Claude
             </button>
-            <p className="text-xs text-zinc-400">
-              A Claude subscription is required to use HQ.
-            </p>
           </div>
         )}
         {aiTools === null && (
-          <div className="px-6 py-2.5 rounded-full text-sm font-medium bg-white/10 text-zinc-500">
-            Checking…
-          </div>
+          <button
+            type="button"
+            onClick={handleCopyCommand}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+          >
+            {commandCopied ? "Copied" : "Copy command"}
+          </button>
         )}
       </WizardFooterSlot>
     </div>
   );
+}
+
+function primaryCli(tools: AiTools | null): "claude" | "codex" | "grok" | null {
+  if (!tools) return null;
+  if (tools.claude_cli) return "claude";
+  if (tools.codex_cli) return "codex";
+  if (tools.grok_cli) return "grok";
+  return null;
+}
+
+function primaryNonClaudeToolName(tools: AiTools | null): string | null {
+  if (!tools) return null;
+  if (tools.codex_cli) return "Codex CLI";
+  if (tools.codex_desktop) return "Codex Desktop";
+  if (tools.grok_cli) return "Grok CLI";
+  return null;
+}
+
+function toolDisplayName(tool: "claude" | "codex" | "grok"): string {
+  if (tool === "claude") return "Claude";
+  if (tool === "codex") return "Codex";
+  return "Grok";
+}
+
+function quoteForShell(value: string): string {
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function openCommandFor(path: string | null, tools: AiTools | null): string {
+  const installPath = path ?? "~/hq";
+  const cli = primaryCli(tools);
+  if (cli) {
+    return `cd ${quoteForShell(installPath)} && ${cli}`;
+  }
+  return `open ${quoteForShell(installPath)}`;
 }
 
 // ---------------------------------------------------------------------------

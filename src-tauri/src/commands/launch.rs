@@ -11,6 +11,8 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
+#[cfg(not(windows))]
+use std::path::PathBuf;
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -206,6 +208,64 @@ fn validate_claude_deep_link(url: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn expand_home_path(path: &str) -> Result<PathBuf, String> {
+    if path == "~" {
+        return dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return dirs::home_dir()
+            .map(|home| home.join(rest))
+            .ok_or_else(|| "Could not determine home directory".to_string());
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
+    let target = expand_home_path(path)?;
+    let home = dirs::home_dir().ok_or_else(|| "Could not determine home directory".to_string())?;
+    let canonical_home = home
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve home directory: {e}"))?;
+
+    let target_for_guard = target.canonicalize().unwrap_or_else(|_| target.clone());
+    if !target_for_guard.starts_with(&canonical_home) {
+        return Err(format!(
+            "refusing to reveal path outside home directory: {}",
+            target.display()
+        ));
+    }
+
+    Ok(target)
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn reveal_folder(path: String) -> Result<(), String> {
+    let target = validate_reveal_target(&path)?;
+    let output = Command::new("open")
+        .arg(&target)
+        .output()
+        .map_err(|e| format!("Failed to run open: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "open exited {}: {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub fn reveal_folder(path: String) -> Result<(), String> {
+    let target = validate_reveal_target(&path)?;
+    shell_execute_open_path(&target)
 }
 
 /// Open macOS Terminal, cd into `path`, and auto-run `claude`.
