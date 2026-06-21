@@ -143,6 +143,27 @@ const TAURI_MOCK_SCRIPT = `
       return '/tmp/hq-e2e-test';
     }
 
+    // ── Directory preflight (recovery flow: create → detect → writable) ──
+    // The "never dead-end" rework runs ensureDirectory → detect_hq →
+    // check_writable before the scaffold-skip; the mocked env must satisfy
+    // all three or installAt bails before reaching onNext.
+    if (cmd === 'create_directory') {
+      const { parent, name } = args || {};
+      return { path: parent + '/' + name, already_existed: false, non_empty: false };
+    }
+    if (cmd === 'detect_hq') {
+      return { exists: false, isHq: false };
+    }
+    if (cmd === 'check_writable') {
+      return true;
+    }
+    if (cmd === 'get_use_staging_source') {
+      return false;
+    }
+    if (cmd === 'write_menubar_hq_path') {
+      return null;
+    }
+
     // ── Sign-in step (US-003-ish) — OAuth loopback stub ─────────────────
     // The real command binds 127.0.0.1:53682 and blocks until the browser
     // hits /callback. Here we resolve immediately with a fixed code —
