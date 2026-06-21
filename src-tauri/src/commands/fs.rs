@@ -1,10 +1,11 @@
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
 #[cfg(windows)]
-use std::path::{Component, PathBuf};
+use std::path::Component;
 #[cfg(windows)]
 use std::process::Command;
 
@@ -31,15 +32,14 @@ const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
 pub const PRIVILEGE_ERROR_TAG: &str = "HQ_SYMLINK_PRIVILEGE";
 
 #[tauri::command]
-pub fn write_file(path: String, contents: Vec<u8>) -> Result<(), String> {
-    let file_path = Path::new(&path);
+pub fn write_file(path: String, contents: Vec<u8>, install_root: String) -> Result<(), String> {
+    let file_path = guard_relative_path_under_root(&path, &install_root)?;
 
-    // Create parent directories if they don't exist
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {e}"))?;
     }
 
-    fs::write(file_path, &contents).map_err(|e| format!("Failed to write file: {e}"))
+    atomic_write(&file_path, &contents)
 }
 
 #[tauri::command]
@@ -428,6 +428,101 @@ fn normalized_parent(path: &str) -> Option<String> {
     }
 }
 
+fn guard_relative_path_under_root(path: &str, root: &str) -> Result<PathBuf, String> {
+    if path.is_empty() || path.contains('\0') {
+        return Err("Refusing to write outside install root: invalid destination path".to_string());
+    }
+    if has_unsafe_relative_prefix(path) || path.contains(':') {
+        return Err(format!("Refusing to write outside install root: {path:?}"));
+    }
+    if path
+        .replace('\\', "/")
+        .split('/')
+        .any(|seg| !seg.is_empty() && seg == "..")
+    {
+        return Err(format!("Refusing to write outside install root: {path:?}"));
+    }
+
+    let root = normalize_trusted_path(root)
+        .filter(|root| has_unsafe_relative_prefix(root))
+        .ok_or_else(|| "Refusing to write because the install root is invalid".to_string())?;
+    let relative = normalize_trusted_path(path)
+        .filter(|relative| !relative.is_empty())
+        .ok_or_else(|| {
+            "Refusing to write outside install root: invalid destination path".to_string()
+        })?;
+    let joined = if root.ends_with('/') {
+        format!("{root}{relative}")
+    } else {
+        format!("{root}/{relative}")
+    };
+    let destination = normalize_trusted_path(&joined).ok_or_else(|| {
+        "Refusing to write outside install root: invalid destination path".to_string()
+    })?;
+
+    if !is_path_within_root(&destination, &root) {
+        return Err(format!(
+            "Refusing to write outside install root: {destination:?}"
+        ));
+    }
+
+    Ok(PathBuf::from(destination))
+}
+
+pub(super) fn guard_absolute_path_under_root(path: &str, root: &str) -> Result<PathBuf, String> {
+    let root = normalize_trusted_path(root)
+        .filter(|root| has_unsafe_relative_prefix(root))
+        .ok_or_else(|| "Refusing to use path because the install root is invalid".to_string())?;
+    let destination = normalize_trusted_path(path)
+        .filter(|destination| has_unsafe_relative_prefix(destination))
+        .ok_or_else(|| "Refusing to use path outside install root: invalid path".to_string())?;
+
+    if !is_path_within_root(&destination, &root) {
+        return Err(format!(
+            "Refusing to use path outside install root: {destination:?}"
+        ));
+    }
+
+    Ok(PathBuf::from(destination))
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Failed to write file: destination has no parent directory".to_string())?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "Failed to write file: destination has no file name".to_string())?
+        .to_string_lossy();
+    let temp_path = parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+
+    let result = (|| {
+        let mut temp_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| format!("Failed to create temp file: {e}"))?;
+        temp_file
+            .write_all(contents)
+            .map_err(|e| format!("Failed to write temp file: {e}"))?;
+        temp_file
+            .sync_all()
+            .map_err(|e| format!("Failed to sync temp file: {e}"))?;
+        drop(temp_file);
+        fs::rename(&temp_path, path).map_err(|e| format!("Failed to replace file: {e}"))
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    result
+}
+
 fn relative_segments_under_root(path: &str, root: &str) -> Option<Vec<String>> {
     if path == root {
         return Some(Vec::new());
@@ -446,11 +541,7 @@ fn relative_segments_under_root(path: &str, root: &str) -> Option<Vec<String>> {
     })
 }
 
-fn validate_symlink_request(
-    target: &str,
-    link_path: &str,
-    root: Option<&str>,
-) -> Result<(), String> {
+fn validate_symlink_request(target: &str, link_path: &str, root: &str) -> Result<(), String> {
     if target.is_empty() || target.contains('\0') {
         return Err("Refusing to create symlink with an empty or invalid target".to_string());
     }
@@ -461,19 +552,6 @@ fn validate_symlink_request(
     }
 
     let normalized_target = target.replace('\\', "/");
-
-    let Some(root) = root else {
-        if normalized_target
-            .split('/')
-            .any(|seg| !seg.is_empty() && seg == "..")
-        {
-            return Err(
-                "Refusing to create symlink with parent traversal without an install root"
-                    .to_string(),
-            );
-        }
-        return Ok(());
-    };
 
     let root = normalize_trusted_path(root).ok_or_else(|| {
         "Refusing to create symlink because the install root is invalid".to_string()
@@ -523,12 +601,8 @@ fn validate_symlink_request(
 /// Rust. The JS extractor validates tar metadata first; this command repeats
 /// the target/root check defensively before touching the filesystem.
 #[tauri::command]
-pub fn create_symlink(
-    target: String,
-    link_path: String,
-    root: Option<String>,
-) -> Result<(), String> {
-    validate_symlink_request(&target, &link_path, root.as_deref())?;
+pub fn create_symlink(target: String, link_path: String, root: String) -> Result<(), String> {
+    validate_symlink_request(&target, &link_path, &root)?;
     create_symlink_impl(Path::new(&target), Path::new(&link_path))
 }
 
@@ -556,27 +630,105 @@ pub fn open_developer_settings() -> Result<(), String> {
 #[cfg(test)]
 mod validation_tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn setup() -> TempDir {
+        tempfile::tempdir().expect("tmpdir")
+    }
+
+    #[test]
+    fn write_file_rejects_absolute_destination() {
+        let dir = setup();
+        let outside = dir.path().join("outside.txt");
+        let err = write_file(
+            outside.to_string_lossy().to_string(),
+            b"nope".to_vec(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("absolute renderer path must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn write_file_rejects_parent_traversal_destination() {
+        let dir = setup();
+        let err = write_file(
+            "../outside.txt".to_string(),
+            b"nope".to_vec(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("parent traversal must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!dir.path().parent().unwrap().join("outside.txt").exists());
+    }
+
+    #[test]
+    fn write_file_rejects_destination_that_escapes_root() {
+        let dir = setup();
+        let err = write_file(
+            "nested/../../outside.txt".to_string(),
+            b"nope".to_vec(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect_err("lexical root escape must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+        assert!(!dir.path().parent().unwrap().join("outside.txt").exists());
+    }
+
+    #[test]
+    fn write_file_accepts_in_root_destination() {
+        let dir = setup();
+        write_file(
+            "nested/file.txt".to_string(),
+            b"hello hq".to_vec(),
+            dir.path().to_string_lossy().to_string(),
+        )
+        .expect("in-root relative path should write");
+
+        assert_eq!(
+            fs::read(dir.path().join("nested/file.txt")).expect("read"),
+            b"hello hq"
+        );
+    }
+
+    #[test]
+    fn symlink_validation_rejects_absolute_link_path_outside_root() {
+        let dir = setup();
+        let outside = dir.path().parent().unwrap().join("outside-link");
+        let err = validate_symlink_request(
+            "inside",
+            &outside.to_string_lossy(),
+            dir.path().to_str().unwrap(),
+        )
+        .expect_err("absolute out-of-root link path must be rejected");
+
+        assert!(err.contains("outside install root"), "got: {err}");
+    }
 
     #[test]
     fn symlink_validation_allows_template_parent_links_with_root() {
         validate_symlink_request(
             "../.claude/output-style.md",
             "/tmp/hq/.codex/output-style.md",
-            Some("/tmp/hq"),
+            "/tmp/hq",
         )
         .expect("in-root parent traversal should be allowed");
 
         validate_symlink_request(
             "../../.obsidian",
             "/tmp/hq/companies/_template/.obsidian",
-            Some("/tmp/hq"),
+            "/tmp/hq",
         )
         .expect("template links may walk back to the install root");
     }
 
     #[test]
     fn symlink_validation_rejects_targets_that_escape_root() {
-        let err = validate_symlink_request("../.ssh", "/tmp/hq/.ssh", Some("/tmp/hq"))
+        let err = validate_symlink_request("../.ssh", "/tmp/hq/.ssh", "/tmp/hq")
             .expect_err("root escape must be rejected");
         assert!(err.contains("escapes install root"), "got: {err}");
     }
@@ -584,7 +736,7 @@ mod validation_tests {
     #[test]
     fn symlink_validation_rejects_absolute_and_drive_targets() {
         for target in ["/tmp/outside", r"\tmp\outside", r"C:\Users\alice\evil"] {
-            let err = validate_symlink_request(target, "/tmp/hq/link", Some("/tmp/hq"))
+            let err = validate_symlink_request(target, "/tmp/hq/link", "/tmp/hq")
                 .expect_err("absolute target must be rejected");
             assert!(
                 err.contains("absolute") || err.contains("prefixed"),
@@ -595,16 +747,9 @@ mod validation_tests {
 
     #[test]
     fn symlink_validation_rejects_link_paths_outside_root() {
-        let err = validate_symlink_request("inside", "/tmp/outside/link", Some("/tmp/hq"))
+        let err = validate_symlink_request("inside", "/tmp/outside/link", "/tmp/hq")
             .expect_err("link path outside root must be rejected");
         assert!(err.contains("outside install root"), "got: {err}");
-    }
-
-    #[test]
-    fn symlink_validation_without_root_rejects_parent_traversal() {
-        let err = validate_symlink_request("../target", "/tmp/hq/link", None)
-            .expect_err("parent traversal without a root must be rejected");
-        assert!(err.contains("without an install root"), "got: {err}");
     }
 }
 

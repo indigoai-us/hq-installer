@@ -43,6 +43,7 @@ use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCE
 use super::deps::extended_search_path;
 #[cfg(unix)]
 use super::deps::{extended_search_path, managed_git_env};
+use super::fs::guard_absolute_path_under_root;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -55,10 +56,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnArgs {
-    pub cmd: String,
+    pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
+    pub install_root: String,
 }
 
 /// Payload for `process://{handle}/stdout` events.
@@ -316,6 +318,51 @@ pub enum ProcessEvent {
     Exit { code: Option<i32>, success: bool },
 }
 
+#[cfg(not(test))]
+const ALLOWED_PROGRAMS: &[&str] = &["npx", "bash", "hq", "qmd"];
+// Tests exercise the spawn plumbing with `cmd` on Windows — the only shell
+// reliably present on CI runners (`bash` there resolves to WSL's stub, which
+// has no distro). `cmd` is NEVER allowed in shipped builds.
+#[cfg(test)]
+const ALLOWED_PROGRAMS: &[&str] = &["npx", "bash", "hq", "qmd", "cmd"];
+const ALLOWED_ENV_KEYS: &[&str] = &["HQ_ROOT"];
+
+fn ensure_allowed_program(program: &str) -> Result<(), String> {
+    if ALLOWED_PROGRAMS.contains(&program) {
+        Ok(())
+    } else {
+        Err(format!(
+            "program not allowed for spawn_process: {program}. Allowed programs: npx, bash, hq, qmd"
+        ))
+    }
+}
+
+fn validated_cwd(spawn: &SpawnArgs) -> Result<Option<PathBuf>, String> {
+    spawn
+        .cwd
+        .as_deref()
+        .map(|cwd| guard_absolute_path_under_root(cwd, &spawn.install_root))
+        .transpose()
+}
+
+fn resolve_allowed_program(spawn: &SpawnArgs, search_path: &str) -> Result<PathBuf, String> {
+    ensure_allowed_program(&spawn.program)?;
+    let cwd_for_which =
+        validated_cwd(spawn)?.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    which::which_in(&spawn.program, Some(search_path), cwd_for_which)
+        .map_err(|_| format!("command not found on PATH: {}", spawn.program))
+}
+
+fn apply_allowed_env(cmd: &mut Command, env: &Option<HashMap<String, String>>) {
+    if let Some(env) = env {
+        for (k, v) in env {
+            if ALLOWED_ENV_KEYS.contains(&k.as_str()) {
+                cmd.env(k, v);
+            }
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure impl
 // ─────────────────────────────────────────────────────────────────────────────
@@ -324,10 +371,10 @@ pub enum ProcessEvent {
 /// OS pid, stream stdout + stderr lines to `on_event`, then emit the exit
 /// event.  Blocks until the process exits.
 ///
-/// `search_path` is used to resolve bare command names (e.g. `qmd`, `npm`)
+/// `search_path` is used to resolve allowed bare program names (e.g. `qmd`, `npx`)
 /// to absolute paths via `which::which_in` before spawning. GUI-launched
 /// Tauri apps inherit only `/usr/bin:/bin` from LaunchServices, so passing
-/// the caller's bare `cmd` directly to `Command::new` would fail to locate
+/// the caller's bare program directly to `Command::new` would fail to locate
 /// binaries installed under nvm, Homebrew, `~/.local/bin`, etc. Resolving
 /// up-front also means spawn failures surface synchronously — no race
 /// window between "spawn failed on background thread" and "JS registers
@@ -358,16 +405,9 @@ where
 {
     let _registration_guard = ProcessRegistrationGuard::new(handle);
 
-    // Resolve the cmd via the caller-supplied search path. `which_in` accepts
-    // an absolute path too and returns it unchanged, so this is a no-op when
-    // the caller passes a full path.
-    let cwd_for_which: PathBuf = spawn
-        .cwd
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let resolved = which::which_in(&spawn.cmd, Some(search_path), cwd_for_which)
-        .map_err(|_| format!("command not found on PATH: {}", spawn.cmd))?;
+    // Resolve the allowlisted program via the caller-supplied search path.
+    let resolved = resolve_allowed_program(spawn, search_path)?;
+    let cwd = validated_cwd(spawn)?;
 
     let mut cmd = Command::new(&resolved);
     cmd.args(&spawn.args)
@@ -377,7 +417,7 @@ where
         // This lets cancel_process signal the whole group, not just the leader.
         .process_group(0);
 
-    if let Some(cwd) = &spawn.cwd {
+    if let Some(cwd) = &cwd {
         cmd.current_dir(cwd);
     }
 
@@ -389,41 +429,30 @@ where
     // prepend the wrapper's `command -v node` picks the shell-default node (vY)
     // and better-sqlite3 crashes with ERR_DLOPEN_FAILED.
     //
-    // All current spawn_process callers are analysed:
-    //   git        → /usr/bin/git; /usr/bin is already first in the extended
-    //                search path → the dedup check below fires, no-op.
-    //   07-template scripts → live in the HQ install path, no competing tool
-    //                names in that dir; prepending it is benign.
-    //   qmd        → target of this fix; promotes ~/.nvm/vX/bin to the front.
+    // All current spawn_process callers use allowlisted installer tools:
+    // npx, bash, hq, and qmd. Prepending the resolved binary's directory is
+    // primarily for qmd and npx wrappers that need their co-located node first.
     //
     // Dedup: skip prepend when bin_dir is already the leading PATH component
     // to avoid duplicate entries (common when the extended search path already
     // includes the binary's directory).
     //
-    // Caller's explicit PATH in spawn.env takes precedence over all of this.
-    let caller_sets_path = spawn
-        .env
-        .as_ref()
-        .map(|e| e.contains_key("PATH"))
-        .unwrap_or(false);
-    if !caller_sets_path {
-        let child_path = if let Some(bin_dir) = resolved.parent() {
-            let bin_str = bin_dir.to_string_lossy();
-            let already_first = search_path
-                .split(':')
-                .next()
-                .map(|first| first == bin_str.as_ref())
-                .unwrap_or(false);
-            if already_first {
-                search_path.to_string()
-            } else {
-                format!("{}:{}", bin_str, search_path)
-            }
-        } else {
+    let child_path = if let Some(bin_dir) = resolved.parent() {
+        let bin_str = bin_dir.to_string_lossy();
+        let already_first = search_path
+            .split(':')
+            .next()
+            .map(|first| first == bin_str.as_ref())
+            .unwrap_or(false);
+        if already_first {
             search_path.to_string()
-        };
-        cmd.env("PATH", &child_path);
-    }
+        } else {
+            format!("{}:{}", bin_str, search_path)
+        }
+    } else {
+        search_path.to_string()
+    };
+    cmd.env("PATH", &child_path);
     // A relocatable managed (dugite) git needs its exec-path/templates/CA bundle
     // set explicitly, so any `git` a child shells out to (e.g. `hq install`'s
     // github clone) works without a system git. No-op when the managed git isn't
@@ -431,15 +460,11 @@ where
     for (k, v) in managed_git_env() {
         cmd.env(k, v);
     }
-    if let Some(env) = &spawn.env {
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-    }
+    apply_allowed_env(&mut cmd, &spawn.env);
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
+        .map_err(|e| format!("spawn '{}': {}", spawn.program, e))?;
 
     let pid = child.id();
     register_process(handle, pid);
@@ -571,13 +596,8 @@ where
 {
     let _registration_guard = ProcessRegistrationGuard::new(handle);
 
-    let cwd_for_which: PathBuf = spawn
-        .cwd
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let resolved = which::which_in(&spawn.cmd, Some(search_path), cwd_for_which)
-        .map_err(|_| format!("command not found on PATH: {}", spawn.cmd))?;
+    let resolved = resolve_allowed_program(spawn, search_path)?;
+    let cwd = validated_cwd(spawn)?;
 
     let mut cmd = Command::new(&resolved);
     cmd.args(&spawn.args)
@@ -585,57 +605,39 @@ where
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
 
-    if let Some(cwd) = &spawn.cwd {
+    if let Some(cwd) = &cwd {
         cmd.current_dir(cwd);
     }
 
-    let caller_sets_path = spawn
-        .env
-        .as_ref()
-        .map(|e| e.contains_key("PATH"))
-        .unwrap_or(false);
-    if !caller_sets_path {
-        let child_path = if let Some(bin_dir) = resolved.parent() {
-            let bin_str = bin_dir.to_string_lossy();
-            let already_first = search_path
-                .split(';')
-                .next()
-                .map(|first| first == bin_str.as_ref())
-                .unwrap_or(false);
-            if already_first {
-                search_path.to_string()
-            } else {
-                format!("{};{}", bin_str, search_path)
-            }
-        } else {
+    let child_path = if let Some(bin_dir) = resolved.parent() {
+        let bin_str = bin_dir.to_string_lossy();
+        let already_first = search_path
+            .split(';')
+            .next()
+            .map(|first| first == bin_str.as_ref())
+            .unwrap_or(false);
+        if already_first {
             search_path.to_string()
-        };
-        cmd.env("PATH", &child_path);
-    }
-
-    let caller_sets_pathext = spawn
-        .env
-        .as_ref()
-        .map(|e| e.contains_key("PATHEXT"))
-        .unwrap_or(false);
-    if !caller_sets_pathext {
-        cmd.env(
-            "PATHEXT",
-            ".CMD;.BAT;.COM;.EXE;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC",
-        );
-    }
-
-    if let Some(env) = &spawn.env {
-        for (k, v) in env {
-            cmd.env(k, v);
+        } else {
+            format!("{};{}", bin_str, search_path)
         }
-    }
+    } else {
+        search_path.to_string()
+    };
+    cmd.env("PATH", &child_path);
+
+    cmd.env(
+        "PATHEXT",
+        ".CMD;.BAT;.COM;.EXE;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC",
+    );
+
+    apply_allowed_env(&mut cmd, &spawn.env);
 
     let job = Arc::new(create_job_object()?);
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
+        .map_err(|e| format!("spawn '{}': {}", spawn.program, e))?;
 
     let pid = child.id();
     register_process(handle, pid);
@@ -854,7 +856,7 @@ pub fn cancel_process_impl(handle: &str, _sigkill_delay: Duration) -> bool {
 /// The handle is registered **before** this function returns so that
 /// `cancel_process` called immediately after `invoke` is never silently lost.
 ///
-/// The command is resolved against the shell-derived extended PATH
+/// The allowlisted program is resolved against the shell-derived extended PATH
 /// *synchronously* before returning Ok(handle). If it can't be found, Err is
 /// returned and no background thread is ever spawned — this matters because
 /// the JS listener registration for `exit` happens after `await invoke()`
@@ -865,13 +867,7 @@ fn spawn_process_shared(app: AppHandle, args: SpawnArgs) -> Result<String, Strin
 
     // Synchronous pre-resolution — if the binary isn't on the extended PATH,
     // fail before anyone subscribes to exit events. No race possible.
-    let cwd_for_which: PathBuf = args
-        .cwd
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    which::which_in(&args.cmd, Some(&search_path), cwd_for_which)
-        .map_err(|_| format!("command not found on PATH: {}", args.cmd))?;
+    resolve_allowed_program(&args, &search_path)?;
 
     let handle = Uuid::new_v4().to_string();
 
@@ -1001,15 +997,16 @@ mod unix_tests {
         pre_register_handle(&handle);
 
         let args = SpawnArgs {
-            cmd: "echo".into(),
+            program: "bash".into(),
             args: vec!["hello".into()],
             cwd: Some(bad_cwd.to_string_lossy().into_owned()),
             env: None,
+            install_root: tmp.path().to_string_lossy().into_owned(),
         };
 
         let err = run_process_impl(&handle, &args, TEST_SYSTEM_PATH, |_| {})
             .expect_err("spawn should fail when cwd is not a directory");
-        assert!(err.contains("spawn 'echo'"), "unexpected error: {err}");
+        assert!(err.contains("spawn 'bash'"), "unexpected error: {err}");
         assert!(
             !is_registered(&handle),
             "pre-registered handle should be removed on spawn failure"
@@ -1036,10 +1033,11 @@ mod unix_tests {
         let handle = format!("test-pgid-{}", Uuid::new_v4());
         let thread_handle = handle.clone();
         let args = SpawnArgs {
-            cmd: script.to_string_lossy().into_owned(),
-            args: vec![],
+            program: "bash".into(),
+            args: vec![script.to_string_lossy().into_owned()],
             cwd: None,
             env: None,
+            install_root: tmp.path().to_string_lossy().into_owned(),
         };
 
         let runner = thread::spawn(move || {
@@ -1130,12 +1128,14 @@ mod windows_tests {
 
     #[test]
     fn cmd_echo_streams_stdout_and_exits_zero() {
+        let root = tempfile::tempdir().expect("tmpdir");
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
-            cmd: "cmd.exe".into(),
+            program: "cmd".into(),
             args: vec!["/c".into(), "echo".into(), "hello world".into()],
             cwd: None,
             env: None,
+            install_root: root.path().to_string_lossy().into_owned(),
         };
 
         let (stdout, _stderr, exit, res) = run_to_completion(&handle, args);
@@ -1153,12 +1153,14 @@ mod windows_tests {
 
     #[test]
     fn missing_command_returns_err_without_spawn() {
+        let root = tempfile::tempdir().expect("tmpdir");
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
-            cmd: "this-binary-definitely-does-not-exist-xyz".into(),
+            program: "qmd".into(),
             args: vec![],
             cwd: None,
             env: None,
+            install_root: root.path().to_string_lossy().into_owned(),
         };
         let (_, _, _, res) = run_to_completion(&handle, args);
         assert!(res.is_err());
@@ -1167,9 +1169,10 @@ mod windows_tests {
 
     #[test]
     fn cancel_terminates_cmd_timeout_under_one_second() {
+        let root = tempfile::tempdir().expect("tmpdir");
         let handle = format!("test-{}", Uuid::new_v4());
         let args = SpawnArgs {
-            cmd: "cmd.exe".into(),
+            program: "cmd".into(),
             args: vec![
                 "/c".into(),
                 "ping".into(),
@@ -1179,6 +1182,7 @@ mod windows_tests {
             ],
             cwd: None,
             env: None,
+            install_root: root.path().to_string_lossy().into_owned(),
         };
 
         let handle_for_thread = handle.clone();

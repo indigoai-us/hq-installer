@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "HQ Installer",
@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' https://*.execute-api.us-east-1.amazonaws.com https://hqapi.getindigo.ai https://*.auth.us-east-1.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com https://api.github.com https://codeload.github.com https://*.s3.amazonaws.com https://*.s3.us-east-1.amazonaws.com https://s3.us-east-1.amazonaws.com https://telemetry.getindigo.ai; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

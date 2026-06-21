@@ -55,13 +55,11 @@ function setupInvokeMock({
   shouldFail = false,
   failMessage = "Failed to create ~/hq",
   useStaging = false,
-  stagingToken = "gh-token",
 }: {
   resolvedPath?: string;
   shouldFail?: boolean;
   failMessage?: string;
   useStaging?: boolean;
-  stagingToken?: string;
 } = {}) {
   mockInvoke.mockImplementation(async (command: string): Promise<unknown> => {
     if (command === "resolve_hq_path") {
@@ -69,7 +67,6 @@ function setupInvokeMock({
       return resolvedPath;
     }
     if (command === "get_use_staging_source") return useStaging;
-    if (command === "get_github_token") return stagingToken;
     return null;
   });
 }
@@ -143,16 +140,16 @@ describe("DirectoryPicker (06-directory.tsx) — US-001 silent install", () => {
       await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1));
     });
 
-    it("uses the staging-channel source when the staging toggle is on", async () => {
-      setupInvokeMock({ useStaging: true, stagingToken: "ghtok" });
+    it("uses staging source without requesting a GitHub token in the renderer", async () => {
+      setupInvokeMock({ useStaging: true });
       render(<DirectoryPicker onNext={vi.fn()} />);
       await waitFor(() => expect(mockFetch).toHaveBeenCalled());
       // 5th positional arg is the TemplateSource override.
       expect(mockFetch.mock.calls[0][4]).toEqual({
         repo: "indigoai-us/hq-core-staging",
         ref: "main",
-        authToken: "ghtok",
       });
+      expect(mockInvoke).not.toHaveBeenCalledWith("get_github_token");
     });
 
     it("defaults to the stable hq-core release (no source override) when staging is off", async () => {

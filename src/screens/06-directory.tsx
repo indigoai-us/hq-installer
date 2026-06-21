@@ -98,23 +98,9 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
           }
           let source: TemplateSource | undefined;
           if (useStaging) {
-            // hq-core-staging is private — anonymous tarball requests 404, so a
-            // GitHub token is required (read from `gh auth token` via Rust,
-            // never persisted). Surface a clear error instead of an opaque 404.
-            let token: string;
-            try {
-              token = await invoke<string>("get_github_token");
-            } catch (tokenErr) {
-              const m =
-                tokenErr instanceof Error
-                  ? tokenErr.message
-                  : String(tokenErr);
-              throw new Error(`Staging channel needs a GitHub token. ${m}`);
-            }
             source = {
               repo: "indigoai-us/hq-core-staging",
               ref: "main",
-              authToken: token,
             };
           }
 

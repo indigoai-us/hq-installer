@@ -30,10 +30,11 @@ export const HQ_CLOUD_PACKAGE = "@indigoai-us/hq-cloud@~5.38.0";
 
 /** Args accepted by the installer's `spawn_process` Tauri command. */
 export interface SpawnArgs {
-  cmd: string;
+  program: "npx" | "bash" | "hq" | "qmd";
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  installRoot: string;
 }
 
 export interface InitialSyncDeps {
@@ -77,7 +78,7 @@ export async function startInitialCloudSync(
   // 2. Spawn the runner. HQ_ROOT + --hq-root point it at this install; PATH is
   //    augmented by spawn_process so the npx shebang resolves node.
   const handle = await spawn({
-    cmd: "npx",
+    program: "npx",
     args: [
       "-y",
       `--package=${HQ_CLOUD_PACKAGE}`,
@@ -92,6 +93,7 @@ export async function startInitialCloudSync(
     ],
     cwd: installPath,
     env: { HQ_ROOT: installPath },
+    installRoot: installPath,
   });
 
   return { personUid, handle };

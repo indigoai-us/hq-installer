@@ -3,11 +3,28 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
+import { readFile } from "node:fs/promises";
 import path from "path";
+import Handlebars from "handlebars";
 import pkg from "./package.json" with { type: "json" };
 
 export default defineConfig({
   plugins: [
+    {
+      name: "precompile-handlebars-templates",
+      async load(id) {
+        if (!id.endsWith(".hbs")) {
+          return null;
+        }
+
+        const content = await readFile(id, "utf8");
+        const spec = Handlebars.precompile(content);
+        return [
+          'import Handlebars from "handlebars/runtime";',
+          `export default Handlebars.template(${spec});`,
+        ].join("\n");
+      },
+    },
     react(),
     tailwindcss(),
     sentryVitePlugin({

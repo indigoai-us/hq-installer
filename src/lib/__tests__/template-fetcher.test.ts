@@ -495,7 +495,7 @@ describe("fetchAndExtract", () => {
   });
 
   // -------------------------------------------------------------------------
-  it("staging source: source override fetches /tarball/{ref} against override repo, returns ref as version", async () => {
+  it("staging source: source override downloads natively and returns ref as version", async () => {
     // When the App-menu "Use Staging Channel" toggle is on, the staging-channel
     // caller passes `source = { repo: 'indigoai-us/hq-core-staging', ref: 'main' }`.
     // The fetcher must:
@@ -507,8 +507,10 @@ describe("fetchAndExtract", () => {
       { name: "README.md", content: "from staging" },
     ]);
 
-    // Only one fetch call expected (no release lookup)
-    mockFetch.mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === "download_staging_tarball") return Array.from(tarGzBytes);
+      return undefined;
+    });
 
     const result = await fetchAndExtract(
       "/tmp/target",
@@ -519,11 +521,8 @@ describe("fetchAndExtract", () => {
     );
 
     expect(result.version).toBe("main");
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const url = mockFetch.mock.calls[0][0] as string;
-    expect(url).toBe(
-      "https://api.github.com/repos/indigoai-us/hq-core-staging/tarball/main",
-    );
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith("download_staging_tarball", undefined);
 
     const writePaths = mockWriteFile.mock.calls.map((c) => c[0]);
     expect(writePaths).toContain("/tmp/target/core.yaml");
@@ -531,15 +530,17 @@ describe("fetchAndExtract", () => {
   });
 
   // -------------------------------------------------------------------------
-  it("staging source with authToken: passes Authorization: Bearer <token> on tarball fetch", async () => {
-    // hq-core-staging is a private repo. Anonymous tarball requests return
-    // 404 (private repos don't leak existence). The fetcher must forward the
-    // caller-supplied token as `Authorization: Bearer <token>` so the wizard
-    // can use `gh auth token` and still resolve the tarball.
+  it("staging source: downloads tarball natively so GitHub tokens stay out of the renderer", async () => {
+    // hq-core-staging is a private repo. The fetcher must not put a GitHub
+    // token into renderer-owned fetch headers; Rust owns the authenticated
+    // download and returns only tarball bytes.
     const tarGzBytes = buildGitHubTarGz([
-      { name: "core.yaml", content: "auth ok" },
+      { name: "core.yaml", content: "native auth ok" },
     ]);
-    mockFetch.mockResolvedValueOnce(mockTarGzResponse(tarGzBytes));
+    mockInvoke.mockImplementation(async (cmd) => {
+      if (cmd === "download_staging_tarball") return Array.from(tarGzBytes);
+      return undefined;
+    });
 
     await fetchAndExtract(
       "/tmp/target",
@@ -549,16 +550,14 @@ describe("fetchAndExtract", () => {
       {
         repo: "indigoai-us/hq-core-staging",
         ref: "main",
-        authToken: "ghp_TEST_TOKEN",
       },
     );
 
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const init = mockFetch.mock.calls[0][1] as RequestInit | undefined;
-    const headers = (init?.headers ?? {}) as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer ghp_TEST_TOKEN");
-    // Accept header still set so GitHub returns the documented release shape.
-    expect(headers.Accept).toBe("application/vnd.github+json");
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith("download_staging_tarball", undefined);
+    expect(mockWriteFile.mock.calls.map((c) => c[0])).toContain(
+      "/tmp/target/core.yaml",
+    );
   });
 
   // -------------------------------------------------------------------------

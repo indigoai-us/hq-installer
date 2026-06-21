@@ -273,6 +273,30 @@ describe("runExistingImport", () => {
       "Codex parity could not be applied automatically.",
     );
     expect(result.issues).toContain("Claude discovery did not complete.");
+    expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
+      args: {
+        program: "bash",
+        args: [
+          "core/scripts/convert-codex.sh",
+          "--apply",
+          `--root=${INSTALL_PATH}`,
+        ],
+        cwd: INSTALL_PATH,
+        installRoot: INSTALL_PATH,
+      },
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
+      args: {
+        program: "bash",
+        args: [
+          ".claude/skills/import-claude/scan.sh",
+          `--hq-root=${INSTALL_PATH}`,
+          "--output=workspace/imports/2026-06-18T12-34-56-000Z/report.json",
+        ],
+        cwd: INSTALL_PATH,
+        installRoot: INSTALL_PATH,
+      },
+    });
     expect(mockInvoke).toHaveBeenCalledWith("cancel_process", {
       handle: "handle-1",
     });

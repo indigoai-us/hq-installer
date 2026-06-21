@@ -429,9 +429,10 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
 
       expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
         args: {
-          cmd: "qmd",
+          program: "qmd",
           args: ["collection", "add", ".", "--name", "hq"],
           cwd: "C:\\Users\\alice\\hq",
+          installRoot: "C:\\Users\\alice\\hq",
         },
       });
     });
@@ -660,8 +661,9 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
             return "0123456789abcdef0123456789abcdef01234567";
           }
           if (command === "spawn_process") {
-            const cmd = (payload as { args?: { cmd?: string } })?.args?.cmd;
-            if (cmd === "qmd") return "__manual__qmd";
+            const program = (payload as { args?: { program?: string } })?.args
+              ?.program;
+            if (program === "qmd") return "__manual__qmd";
             return "handle-other";
           }
           if (command === "cancel_process") return true;
@@ -678,9 +680,10 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       await waitFor(() =>
         expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
           args: {
-            cmd: "qmd",
+            program: "qmd",
             args: ["collection", "add", ".", "--name", "hq"],
             cwd: "/tmp/hq",
+            installRoot: "/tmp/hq",
           },
         }),
       );
@@ -795,7 +798,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       const packSpawn = mockInvoke.mock.calls.findIndex(
         ([cmd, payload]) =>
           cmd === "spawn_process" &&
-          (payload as { args?: { cmd?: string } })?.args?.cmd === "hq",
+          (payload as { args?: { program?: string } })?.args?.program === "hq",
       );
       const packOrder = mockInvoke.mock.invocationCallOrder[packSpawn];
       expect(depsOrder).toBeLessThan(syncOrder);
@@ -860,7 +863,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       const qmdSpawn = mockInvoke.mock.calls.findIndex(
         ([cmd, payload]) =>
           cmd === "spawn_process" &&
-          (payload as { args?: { cmd?: string } })?.args?.cmd === "qmd",
+          (payload as { args?: { program?: string } })?.args?.program === "qmd",
       );
       const indexingOrder = mockInvoke.mock.invocationCallOrder[qmdSpawn];
 
@@ -943,9 +946,10 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       for (const pack of PACKS) {
         expect(mockInvoke).toHaveBeenCalledWith("spawn_process", {
           args: {
-            cmd: "hq",
+            program: "hq",
             args: ["install", pack.source, "--allow-hooks"],
             cwd: "/tmp/hq",
+            installRoot: "/tmp/hq",
           },
         });
       }
@@ -953,7 +957,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       const npxCalls = mockInvoke.mock.calls.filter(
         ([cmd, payload]) =>
           cmd === "spawn_process" &&
-          (payload as { args?: { cmd?: string } })?.args?.cmd === "npx",
+          (payload as { args?: { program?: string } })?.args?.program === "npx",
       );
       expect(npxCalls.length).toBe(0);
     });
@@ -986,8 +990,9 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
             return "0123456789abcdef0123456789abcdef01234567";
           }
           if (command === "spawn_process") {
-            const cmd = (payload as { args?: { cmd?: string } })?.args?.cmd;
-            if (cmd === "hq") throw new Error("hq install failed");
+            const program = (payload as { args?: { program?: string } })?.args
+              ?.program;
+            if (program === "hq") throw new Error("hq install failed");
             return `handle-${++counter}`;
           }
           if (command === "install_menubar_app") {
@@ -1025,7 +1030,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       const installCalls = mockInvoke.mock.calls.filter(
         ([cmd, payload]) =>
           cmd === "spawn_process" &&
-          (payload as { args?: { cmd?: string } })?.args?.cmd === "hq",
+          (payload as { args?: { program?: string } })?.args?.program === "hq",
       );
       expect(installCalls.length).toBe(0);
       expect(mockRecordPacks).not.toHaveBeenCalled();

@@ -30,7 +30,7 @@ describe("startInitialCloudSync", () => {
 
     expect(spawn).toHaveBeenCalledTimes(1);
     const arg = spawn.mock.calls[0][0];
-    expect(arg.cmd).toBe("npx");
+    expect(arg.program).toBe("npx");
     expect(arg.args).toEqual([
       "-y",
       `--package=${HQ_CLOUD_PACKAGE}`,
@@ -45,6 +45,7 @@ describe("startInitialCloudSync", () => {
     ]);
     expect(arg.env).toEqual({ HQ_ROOT: "/home/u/hq" });
     expect(arg.cwd).toBe("/home/u/hq");
+    expect(arg.installRoot).toBe("/home/u/hq");
 
     expect(res).toEqual({ personUid: "prs_1", handle: "handle-1" });
   });
