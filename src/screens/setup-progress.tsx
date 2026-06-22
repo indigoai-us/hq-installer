@@ -62,7 +62,11 @@ import { runExistingImport } from "@/lib/import-existing";
 import { writeInstallTextFile } from "@/lib/install-fs";
 import { markSetupStepCompleted } from "@/lib/wizard-router";
 import { invokeWithTimeout } from "@/lib/invoke-timeout";
-import { SETUP_IPC_TIMEOUT_MS, SETUP_STAGE_SKIP_MS } from "@/lib/timeouts";
+import {
+  SETUP_IPC_TIMEOUT_MS,
+  SETUP_STAGE_SKIP_MS,
+  SETUP_STAGE_SKIP_LONG_MS,
+} from "@/lib/timeouts";
 
 // ---------------------------------------------------------------------------
 // Stage model
@@ -1180,9 +1184,33 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
   const settledCount = stages.filter(
     (s) => s.status === "ok" || s.status === "failed",
   ).length;
-  const percent = Math.round((settledCount / STAGE_ORDER.length) * 100);
 
   const activeStage = stages.find((s) => s.status === "running");
+  const activeStageId = activeStage?.id;
+
+  // Creep: while a stage runs, ease the bar a little toward — but never
+  // reaching — the next stage's milestone, so long stages (deps, HQ Sync) still
+  // look like they're moving. It snaps to the milestone when the stage settles
+  // and resets for the next one.
+  const [stageCreep, setStageCreep] = useState(0);
+  useEffect(() => {
+    setStageCreep(0);
+    if (allDone || !activeStageId) return;
+    const id = window.setInterval(() => {
+      setStageCreep((c) => c + (0.92 - c) * 0.14);
+    }, 1200);
+    return () => window.clearInterval(id);
+  }, [activeStageId, allDone]);
+
+  const stageBase = settledCount / STAGE_ORDER.length;
+  const stageNext =
+    !allDone && activeStageId !== undefined
+      ? (settledCount + 1) / STAGE_ORDER.length
+      : stageBase;
+  const percent = allDone
+    ? 100
+    : Math.round((stageBase + (stageNext - stageBase) * stageCreep) * 100);
+
   const statusText = allDone
     ? "All set. Continuing…"
     : activeStage
@@ -1195,13 +1223,16 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
     activeStage !== undefined &&
     skipReadyStage === activeStage.id;
 
-  const activeStageId = activeStage?.id;
   useEffect(() => {
     setSkipReadyStage(null);
     if (allDone || !activeStageId) return;
+    const skipMs =
+      activeStageId === "deps" || activeStageId === "menubar"
+        ? SETUP_STAGE_SKIP_LONG_MS
+        : SETUP_STAGE_SKIP_MS;
     const timeout = window.setTimeout(() => {
       setSkipReadyStage(activeStageId);
-    }, SETUP_STAGE_SKIP_MS);
+    }, skipMs);
     return () => window.clearTimeout(timeout);
   }, [activeStageId, allDone]);
 

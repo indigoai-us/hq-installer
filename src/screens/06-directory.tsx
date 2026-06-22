@@ -122,6 +122,9 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
   const [downloadStartedAt, setDownloadStartedAt] = useState<number | null>(null);
   const [lastProgressAt, setLastProgressAt] = useState<number | null>(null);
   const [downloadNow, setDownloadNow] = useState(() => Date.now());
+  // Eases the Install bar forward while the (often content-length-less) template
+  // download and the extraction after it run, so the bar never sits frozen.
+  const [installCreep, setInstallCreep] = useState(0);
   const [busy, setBusy] = useState(false);
   const [currentPath, setCurrentPath] = useState("");
 
@@ -492,6 +495,19 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
     return () => window.clearInterval(interval);
   }, [downloadInFlight]);
 
+  // Ease the Install bar forward while the template download + extraction run.
+  // GitHub tarballs are chunked (no content-length), so the real percent is
+  // often unknown; the creep keeps the bar moving toward — but never reaching —
+  // completion, mirroring the Setup-stage creep.
+  useEffect(() => {
+    if (phase !== "installing") return;
+    setInstallCreep(0.06);
+    const interval = window.setInterval(() => {
+      setInstallCreep((c) => c + (0.9 - c) * 0.1);
+    }, 900);
+    return () => window.clearInterval(interval);
+  }, [phase]);
+
   async function handleChooseDifferentFolder() {
     controllerRef.current?.abort();
     setBusy(true);
@@ -621,11 +637,15 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
 
   // ── Installing (downloading + extracting the scaffold) ─────────────────
   if (phase === "installing") {
-    const pct =
+    const downloadComplete = total !== null && total > 0 && downloaded >= total;
+    const realPct =
       total && total > 0
         ? Math.min(100, Math.round((downloaded / total) * 100))
         : null;
-    const downloadComplete = total !== null && total > 0 && downloaded >= total;
+    const creepPct = Math.round(installCreep * 100);
+    // Real percent when the server gave a content-length; otherwise the creep
+    // keeps the bar visibly moving instead of frozen at a static fill.
+    const pct = downloadComplete ? 100 : (realPct ?? creepPct);
     const stalled =
       downloadInFlight &&
       !downloadComplete &&
@@ -655,17 +675,17 @@ export function DirectoryPicker({ onNext }: DirectoryPickerProps) {
             className="h-2 w-full overflow-hidden rounded-full bg-white/10"
             role="progressbar"
             aria-label="Installing HQ"
-            aria-valuenow={pct ?? undefined}
+            aria-valuenow={pct}
             aria-valuemin={0}
             aria-valuemax={100}
           >
             <div
               className="h-full rounded-full bg-white transition-[width] duration-300"
-              style={{ width: pct !== null ? `${pct}%` : "33%" }}
+              style={{ width: `${pct}%` }}
             />
           </div>
           <span className="text-xs text-zinc-400">
-            {pct !== null ? `${pct}%` : "Preparing…"}
+            {realPct !== null ? `${pct}%` : "Downloading…"}
           </span>
         </div>
 
