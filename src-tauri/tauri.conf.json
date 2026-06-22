@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "hq-installer",
-  "version": "0.10.0",
+  "version": "0.12.0",
   "identifier": "ai.indigo.hq-installer",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -37,7 +37,7 @@
     "createUpdaterArtifacts": false,
     "publisher": "Indigo AI",
     "shortDescription": "HQ native Windows installer wizard",
-    "longDescription": "Guided wizard to install HQ on Windows: AWS Cognito auth, dep installation via winget, repository clone, and Claude Code launch — all from a native MSI/NSIS bundle.",
+    "longDescription": "Guided wizard to install HQ on Windows: AWS Cognito auth, dep installation via winget, repository clone, and Claude Code launch \u2014 all from a native MSI/NSIS bundle.",
     "category": "DeveloperTool",
     "copyright": "Copyright (c) Indigo AI",
     "icon": [
