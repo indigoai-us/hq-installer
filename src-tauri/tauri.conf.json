@@ -34,7 +34,7 @@
       "msi",
       "nsis"
     ],
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "publisher": "Indigo AI",
     "shortDescription": "HQ native Windows installer wizard",
     "longDescription": "Guided wizard to install HQ on Windows: AWS Cognito auth, dep installation via winget, repository clone, and Claude Code launch — all from a native MSI/NSIS bundle.",
@@ -84,12 +84,6 @@
     }
   },
   "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYwQ0VBRkNEREU0RUM2NEEKUldSS3hrN2V6YS9PWUlDZE10R3Rkek1tNVk0SmtrZ0pZcGk1MVFBeXVZRHBVL1R6UVRCMVhJeHoK",
-      "endpoints": [
-        "https://github.com/indigoai-us/hq-installer/releases/latest/download/latest.json"
-      ]
-    },
     "fs": {
       "requireLiteralLeadingDot": true
     }
