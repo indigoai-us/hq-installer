@@ -40,6 +40,20 @@ function invokeAlwaysOk() {
   });
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushPromises() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -127,17 +141,16 @@ describe("runDepsInstall() — core-vs-optional partition", () => {
   it("sets allRequiredOk = false when a required dep fails", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "check_dep") return Promise.resolve({ installed: false });
-      // Fail node install — node is required
-      if (cmd === "install_node") return Promise.reject(new Error("Install failed"));
+      if (cmd === "install_git") return Promise.reject(new Error("Install failed"));
       return Promise.resolve(undefined);
     });
 
     const summary = await runDepsInstall();
     expect(summary.allRequiredOk).toBe(false);
 
-    const nodeResult = summary.results.find((r) => r.id === "node");
-    expect(nodeResult?.status).toBe("failed");
-    expect(nodeResult?.error).toBeTruthy();
+    const gitResult = summary.results.find((r) => r.id === "git");
+    expect(gitResult?.status).toBe("failed");
+    expect(gitResult?.error).toBeTruthy();
   });
 
   it("a failed optional dep does not affect allRequiredOk", async () => {
@@ -167,6 +180,37 @@ describe("runDepsInstall() — core-vs-optional partition", () => {
 
     expect(qmd?.status).toBe("failed");
     expect(hqCli?.status).toBe("failed");
+    expect(qmd?.error).toContain("Prerequisite not installed: node");
+    expect(hqCli?.error).toContain("Prerequisite not installed: node");
+  });
+
+  it("dispatches independent required deps concurrently before node dependents", async () => {
+    const nodeInstall = deferred();
+    const calls: string[] = [];
+
+    mockInvoke.mockImplementation((cmd: string) => {
+      calls.push(cmd);
+      if (cmd === "check_dep") return Promise.resolve({ installed: false });
+      if (cmd === "install_node") return nodeInstall.promise;
+      return Promise.resolve(undefined);
+    });
+
+    const summaryPromise = runDepsInstall();
+    await flushPromises();
+    await flushPromises();
+
+    expect(calls).toContain("install_node");
+    expect(calls).toContain("install_git");
+    expect(calls).toContain("install_yq");
+    expect(calls).not.toContain("install_qmd");
+    expect(calls).not.toContain("install_hq_cli");
+
+    nodeInstall.resolve();
+    const summary = await summaryPromise;
+
+    expect(calls).toContain("install_qmd");
+    expect(calls).toContain("install_hq_cli");
+    expect(summary.allRequiredOk).toBe(true);
   });
 
   it("skips install_cmd when dep is already installed (check_dep returns installed: true)", async () => {
