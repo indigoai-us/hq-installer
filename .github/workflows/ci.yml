@@ -29,6 +29,21 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+      - run: pnpm coverage
+      - name: Coverage summary
+        run: |
+          node <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const { readFileSync } = require("node:fs");
+          const summary = JSON.parse(readFileSync("coverage/coverage-summary.json", "utf8")).total;
+          console.log("## Coverage summary");
+          console.log("");
+          console.log("| Metric | % | Covered | Total |");
+          console.log("| --- | ---: | ---: | ---: |");
+          for (const metric of ["lines", "statements", "functions", "branches"]) {
+            const item = summary[metric];
+            console.log(`| ${metric} | ${item.pct} | ${item.covered} | ${item.total} |`);
+          }
+          NODE
       - run: pnpm exec vitest run --dir scripts --environment node
 
   e2e:
