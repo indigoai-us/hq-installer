@@ -8,7 +8,7 @@ import {
   __resetWizardRouterCompletionForTests,
   createWizardRouter,
 } from "@/lib/wizard-router";
-import { SETUP_STAGE_SKIP_MS } from "@/lib/timeouts";
+import { SETUP_STAGE_SKIP_LONG_MS } from "@/lib/timeouts";
 
 // ---------------------------------------------------------------------------
 // SetupProgress orchestrator tests — US-004
@@ -594,7 +594,7 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
       );
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(SETUP_STAGE_SKIP_MS);
+        await vi.advanceTimersByTimeAsync(SETUP_STAGE_SKIP_LONG_MS);
       });
 
       expect(

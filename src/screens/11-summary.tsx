@@ -603,18 +603,18 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           )
         )}
         {aiTools?.any === false && (
-          <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={handleCopyCommand}
-              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
+              className="text-sm px-4 py-2.5 rounded-full bg-white/10 text-zinc-100 hover:bg-white/20 transition-colors"
             >
               {commandCopied ? "Copied" : "Copy command"}
             </button>
             <button
               type="button"
               onClick={handleDownloadClaude}
-              className="text-xs text-zinc-400 underline underline-offset-2 hover:text-white transition-colors"
+              className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors"
             >
               Download Claude
             </button>
