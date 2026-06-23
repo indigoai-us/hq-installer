@@ -603,6 +603,67 @@ pub fn launch_claude_desktop() -> Result<(), String> {
     Ok(())
 }
 
+/// Launch the Codex Desktop macOS app via `open -a Codex`.
+///
+/// Like Claude Desktop, Codex Desktop has no documented URL scheme for
+/// "open this folder", so the frontend pairs this launch with a copy-able
+/// install path the user selects inside Codex. Frontend gates this behind
+/// the `codex_desktop` flag from `check_ai_tools` so we don't surface the
+/// "Unable to find application" error for users without Codex installed.
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn launch_codex_desktop() -> Result<(), String> {
+    let output = Command::new("open")
+        .arg("-a")
+        .arg("Codex")
+        .output()
+        .map_err(|e| format!("Failed to spawn `open`: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "open -a Codex failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Launch the Codex Desktop Windows app through ShellExecuteW.
+///
+/// Resolves the Codex executable under `%LOCALAPPDATA%\Programs\Codex\`
+/// (mirrors `ai_tools::codex_desktop_installed`). If nothing resolves,
+/// returns Err so the wizard can fall back to the copy-command CTA.
+#[cfg(windows)]
+#[tauri::command]
+pub fn launch_codex_desktop() -> Result<(), String> {
+    let target = codex_desktop_candidates()
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| {
+            "Codex Desktop is not installed (no Codex.exe at the known install \
+             locations)."
+                .to_string()
+        })?;
+
+    shell_execute_open_path(&target)
+}
+
+/// Candidate Codex Desktop install paths on Windows. Mirrors the probe in
+/// `ai_tools::codex_desktop_installed` so launch and detection stay aligned.
+#[cfg(windows)]
+fn codex_desktop_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let base = PathBuf::from(local).join("Programs").join("Codex");
+        paths.push(base.join("Codex.exe"));
+        paths.push(base.join("codex.exe"));
+    }
+    paths
+}
+
 /// Launch the Claude Desktop Windows app through ShellExecuteW.
 ///
 /// Prefers the registry-resolved `claude://` handler exe (any install

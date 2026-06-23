@@ -1,7 +1,11 @@
 // 11-summary.tsx — US-018 (revised 2026-04-29)
 // Final summary screen — supported AI coding tools gate the launch CTA.
-// Claude Desktop is preferred when present; otherwise Claude Code (Terminal)
-// is offered as the launch path.
+//
+// Launch CTA precedence (first match wins):
+//   1. Claude Desktop  — deep-link into a /setup Claude Code session.
+//   2. Codex Desktop   — preferred over the Claude CLI; launches the app.
+//   3. Claude Code CLI — open Claude Code in Terminal.
+//   4. Other CLI tool  — copy the ready-to-run command.
 //
 // Branching:
 //   - Any supported AI tool installed → launch CTA.
@@ -75,6 +79,7 @@ export interface SummaryProps {
 export function Summary({ wizardState, onLaunch }: SummaryProps) {
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchingDesktop, setLaunchingDesktop] = useState(false);
+  const [launchingCodexDesktop, setLaunchingCodexDesktop] = useState(false);
   const [launchingCode, setLaunchingCode] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
   const [commandCopied, setCommandCopied] = useState(false);
@@ -237,6 +242,39 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
     onLaunch?.();
   }
 
+  async function handleLaunchCodexDesktop() {
+    setLaunchError(null);
+    setLaunchingCodexDesktop(true);
+    try {
+      // Codex Desktop has no folder deep-link, so we just bring the app to
+      // the front and pair this with the copy-able HQ path below — same
+      // pattern as Claude Desktop's launch.
+      await invoke("launch_codex_desktop");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLaunchError(`Couldn't open Codex Desktop: ${msg}`);
+      // If Codex Desktop turns out not to be installed, drop it from the
+      // detected set so the UI falls back to the next-best launch path.
+      if (/Unable to find application|not installed/i.test(msg)) {
+        setAiTools((previous) => {
+          const base = previous ?? NO_AI_TOOLS;
+          const next = { ...base, codex_desktop: false };
+          return {
+            ...next,
+            any:
+              next.claude_cli ||
+              next.claude_desktop ||
+              next.codex_cli ||
+              next.grok_cli,
+          };
+        });
+      }
+    } finally {
+      setLaunchingCodexDesktop(false);
+    }
+    onLaunch?.();
+  }
+
   async function handleDownloadClaude() {
     setLaunchError(null);
     try {
@@ -310,6 +348,9 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
     installerImport.totalClaudeArtifacts > 0;
   const aiToolsDetected = aiTools?.any === true;
   const claudeDesktopAvailable = aiTools?.claude_desktop === true;
+  // Codex Desktop is preferred over the Claude CLI for the launch CTA, so it
+  // ranks just below Claude Desktop and above any terminal/CLI path.
+  const codexDesktopAvailable = aiTools?.codex_desktop === true;
   const claudeCliAvailable = aiTools?.claude_cli === true;
   const primaryCliTool = primaryCli(aiTools);
   const nonClaudeToolName = primaryNonClaudeToolName(aiTools);
@@ -459,32 +500,60 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           </ol>
         )}
 
-        {aiToolsDetected && !claudeDesktopAvailable && claudeCliAvailable && (
-          <div className="flex flex-col gap-2 text-sm text-zinc-300">
-            <p>Open Claude Code in Terminal from your HQ folder:</p>
-            <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
-              <span className="text-xs font-mono text-zinc-200 break-all flex-1">
-                {displayInstallPath}
-              </span>
-              <button
-                type="button"
-                onClick={handleCopyPath}
-                disabled={!resolvedInstallPath}
-                className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors disabled:opacity-40"
-              >
-                {pathCopied ? "Copied" : "Copy"}
-              </button>
-            </div>
-          </div>
+        {aiToolsDetected && !claudeDesktopAvailable && codexDesktopAvailable && (
+          <ol className="flex flex-col gap-2 text-sm text-zinc-300 list-decimal list-inside">
+            <li>Launch Codex Desktop.</li>
+            <li>
+              Open your HQ folder inside Codex:
+              <div className="mt-2 flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
+                <span className="text-xs font-mono text-zinc-200 break-all flex-1">
+                  {displayInstallPath}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyPath}
+                  disabled={!resolvedInstallPath}
+                  className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors disabled:opacity-40"
+                >
+                  {pathCopied ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </li>
+          </ol>
         )}
 
-        {aiToolsDetected && !claudeDesktopAvailable && !claudeCliAvailable && (
-          <p className="text-sm text-zinc-300">
-            {nonClaudeToolName
-              ? `${nonClaudeToolName} is installed. Copy the command above and run it in Terminal from your HQ folder.`
-              : "A supported AI tool is installed. Use the folder and command above to open HQ."}
-          </p>
-        )}
+        {aiToolsDetected &&
+          !claudeDesktopAvailable &&
+          !codexDesktopAvailable &&
+          claudeCliAvailable && (
+            <div className="flex flex-col gap-2 text-sm text-zinc-300">
+              <p>Open Claude Code in Terminal from your HQ folder:</p>
+              <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
+                <span className="text-xs font-mono text-zinc-200 break-all flex-1">
+                  {displayInstallPath}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyPath}
+                  disabled={!resolvedInstallPath}
+                  className="text-xs px-2 py-1 rounded-md bg-white/10 text-zinc-200 hover:bg-white/20 transition-colors disabled:opacity-40"
+                >
+                  {pathCopied ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          )}
+
+        {aiToolsDetected &&
+          !claudeDesktopAvailable &&
+          !codexDesktopAvailable &&
+          !claudeCliAvailable && (
+            <p className="text-sm text-zinc-300">
+              {nonClaudeToolName
+                ? `${nonClaudeToolName} is installed. Copy the command above and run it in Terminal from your HQ folder.`
+                : "A supported AI tool is installed. Use the folder and command above to open HQ."}
+            </p>
+          )}
 
         {claudeDesktopAvailable && (
           <p className="text-xs text-zinc-500">
@@ -578,7 +647,17 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
             {launchingDesktop ? "Opening…" : "Launch Claude Desktop"}
           </button>
         )}
-        {aiToolsDetected && !claudeDesktopAvailable && (
+        {aiToolsDetected && !claudeDesktopAvailable && codexDesktopAvailable && (
+          <button
+            type="button"
+            onClick={handleLaunchCodexDesktop}
+            disabled={launchingCodexDesktop}
+            className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {launchingCodexDesktop ? "Opening…" : "Launch Codex Desktop"}
+          </button>
+        )}
+        {aiToolsDetected && !claudeDesktopAvailable && !codexDesktopAvailable && (
           claudeCliAvailable ? (
             <button
               type="button"
