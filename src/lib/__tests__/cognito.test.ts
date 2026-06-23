@@ -456,10 +456,14 @@ describe("refreshSession", () => {
 describe("shared token file", () => {
   const tokenFilePath = `${FAKE_HOME}/.hq/cognito-tokens.json`;
 
-  it("storeTokens writes an access-token-only handoff with canonical schema", async () => {
+  it("storeTokens writes the full token set so HQ Sync can read the session", async () => {
+    // HQ Sync's token parser requires refreshToken; an access-token-only
+    // handoff fails to parse there and leaves the user signed out. The shared
+    // file must carry the complete set (access + id + refresh + expiry).
+    const idToken = makeIdToken("sub-shared", "shared@example.com");
     const tokens = makeTokens({
       accessToken: "acc-shared",
-      idToken: makeIdToken("sub-shared", "shared@example.com"),
+      idToken,
       refreshToken: "ref-shared",
       expiresAt: 1700000000000,
     });
@@ -469,11 +473,10 @@ describe("shared token file", () => {
     expect(fakeFs.has(tokenFilePath)).toBe(true);
     const written = JSON.parse(fakeFs.get(tokenFilePath)!);
     expect(written.accessToken).toBe("acc-shared");
+    expect(written.idToken).toBe(idToken);
+    expect(written.refreshToken).toBe("ref-shared");
     expect(written.expiresAt).toBe(1700000000000);
     expect(typeof written.expiresAt).toBe("number");
-    expect(written.tokenType).toBe("Bearer");
-    expect(written).not.toHaveProperty("refreshToken");
-    expect(written).not.toHaveProperty("idToken");
   });
 
   it("creates the handoff temp file with 0600 permissions", async () => {
