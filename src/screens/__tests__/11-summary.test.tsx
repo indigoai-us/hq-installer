@@ -362,15 +362,53 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(btn).not.toBeNull();
   });
 
-  it("renders a Codex-specific command when Codex CLI is installed", async () => {
+  it("offers a terminal launch for Codex CLI (and still shows the manual command)", async () => {
     setupInvokeMock({ tools: makeAiTools({ codex_cli: true }) });
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    // Codex CLI now gets the same one-click launcher Claude Code CLI has.
     const btn = await screen.findByRole("button", {
-      name: /copy codex command/i,
+      name: /open codex in terminal/i,
     });
     expect(btn).not.toBeNull();
-    expect(screen.getByText('cd "/Users/testuser/HQ" && codex')).toBeInTheDocument();
-    expect(screen.queryByText(/open claude code in terminal/i)).toBeNull();
+    // The always-visible manual command card still shows the Codex command.
+    expect(
+      screen.getByText('cd "/Users/testuser/HQ" && codex'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/open claude code in terminal/i),
+    ).toBeNull();
+  });
+
+  it("clicking 'Open Codex in Terminal' invokes launch_cli_in_terminal with tool codex", async () => {
+    setupInvokeMock({ tools: makeAiTools({ codex_cli: true }) });
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /open codex in terminal/i,
+    });
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("launch_cli_in_terminal", {
+        path: "/Users/testuser/HQ",
+        tool: "codex",
+      });
+    });
+  });
+
+  it("offers a terminal launch for Grok CLI with tool grok", async () => {
+    setupInvokeMock({ tools: makeAiTools({ grok_cli: true }) });
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /open grok in terminal/i,
+    });
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("launch_cli_in_terminal", {
+        path: "/Users/testuser/HQ",
+        tool: "grok",
+      });
+    });
   });
 
   // ── 3c. Codex Desktop CTA — preferred over the Claude CLI ────────────────

@@ -2,10 +2,10 @@
 // Final summary screen — supported AI coding tools gate the launch CTA.
 //
 // Launch CTA precedence (first match wins):
-//   1. Claude Desktop  — deep-link into a /setup Claude Code session.
-//   2. Codex Desktop   — preferred over the Claude CLI; launches the app.
-//   3. Claude Code CLI — open Claude Code in Terminal.
-//   4. Other CLI tool  — copy the ready-to-run command.
+//   1. Claude Desktop      — deep-link into a /setup Claude Code session.
+//   2. Codex Desktop       — preferred over any CLI; launches the app.
+//   3. CLI (Claude/Codex/Grok) — open the detected CLI in a Terminal.
+//   4. No launchable tool  — copy the ready-to-run command.
 //
 // Branching:
 //   - Any supported AI tool installed → launch CTA.
@@ -300,6 +300,28 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
     onLaunch?.();
   }
 
+  // Primary CLI launcher — opens a terminal at the HQ folder and runs whichever
+  // CLI was detected (Claude Code, Codex, or Grok). The backend validates the
+  // tool against a fixed allowlist before it reaches a shell.
+  async function handleLaunchCli() {
+    const tool = primaryCli(aiTools);
+    if (!tool || !resolvedInstallPath) return;
+    setLaunchError(null);
+    setLaunchingCode(true);
+    try {
+      await invoke("launch_cli_in_terminal", {
+        path: resolvedInstallPath,
+        tool,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLaunchError(`Couldn't open Terminal: ${msg}`);
+    } finally {
+      setLaunchingCode(false);
+    }
+    onLaunch?.();
+  }
+
   async function handleCopyPath() {
     if (!resolvedInstallPath) return;
     await copyText(resolvedInstallPath, setPathCopied);
@@ -351,8 +373,13 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
   // Codex Desktop is preferred over the Claude CLI for the launch CTA, so it
   // ranks just below Claude Desktop and above any terminal/CLI path.
   const codexDesktopAvailable = aiTools?.codex_desktop === true;
-  const claudeCliAvailable = aiTools?.claude_cli === true;
+  // Any terminal CLI (Claude Code, Codex, or Grok) gets a one-click
+  // "open in terminal" launcher, not just Claude Code.
   const primaryCliTool = primaryCli(aiTools);
+  const anyCliAvailable = primaryCliTool !== null;
+  const cliTerminalName = primaryCliTool
+    ? cliTerminalLabel(primaryCliTool)
+    : null;
   const nonClaudeToolName = primaryNonClaudeToolName(aiTools);
   const manualCommand = openCommandFor(resolvedInstallPath, aiTools);
   const displayInstallPath = resolvedInstallPath ?? "~/hq";
@@ -525,9 +552,9 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         {aiToolsDetected &&
           !claudeDesktopAvailable &&
           !codexDesktopAvailable &&
-          claudeCliAvailable && (
+          anyCliAvailable && (
             <div className="flex flex-col gap-2 text-sm text-zinc-300">
-              <p>Open Claude Code in Terminal from your HQ folder:</p>
+              <p>Open {cliTerminalName} in Terminal from your HQ folder:</p>
               <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
                 <span className="text-xs font-mono text-zinc-200 break-all flex-1">
                   {displayInstallPath}
@@ -547,7 +574,7 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
         {aiToolsDetected &&
           !claudeDesktopAvailable &&
           !codexDesktopAvailable &&
-          !claudeCliAvailable && (
+          !anyCliAvailable && (
             <p className="text-sm text-zinc-300">
               {nonClaudeToolName
                 ? `${nonClaudeToolName} is installed. Copy the command above and run it in Terminal from your HQ folder.`
@@ -658,14 +685,14 @@ export function Summary({ wizardState, onLaunch }: SummaryProps) {
           </button>
         )}
         {aiToolsDetected && !claudeDesktopAvailable && !codexDesktopAvailable && (
-          claudeCliAvailable ? (
+          anyCliAvailable ? (
             <button
               type="button"
-              onClick={handleLaunchClaudeCode}
+              onClick={handleLaunchCli}
               disabled={launchingCode || !resolvedInstallPath}
               className="px-6 py-2.5 rounded-full text-sm font-medium bg-white text-black hover:bg-zinc-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {launchingCode ? "Opening…" : "Open Claude Code in Terminal"}
+              {launchingCode ? "Opening…" : `Open ${cliTerminalName} in Terminal`}
             </button>
           ) : (
             <button
@@ -731,6 +758,14 @@ function primaryNonClaudeToolName(tools: AiTools | null): string | null {
 
 function toolDisplayName(tool: "claude" | "codex" | "grok"): string {
   if (tool === "claude") return "Claude";
+  if (tool === "codex") return "Codex";
+  return "Grok";
+}
+
+/** Label for the "Open … in Terminal" CTA. Claude's CLI is branded "Claude
+ *  Code", so it keeps that name; Codex and Grok use their plain names. */
+function cliTerminalLabel(tool: "claude" | "codex" | "grok"): string {
+  if (tool === "claude") return "Claude Code";
   if (tool === "codex") return "Codex";
   return "Grok";
 }

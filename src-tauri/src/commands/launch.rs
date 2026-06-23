@@ -279,6 +279,28 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 #[cfg(not(windows))]
 #[tauri::command]
 pub fn launch_claude_code(path: String) -> Result<(), String> {
+    spawn_cli_terminal_unix(&path, "claude")
+}
+
+/// Open a new Terminal window at `path` and auto-run a CLI coding tool.
+///
+/// `tool` is validated against a fixed allowlist (claude / codex / grok) via
+/// `cli_binary_for`, so the binary interpolated into the shell command can
+/// never be attacker-controlled. The path is shell-escaped the same way as
+/// `launch_claude_code`. Lets the final wizard screen give Codex CLI and
+/// Grok CLI the same one-click "open in terminal" launch Claude Code has.
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> {
+    let binary = cli_binary_for(&tool)?;
+    spawn_cli_terminal_unix(&path, binary)
+}
+
+/// Shared macOS terminal-launch helper. `binary` MUST come from a trusted
+/// source (a literal or `cli_binary_for`) — it is interpolated into the shell
+/// command without escaping.
+#[cfg(not(windows))]
+fn spawn_cli_terminal_unix(path: &str, binary: &str) -> Result<(), String> {
     // Shell-escape the path for safe inclusion inside an AppleScript
     // double-quoted string that will be interpreted by the shell.
     // AppleScript sees the literal string after its own quoting, so we only
@@ -286,7 +308,7 @@ pub fn launch_claude_code(path: String) -> Result<(), String> {
     let escaped_path = path.replace('\'', "'\\''");
 
     // Shell command run inside the new Terminal window.
-    let shell_cmd = format!("cd '{}' && claude", escaped_path);
+    let shell_cmd = format!("cd '{}' && {}", escaped_path, binary);
 
     // AppleScript needs double quotes around the shell command. Escape any
     // double quotes and backslashes the shell_cmd might contain to be safe.
@@ -318,6 +340,17 @@ end tell"#,
     Ok(())
 }
 
+/// Map a frontend tool identifier to the CLI binary we launch. The allowlist
+/// is the security boundary: only these three values ever reach a shell.
+fn cli_binary_for(tool: &str) -> Result<&'static str, String> {
+    match tool {
+        "claude" => Ok("claude"),
+        "codex" => Ok("codex"),
+        "grok" => Ok("grok"),
+        other => Err(format!("Unsupported CLI tool: {other}")),
+    }
+}
+
 /// Open a Windows Terminal window at `path` and auto-run `claude`.
 ///
 /// Tries `wt.exe -d '<path>' powershell -NoExit -Command claude` first.
@@ -331,22 +364,40 @@ end tell"#,
 #[cfg(windows)]
 #[tauri::command]
 pub fn launch_claude_code(path: String) -> Result<(), String> {
-    let escaped = powershell_single_quote_escape(&path);
+    spawn_cli_terminal_windows(&path, "claude")
+}
+
+/// Open a Windows Terminal (or PowerShell) window at `path` and auto-run a CLI
+/// coding tool. `tool` is validated against the `cli_binary_for` allowlist so
+/// the launched binary can never be attacker-controlled.
+#[cfg(windows)]
+#[tauri::command]
+pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> {
+    let binary = cli_binary_for(&tool)?;
+    spawn_cli_terminal_windows(&path, binary)
+}
+
+/// Shared Windows terminal-launch helper. `binary` MUST come from a trusted
+/// source (a literal or `cli_binary_for`) — it is passed verbatim as the
+/// command to run in the new console.
+#[cfg(windows)]
+fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
+    let escaped = powershell_single_quote_escape(path);
 
     if let Ok(wt_path) = which::which("wt.exe").or_else(|_| which::which("wt")) {
-        // wt.exe -d '<path>' powershell -NoExit -Command claude
+        // wt.exe -d '<path>' powershell -NoExit -Command <binary>
         // The -d flag tells Windows Terminal to cd into the directory
         // before running the command — equivalent to mac's `osascript`
-        // do-script "cd <path> && claude" combo.
+        // do-script "cd <path> && <binary>" combo.
         Command::new(wt_path)
             .args([
                 "-d",
-                &path,
+                path,
                 "powershell.exe",
                 "-NoProfile",
                 "-NoExit",
                 "-Command",
-                "claude",
+                binary,
             ])
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
@@ -354,8 +405,8 @@ pub fn launch_claude_code(path: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to spawn Windows Terminal: {e}"))?;
     } else {
         // Plain PowerShell fallback.
-        // Set-Location -LiteralPath '<escaped>'; claude
-        let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; claude");
+        // Set-Location -LiteralPath '<escaped>'; <binary>
+        let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; {binary}");
         Command::new("powershell.exe")
             .args(["-NoProfile", "-NoExit", "-Command", &ps_cmd])
             .creation_flags(CREATE_NEW_CONSOLE)
