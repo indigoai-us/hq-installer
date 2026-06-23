@@ -92,7 +92,7 @@ const KC_SERVICE = "cognito";
 const KC_ACCOUNT = "tokens";
 
 // ---------------------------------------------------------------------------
-// Short-lived sync-runner handoff (~/.hq/cognito-tokens.json)
+// Session handoff to HQ Sync (~/.hq/cognito-tokens.json)
 // ---------------------------------------------------------------------------
 
 async function getHomeDirPath(): Promise<string> {
@@ -102,10 +102,17 @@ async function getHomeDirPath(): Promise<string> {
 const TOKEN_FILE_NAME = "cognito-tokens.json";
 const HQ_DIR_NAME = ".hq";
 
+// HQ Sync reads its entire signed-in state from this file and its token
+// parser REQUIRES `refreshToken` — a payload with only the access token
+// fails to parse, so Sync treats the user as signed out and re-prompts even
+// though the installer just signed them in. Write the full token set
+// (matching hq-sync's own `CognitoTokens` shape) so the login carries over
+// and Sync can silently refresh once the access token expires.
 interface SharedTokenFile {
   accessToken: string;
+  idToken: string;
+  refreshToken: string;
   expiresAt: number;
-  tokenType: "Bearer";
 }
 
 async function writeSharedTokenFile(tokens: CognitoTokens): Promise<boolean> {
@@ -122,8 +129,9 @@ async function writeSharedTokenFile(tokens: CognitoTokens): Promise<boolean> {
 
     const payload: SharedTokenFile = {
       accessToken: tokens.accessToken,
+      idToken: tokens.idToken,
+      refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
-      tokenType: "Bearer",
     };
 
     const bytes = new TextEncoder().encode(JSON.stringify(payload, null, 2));

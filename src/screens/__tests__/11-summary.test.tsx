@@ -362,15 +362,104 @@ describe("Summary screen (11-summary.tsx)", () => {
     expect(btn).not.toBeNull();
   });
 
-  it("renders a Codex-specific command when Codex CLI is installed", async () => {
+  it("offers a terminal launch for Codex CLI (and still shows the manual command)", async () => {
     setupInvokeMock({ tools: makeAiTools({ codex_cli: true }) });
     render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    // Codex CLI now gets the same one-click launcher Claude Code CLI has.
     const btn = await screen.findByRole("button", {
-      name: /copy codex command/i,
+      name: /open codex in terminal/i,
     });
     expect(btn).not.toBeNull();
-    expect(screen.getByText('cd "/Users/testuser/HQ" && codex')).toBeInTheDocument();
-    expect(screen.queryByText(/open claude code in terminal/i)).toBeNull();
+    // The always-visible manual command card still shows the Codex command.
+    expect(
+      screen.getByText('cd "/Users/testuser/HQ" && codex'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/open claude code in terminal/i),
+    ).toBeNull();
+  });
+
+  it("clicking 'Open Codex in Terminal' invokes launch_cli_in_terminal with tool codex", async () => {
+    setupInvokeMock({ tools: makeAiTools({ codex_cli: true }) });
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /open codex in terminal/i,
+    });
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("launch_cli_in_terminal", {
+        path: "/Users/testuser/HQ",
+        tool: "codex",
+      });
+    });
+  });
+
+  it("offers a terminal launch for Grok CLI with tool grok", async () => {
+    setupInvokeMock({ tools: makeAiTools({ grok_cli: true }) });
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /open grok in terminal/i,
+    });
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("launch_cli_in_terminal", {
+        path: "/Users/testuser/HQ",
+        tool: "grok",
+      });
+    });
+  });
+
+  // ── 3c. Codex Desktop CTA — preferred over the Claude CLI ────────────────
+
+  it("renders a 'Launch Codex Desktop' button when Codex Desktop is installed (no Claude Desktop)", async () => {
+    setupInvokeMock({ tools: makeAiTools({ codex_desktop: true }) });
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /launch codex desktop/i,
+    });
+    expect(btn).not.toBeNull();
+  });
+
+  it("clicking 'Launch Codex Desktop' invokes launch_codex_desktop", async () => {
+    setupInvokeMock({ tools: makeAiTools({ codex_desktop: true }) });
+    const user = userEvent.setup();
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    const btn = await screen.findByRole("button", {
+      name: /launch codex desktop/i,
+    });
+    await user.click(btn);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("launch_codex_desktop");
+    });
+  });
+
+  it("prefers Codex Desktop over the Claude CLI for the launch CTA", async () => {
+    setupInvokeMock({
+      tools: makeAiTools({ codex_desktop: true, claude_cli: true }),
+    });
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    expect(
+      await screen.findByRole("button", { name: /launch codex desktop/i }),
+    ).not.toBeNull();
+    // The Claude-CLI terminal CTA must not appear while Codex Desktop wins.
+    expect(
+      screen.queryByRole("button", { name: /open claude code in terminal/i }),
+    ).toBeNull();
+  });
+
+  it("still prefers Claude Desktop over Codex Desktop", async () => {
+    setupInvokeMock({
+      tools: makeAiTools({ claude_desktop: true, codex_desktop: true }),
+    });
+    render(<Summary wizardState={WIZARD_STATE_FIXTURE} />);
+    expect(
+      await screen.findByRole("button", { name: /launch claude desktop/i }),
+    ).not.toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /launch codex desktop/i }),
+    ).toBeNull();
   });
 
   it("reveals the install folder from the always-visible manual path", async () => {
