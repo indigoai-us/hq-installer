@@ -26,6 +26,8 @@ export const WIZARD_STEPS: WizardStep[] = [
   { index: 5, id: "done", label: "Done" },
 ];
 
+export const JOIN_STEP_ID = "join";
+
 const SETUP_STEP_INDEX = 4;
 const completedSteps = new Set<number>();
 
@@ -42,6 +44,27 @@ export function __resetWizardRouterCompletionForTests(): void {
  *  backwards would drop the user behind the auth gate and surface a re-login
  *  prompt they've already handled. */
 export const AUTH_GATED_STEPS: number[] = [SETUP_STEP_INDEX];
+
+export function isJoinActive(
+  state: Pick<WizardState, "joinSuggestion">,
+): boolean {
+  return state.joinSuggestion?.match === true;
+}
+
+export function buildVisibleSteps(joinActive: boolean): WizardStep[] {
+  const base = joinActive
+    ? WIZARD_STEPS.flatMap((step) =>
+        step.id === "done"
+          ? [
+              { index: 0, id: JOIN_STEP_ID, label: "Join" },
+              step,
+            ]
+          : [step],
+      )
+    : WIZARD_STEPS;
+
+  return base.map((step, idx) => ({ ...step, index: idx + 1 }));
+}
 
 /**
  * Per-step "is the user allowed to advance" check.
@@ -73,8 +96,6 @@ export function getStepValidity(
   }
 }
 
-const TOTAL_STEPS = WIZARD_STEPS.length;
-
 export interface WizardRouter {
   currentStep: number;
   next(): void;
@@ -93,7 +114,9 @@ export interface WizardRouter {
   canNavigateTo(target: number): boolean;
 }
 
-export function createWizardRouter(): WizardRouter {
+export function createWizardRouter(
+  getTotalSteps: () => number = () => WIZARD_STEPS.length,
+): WizardRouter {
   let current = 1;
 
   function isAuthGated(step: number): boolean {
@@ -110,7 +133,7 @@ export function createWizardRouter(): WizardRouter {
     },
 
     next() {
-      if (current < TOTAL_STEPS) {
+      if (current < getTotalSteps()) {
         current += 1;
       }
     },
@@ -126,17 +149,17 @@ export function createWizardRouter(): WizardRouter {
     },
 
     get canGoNext() {
-      return current < TOTAL_STEPS;
+      return current < getTotalSteps();
     },
 
     goTo(step: number) {
-      if (step >= 1 && step <= TOTAL_STEPS && !isCompletedGate(step)) {
+      if (step >= 1 && step <= getTotalSteps() && !isCompletedGate(step)) {
         current = step;
       }
     },
 
     canNavigateTo(target: number) {
-      if (target < 1 || target > TOTAL_STEPS) return false;
+      if (target < 1 || target > getTotalSteps()) return false;
       if (target === current) return false;
       if (isCompletedGate(target)) return false;
       // Block backward navigation that would cross an auth-gated step.

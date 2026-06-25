@@ -1,6 +1,8 @@
 // wizard-state.ts — US-014
 // In-memory singleton for wizard session data.
 
+import type { JoinSuggestion } from "./join-suggest";
+
 export interface TeamMetadata {
   teamId: string;
   companyId: string;
@@ -25,6 +27,10 @@ export interface WizardState {
    *  the starter project, and any user-supplied companies. Set by the Setup
    *  orchestrator's personalize stage; consumed by Summary. */
   personalized: boolean;
+  /** Best-effort server-side organization join offer. Null means not checked.
+   *  Set by the Setup orchestrator's personalize stage; consumed by the
+   *  conditional Join step. */
+  joinSuggestion: JoinSuggestion | null;
 }
 
 const state: WizardState = {
@@ -35,6 +41,7 @@ const state: WizardState = {
   gitName: null,
   gitEmail: null,
   personalized: false,
+  joinSuggestion: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -59,7 +66,17 @@ export function subscribeWizardState(fn: Listener): () => void {
 
 /** Return a frozen snapshot of the current wizard state. */
 export function getWizardState(): Readonly<WizardState> {
-  return Object.freeze({ ...state, team: state.team ? { ...state.team } : null });
+  return Object.freeze({
+    ...state,
+    team: state.team ? { ...state.team } : null,
+    joinSuggestion:
+      state.joinSuggestion?.match === true
+        ? {
+            match: true,
+            company: { ...state.joinSuggestion.company },
+          }
+        : state.joinSuggestion,
+  });
 }
 
 export function setTelemetryEnabled(enabled: boolean): void {
@@ -102,6 +119,13 @@ export function setPersonalized(value: boolean): void {
   notify();
 }
 
+/** Store the conditional join suggestion from the Setup orchestrator's
+ *  personalize stage; consumed by the Join step when it is active. */
+export function setJoinSuggestion(s: JoinSuggestion): void {
+  state.joinSuggestion = s.match ? { match: true, company: { ...s.company } } : s;
+  notify();
+}
+
 /** Reset all wizard state to initial defaults. */
 export function clearWizardState(): void {
   state.telemetryEnabled = true;
@@ -111,5 +135,6 @@ export function clearWizardState(): void {
   state.gitName = null;
   state.gitEmail = null;
   state.personalized = false;
+  state.joinSuggestion = null;
   notify();
 }

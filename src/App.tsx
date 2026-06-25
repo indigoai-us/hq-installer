@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { createWizardRouter, WIZARD_STEPS } from "@/lib/wizard-router";
+import {
+  buildVisibleSteps,
+  createWizardRouter,
+  isJoinActive,
+} from "@/lib/wizard-router";
 import { pingStep } from "@/lib/telemetry";
 import { WizardShell } from "@/components/WizardShell";
 import { ScreenSwitcher } from "@/components/ScreenSwitcher";
@@ -13,6 +17,7 @@ import { Welcome } from "@/screens/01-welcome";
 import { CognitoAuth } from "@/screens/02-cognito-auth";
 import { DirectoryPicker } from "@/screens/06-directory";
 import { SetupProgress } from "@/screens/setup-progress";
+import { JoinExistingCompany } from "@/screens/join-existing-company";
 import { Summary } from "@/screens/11-summary";
 import { AnotherInstanceRunning } from "@/screens/AnotherInstanceRunning";
 
@@ -56,7 +61,11 @@ function App() {
 }
 
 function WizardApp() {
-  const [router] = useState(() => createWizardRouter());
+  const [router] = useState(() =>
+    createWizardRouter(
+      () => buildVisibleSteps(isJoinActive(getWizardState())).length,
+    ),
+  );
   const [, forceRender] = useState(0);
   // High-water mark of steps the user has actually reached. Lets the sidebar
   // disable forward jumps to never-visited steps without preventing back-jumps
@@ -112,7 +121,9 @@ function WizardApp() {
   }
 
   const wizardState = getWizardState();
+  const steps = buildVisibleSteps(isJoinActive(wizardState));
   const { currentStep } = router;
+  const currentWizardStep = steps.find((s) => s.index === currentStep);
 
   // Step-funnel telemetry: one ping per step as it's reached. Anonymous by an
   // install-session id until sign-in, after which the personUid rides along and
@@ -120,7 +131,9 @@ function WizardApp() {
   // fully fire-and-forget so it never blocks the wizard.
   useEffect(() => {
     if (!getWizardState().telemetryEnabled) return;
-    const step = WIZARD_STEPS.find((s) => s.index === currentStep);
+    const step = buildVisibleSteps(isJoinActive(getWizardState())).find(
+      (s) => s.index === currentStep,
+    );
     if (!step) return;
     void pingStep({
       step: step.id,
@@ -131,10 +144,10 @@ function WizardApp() {
 
   // 5-step flow (US-005):
   //   1 Welcome → 2 Install (silent ~/hq) → 3 Sign In (Cognito provider) →
-  //   4 Setup (unified post-login progress) → 5 Done
+  //   4 Setup (unified post-login progress) → 5 Join (conditional) → Done
   function renderStep() {
-    switch (currentStep) {
-      case 1:
+    switch (currentWizardStep?.id) {
+      case "welcome":
         return (
           <Welcome
             onNext={handleNext}
@@ -145,18 +158,25 @@ function WizardApp() {
             }}
           />
         );
-      case 2:
+      case "install":
         return <DirectoryPicker onNext={handleNext} />;
-      case 3:
+      case "signin":
         return <CognitoAuth onNext={handleNext} />;
-      case 4:
+      case "setup":
         return (
           <SetupProgress
             installPath={wizardState.installPath ?? ""}
             onNext={handleNext}
           />
         );
-      case 5:
+      case "join":
+        return wizardState.joinSuggestion?.match === true ? (
+          <JoinExistingCompany
+            company={wizardState.joinSuggestion.company}
+            onNext={handleNext}
+          />
+        ) : null;
+      case "done":
         return <Summary wizardState={wizardState} onLaunch={handleLaunch} />;
       default:
         return null;
@@ -170,6 +190,7 @@ function WizardApp() {
         maxReachedStep={maxReachedStep}
         canNavigateTo={(step) => router.canNavigateTo(step) && step <= maxReachedStep}
         onStepClick={handleStepClick}
+        steps={steps}
       >
         <ScreenSwitcher stepKey={currentStep}>{renderStep()}</ScreenSwitcher>
       </WizardShell>

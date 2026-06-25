@@ -3,7 +3,7 @@
 // Doubles as the wizard navigation: completed/visited steps render as
 // buttons that jump back to that step (subject to AUTH_GATED_STEPS).
 
-import { WIZARD_STEPS } from "@/lib/wizard-router";
+import { WIZARD_STEPS, type WizardStep } from "@/lib/wizard-router";
 
 interface ProgressIndicatorProps {
   currentStep: number; // 1-based
@@ -15,6 +15,7 @@ interface ProgressIndicatorProps {
    *  rendering for tests/callers that don't pass nav handlers. */
   canNavigateTo?: (step: number) => boolean;
   onStepClick?: (step: number) => void;
+  steps?: WizardStep[];
 }
 
 export function ProgressIndicator({
@@ -22,12 +23,13 @@ export function ProgressIndicator({
   maxReachedStep,
   canNavigateTo,
   onStepClick,
+  steps = WIZARD_STEPS,
 }: ProgressIndicatorProps) {
   const reachedCap = maxReachedStep ?? currentStep;
 
   return (
     <ol className="flex flex-col gap-1 w-40">
-      {WIZARD_STEPS.map((step) => {
+      {steps.map((step) => {
         const isCurrent = step.index === currentStep;
         const isPast = step.index < currentStep;
         const isVisited = step.index <= reachedCap;
