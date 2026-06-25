@@ -4,10 +4,11 @@ import {
   setTelemetryEnabled,
   setTeam,
   setIsPersonal,
+  setJoinSuggestion,
   setPersonalized,
   clearWizardState,
-} from "../wizard-state.js";
-import type { TeamMetadata } from "../wizard-state.js";
+} from "../wizard-state";
+import type { TeamMetadata } from "../wizard-state";
 
 // ---------------------------------------------------------------------------
 // wizard-state unit tests — US-005 5-step contract
@@ -61,6 +62,11 @@ describe("wizard-state", () => {
     it("returns an object with personalized=false by default", () => {
       const state = getWizardState();
       expect(state.personalized).toBe(false);
+    });
+
+    it("returns an object with joinSuggestion=null by default", () => {
+      const state = getWizardState();
+      expect(state.joinSuggestion).toBeNull();
     });
 
     it("returns a consistent object on repeated calls (same reference or equal shape)", () => {
@@ -185,6 +191,25 @@ describe("wizard-state", () => {
   });
 
   // -------------------------------------------------------------------------
+  describe("setJoinSuggestion()", () => {
+    it("stores a positive join suggestion", () => {
+      setJoinSuggestion({
+        match: true,
+        company: { uid: "cmp_1", name: "Acme" },
+      });
+      expect(getWizardState().joinSuggestion).toEqual({
+        match: true,
+        company: { uid: "cmp_1", name: "Acme" },
+      });
+    });
+
+    it("stores a neutral no-match suggestion", () => {
+      setJoinSuggestion({ match: false });
+      expect(getWizardState().joinSuggestion).toEqual({ match: false });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe("clearWizardState()", () => {
     it("resets telemetryEnabled back to true after being set to false", () => {
       setTelemetryEnabled(false);
@@ -218,6 +243,15 @@ describe("wizard-state", () => {
       setPersonalized(true);
       clearWizardState();
       expect(getWizardState().personalized).toBe(false);
+    });
+
+    it("resets joinSuggestion back to null", () => {
+      setJoinSuggestion({
+        match: true,
+        company: { uid: "cmp_1", name: "Acme" },
+      });
+      clearWizardState();
+      expect(getWizardState().joinSuggestion).toBeNull();
     });
   });
 

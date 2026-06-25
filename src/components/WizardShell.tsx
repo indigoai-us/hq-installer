@@ -7,6 +7,7 @@ import React, { useCallback } from "react";
 import { ProgressIndicator } from "./ProgressIndicator";
 import { WizardFooterProvider } from "./WizardFooter";
 import { useFooterRef } from "./wizard-footer-context";
+import type { WizardStep } from "@/lib/wizard-router";
 
 function isTauri(): boolean {
   // Use truthiness check — `in` operator returns true even when the value is undefined,
@@ -21,6 +22,7 @@ interface WizardShellProps {
   maxReachedStep?: number;
   canNavigateTo?: (step: number) => boolean;
   onStepClick?: (step: number) => void;
+  steps?: WizardStep[];
 }
 
 export function WizardShell({
@@ -29,6 +31,7 @@ export function WizardShell({
   maxReachedStep,
   canNavigateTo,
   onStepClick,
+  steps,
 }: WizardShellProps) {
   const inTauri = isTauri();
 
@@ -39,6 +42,7 @@ export function WizardShell({
         maxReachedStep={maxReachedStep}
         canNavigateTo={canNavigateTo}
         onStepClick={onStepClick}
+        steps={steps}
         inTauri={inTauri}
       >
         {children}
@@ -53,6 +57,7 @@ function WizardShellInner({
   maxReachedStep,
   canNavigateTo,
   onStepClick,
+  steps,
   inTauri,
 }: WizardShellProps & { inTauri: boolean }) {
   const { setFooterRef } = useFooterRef();
@@ -87,6 +92,7 @@ function WizardShellInner({
               maxReachedStep={maxReachedStep}
               canNavigateTo={canNavigateTo}
               onStepClick={onStepClick}
+              steps={steps}
             />
           </aside>
 

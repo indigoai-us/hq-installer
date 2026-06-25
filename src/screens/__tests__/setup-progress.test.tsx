@@ -88,6 +88,10 @@ vi.mock("@/lib/personalize-writer", () => ({
   personalize: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/join-suggest", () => ({
+  fetchJoinSuggestion: vi.fn().mockResolvedValue({ match: false }),
+}));
+
 vi.mock("@/lib/cognito", () => ({
   getCurrentUser: vi.fn(),
 }));
@@ -106,9 +110,11 @@ vi.mock("@/lib/wizard-state", () => ({
     gitName: null,
     gitEmail: null,
     personalized: false,
+    joinSuggestion: null,
   })),
   setGitIdentity: vi.fn(),
   setIsPersonal: vi.fn(),
+  setJoinSuggestion: vi.fn(),
   setPersonalized: vi.fn(),
   setTeam: vi.fn(),
 }));

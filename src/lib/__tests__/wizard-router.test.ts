@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   createWizardRouter,
+  buildVisibleSteps,
   getStepValidity,
+  isJoinActive,
   WIZARD_STEPS,
   AUTH_GATED_STEPS,
-} from "../wizard-router.js";
-import type { WizardState } from "../wizard-state.js";
+} from "../wizard-router";
+import type { WizardState } from "../wizard-state";
 
 // Helper: produce a clean state with all required fields. Tests override only
 // what they care about, leaving every other field at its default.
@@ -18,6 +20,7 @@ function makeState(overrides: Partial<WizardState> = {}): WizardState {
     gitName: null,
     gitEmail: null,
     personalized: false,
+    joinSuggestion: null,
     ...overrides,
   };
 }
@@ -71,6 +74,36 @@ describe("WIZARD_STEPS constant", () => {
 describe("AUTH_GATED_STEPS constant", () => {
   it("includes step index 4 (Setup — first post-signin screen)", () => {
     expect(AUTH_GATED_STEPS).toContain(4);
+  });
+});
+
+describe("conditional join steps", () => {
+  it("builds the original 5-step flow when join is inactive", () => {
+    const steps = buildVisibleSteps(false);
+    expect(steps).toHaveLength(5);
+    expect(steps.map((step) => step.index)).toEqual([1, 2, 3, 4, 5]);
+    expect(steps.at(-1)).toMatchObject({ id: "done", index: 5 });
+    expect(steps).toEqual(WIZARD_STEPS);
+  });
+
+  it("inserts Join before Done and re-indexes when active", () => {
+    const steps = buildVisibleSteps(true);
+    expect(steps).toHaveLength(6);
+    expect(steps[4]).toMatchObject({ index: 5, id: "join", label: "Join" });
+    expect(steps[5]).toMatchObject({ index: 6, id: "done" });
+  });
+
+  it("detects whether the join step is active", () => {
+    expect(
+      isJoinActive({
+        joinSuggestion: {
+          match: true,
+          company: { uid: "cmp_1", name: "Acme" },
+        },
+      }),
+    ).toBe(true);
+    expect(isJoinActive({ joinSuggestion: null })).toBe(false);
+    expect(isJoinActive({ joinSuggestion: { match: false } })).toBe(false);
   });
 });
 
@@ -131,6 +164,15 @@ describe("createWizardRouter", () => {
       const router = createWizardRouter();
       router.next(); // step 2
       expect(router.canGoNext).toBe(true);
+    });
+
+    it("uses a dynamic total step count", () => {
+      const router = createWizardRouter(() => 6);
+      for (let i = 0; i < 5; i++) {
+        router.next();
+      }
+      expect(router.currentStep).toBe(6);
+      expect(router.canGoNext).toBe(false);
     });
   });
 

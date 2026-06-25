@@ -34,6 +34,7 @@ import {
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import { runDepsInstall, type DepInstallResult } from "@/lib/deps-install";
+import { fetchJoinSuggestion } from "@/lib/join-suggest";
 import { personalize, type CompanySeed } from "@/lib/personalize-writer";
 import { getCurrentUser } from "@/lib/cognito";
 import {
@@ -44,6 +45,7 @@ import { startInitialCloudSync } from "@/lib/initial-sync";
 import {
   setGitIdentity,
   setIsPersonal,
+  setJoinSuggestion,
   setPersonalized,
   setTeam,
 } from "@/lib/wizard-state";
@@ -597,6 +599,21 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
             `Detected company ${first.companyName} — HQ Sync will sync its files.`,
           );
         } else {
+          try {
+            const suggestion = await fetchJoinSuggestion(
+              user.tokens.accessToken,
+              user.email,
+            );
+            setJoinSuggestion(suggestion);
+            if (suggestion.match) {
+              appendLog(
+                "personalize",
+                "Found an organization you can request to join.",
+              );
+            }
+          } catch {
+            setJoinSuggestion({ match: false });
+          }
           setIsPersonal(true);
         }
       }
