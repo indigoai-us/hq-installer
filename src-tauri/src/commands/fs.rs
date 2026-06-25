@@ -264,12 +264,24 @@ fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
         // backslash-normalized) relative target — absolute but possibly
         // carrying `..` segments, which `lexical_absolute` collapses.
         Err(e) if e.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) => {
-            let fallback = if target_is_dir {
-                create_junction(&resolved_target, link_path)
-            } else {
+            // Re-classify the target HERE rather than reuse `target_is_dir` from
+            // above. `target_is_dir` was probed before the symlink attempt and is
+            // FALSE for a forward-referenced DIRECTORY target that hasn't been
+            // extracted yet — the exact case that blocked Windows installs without
+            // Developer Mode (HQ_SYMLINK_PRIVILEGE): `.agents/skills →
+            // ../.claude/skills` is created before `.claude/skills` exists, so it
+            // was misclassified as a file and sent to the copy fallback, which
+            // then failed ("target is not an existing file"). Treat ONLY an
+            // existing FILE as the copy case; everything else — an existing dir OR
+            // a not-yet-created dir target — takes the junction path, which now
+            // creates the target dir first so the junction resolves.
+            let use_copy = fallback_uses_copy(&resolved_target);
+            let fallback = if use_copy {
                 copy_file_fallback(&resolved_target, link_path)
+            } else {
+                create_junction(&resolved_target, link_path)
             };
-            let kind = if target_is_dir { "dir" } else { "file" };
+            let kind = if use_copy { "file" } else { "dir" };
             fallback.map_err(|fallback_err| {
                 // Even the no-admin fallback could not recover (e.g. a file
                 // symlink whose target has not been extracted yet). Tag the
@@ -315,9 +327,32 @@ fn lexical_absolute(path: &Path) -> PathBuf {
 /// non-admin user with Developer Mode off. Returns the combined mklink
 /// stdout/stderr on failure (mklink writes errors to stdout on some Windows
 /// builds, stderr on others).
+/// No-privilege fallback dispatch: copy ONLY when the target resolves to an
+/// existing file; everything else — an existing directory, OR a not-yet-created
+/// directory target (a forward reference like `.agents/skills → ../.claude/skills`
+/// linked before `.claude/skills` is extracted) — takes the junction path, which
+/// creates the target dir first. Reusing the pre-attempt `target_is_dir` here was
+/// the bug: it is `false` for a missing target, so a directory link was sent to
+/// the file-copy fallback and the Windows install failed (HQ_SYMLINK_PRIVILEGE).
+#[cfg(windows)]
+fn fallback_uses_copy(resolved_target: &Path) -> bool {
+    resolved_target.is_file()
+}
+
 #[cfg(windows)]
 fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
     let abs_target = lexical_absolute(target);
+    // `mklink /J` needs its target dir to already exist — pointed at a missing
+    // path it fails (or yields a broken junction). HQ extracts some directory
+    // symlinks BEFORE their target dir is created — notably `.agents/skills →
+    // ../.claude/skills` before `.claude/skills` exists — so create the target
+    // recursively first. The dir starts empty and is populated as the rest of
+    // the template extracts; the junction resolves to it either way. This is the
+    // root unblock for Windows installs without Developer Mode
+    // (HQ_SYMLINK_PRIVILEGE), and mirrors the recursive-mkdir-before-write
+    // discipline used elsewhere in HQ's skill linking.
+    fs::create_dir_all(&abs_target)
+        .map_err(|e| format!("failed to create junction target dir {abs_target:?}: {e}"))?;
     let out = Command::new("cmd")
         .args(["/C", "mklink", "/J"])
         .arg(link_path)
@@ -1143,5 +1178,51 @@ mod tests {
         // Reading THROUGH the junction must surface the target's contents.
         let through = fs::read(link.join("a.md")).expect("read through junction");
         assert_eq!(through, b"skill");
+    }
+
+    #[test]
+    fn create_junction_creates_missing_target_dir() {
+        // Installer regression (HQ_SYMLINK_PRIVILEGE): `.agents/skills →
+        // ../.claude/skills` is linked before `.claude/skills` exists. Without
+        // Developer Mode the symlink falls back to a junction, which MUST create
+        // the target dir first or a normal Windows user can't install.
+        let dir = setup();
+        let target = dir.path().join(".claude").join("skills"); // does NOT exist yet
+        assert!(!target.exists());
+        let link = dir.path().join(".agents").join("skills");
+        fs::create_dir_all(link.parent().unwrap()).expect("mk link parent");
+
+        create_junction(&target, &link).expect("junction to a not-yet-created target dir");
+
+        // The target dir was created, and writing through the junction lands in it.
+        assert!(target.is_dir(), "junction target dir should be created");
+        fs::write(link.join("probe.md"), b"x").expect("write through junction");
+        assert!(
+            target.join("probe.md").is_file(),
+            "write through the junction must land in the real target dir"
+        );
+    }
+
+    #[test]
+    fn fallback_routes_missing_or_dir_target_to_junction_not_copy() {
+        // The dispatch fix: only an existing FILE copies; an existing dir OR a
+        // not-yet-created (forward-referenced) dir target junctions. The old code
+        // reused a pre-attempt `target_is_dir` that was false for a missing
+        // target, wrongly routing a dir link to the doomed file-copy fallback.
+        let dir = setup();
+
+        let file_target = dir.path().join("CLAUDE.md");
+        fs::write(&file_target, b"x").expect("seed file");
+        assert!(fallback_uses_copy(&file_target), "existing file → copy");
+
+        let dir_target = dir.path().join("skills");
+        fs::create_dir(&dir_target).expect("seed dir");
+        assert!(!fallback_uses_copy(&dir_target), "existing dir → junction");
+
+        let missing = dir.path().join(".claude").join("skills");
+        assert!(
+            !fallback_uses_copy(&missing),
+            "not-yet-created dir target → junction (not copy)"
+        );
     }
 }
