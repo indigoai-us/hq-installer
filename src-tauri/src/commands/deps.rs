@@ -2329,6 +2329,22 @@ pub fn extended_search_path() -> String {
             .join("bin")
             .to_string_lossy()
             .into_owned(),
+        // Node.js as installed by winget's `OpenJS.NodeJS.LTS` package. The MSI
+        // lands `node.exe`/`npm.cmd` in `C:\Program Files\nodejs` (machine
+        // scope) or `%LOCALAPPDATA%\Programs\nodejs` (winget `--scope user`).
+        // Without these, a Node installed via winget earlier in THIS setup run
+        // is invisible to the in-session `npm` lookup — the persistent HKCU PATH
+        // update only reaches NEW shells via WM_SETTINGCHANGE — so the npm-based
+        // deps (qmd, hq-cli) fail with "'npm' not found on PATH".
+        program_files()
+            .join("nodejs")
+            .to_string_lossy()
+            .into_owned(),
+        local_app_data()
+            .join("Programs")
+            .join("nodejs")
+            .to_string_lossy()
+            .into_owned(),
         program_files()
             .join("Git")
             .join("bin")
@@ -3943,6 +3959,36 @@ mod windows_tests {
         assert!(
             lower.contains("indigohq") && lower.contains("toolchain"),
             "PATH should include the managed toolchain dir"
+        );
+    }
+
+    #[test]
+    fn extended_search_path_contains_winget_node_dirs() {
+        // Regression: a Node installed via winget (OpenJS.NodeJS.LTS) lands in
+        // `C:\Program Files\nodejs` (machine) or `%LOCALAPPDATA%\Programs\nodejs`
+        // (user scope). Both must be on the in-session search path or the
+        // npm-based deps (qmd, hq-cli) fail with "'npm' not found on PATH" right
+        // after Node installs in the same setup run.
+        let entries: Vec<String> = extended_search_path()
+            .split(';')
+            .map(|e| e.to_lowercase())
+            .collect();
+        let machine = program_files()
+            .join("nodejs")
+            .to_string_lossy()
+            .to_lowercase();
+        let user = local_app_data()
+            .join("Programs")
+            .join("nodejs")
+            .to_string_lossy()
+            .to_lowercase();
+        assert!(
+            entries.iter().any(|e| e == &machine),
+            "PATH should include the machine-scope winget Node dir (Program Files\\nodejs)"
+        );
+        assert!(
+            entries.iter().any(|e| e == &user),
+            "PATH should include the user-scope winget Node dir (LOCALAPPDATA\\Programs\\nodejs)"
         );
     }
 
