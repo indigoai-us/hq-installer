@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HQ Desktop — Onboarding Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --page-bg:#e9ecf1; --c-bg:#fff; --c-text:#000; --c-muted:#00000066;
+    --c-btn-bg:#000; --c-btn-fg:#fff; --c-btn2-bg:#0000000d; --c-btn2-fg:#000;
+    --c-field-bg:#0000000d; --c-field-border:#00000014; --check-border:#00000040;
+    --check-bg:#000; --check-fg:#fff; --c-divider:#00000010; --dot:#0000003a; --dot-on:#000;
+    --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
+    --page-grad: url("assets/wallpaper-light.jpg");
+    --c-choose-bg:#ffffff; --c-choose-border:#00000026; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.1);
+  }
+  .dark {
+    --page-bg:#0a0a0c; --c-bg:#2b2b2e; --c-text:#fff; --c-muted:#ffffff80;
+    --c-btn-bg:#fff; --c-btn-fg:#000; --c-btn2-bg:#ffffff1f; --c-btn2-fg:#fff;
+    --c-field-bg:#ffffff0d; --c-field-border:#ffffff1a; --check-border:#ffffff40;
+    --check-bg:#fff; --check-fg:#000; --c-divider:#ffffff12; --dot:#ffffff3a; --dot-on:#fff;
+    --graphic:rgba(255,255,255,0.92); --graphic-fg:#1a1a1a; --graphic-line:rgba(0,0,0,0.12);
+    --page-grad: url("assets/wallpaper-dark.jpg");
+    --c-choose-bg:#ffffff1f; --c-choose-border:#ffffff30; --c-choose-shadow:0 1px 1.5px rgba(0,0,0,0.3);
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font-family:"Geist",-apple-system,system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  body { min-height:100vh; background-color:var(--page-bg); background-image:var(--page-grad); background-attachment:fixed; background-size:cover; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:26px; }
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+  .toggle { position:fixed; bottom:22px; left:50%; transform:translateX(-50%); display:inline-flex; background:var(--c-btn2-bg); border:0.5px solid var(--c-field-border); border-radius:980px; padding:3px; z-index:5; }
+  .toggle button { background:transparent; border:none; color:var(--c-muted); font-family:inherit; font-size:13px; font-weight:500; padding:6px 18px; border-radius:980px; cursor:pointer; }
+  .toggle button.on { background:var(--c-btn-bg); color:var(--c-btn-fg); }
+
+  .scaler { transform:scale(1); transform-origin:center; }
+  .window { width:640px; height:460px; border-radius:18px; overflow:hidden; background:var(--c-bg); box-shadow:0 24px 70px rgba(20,22,40,0.28), 0 2px 8px rgba(20,22,40,0.12); position:relative; --toph:200px; }
+  .dark .window { box-shadow:0 40px 100px rgba(0,0,0,0.78), 0 1px 0 0 rgba(255,255,255,0.12) inset, 0 0 0 0.5px rgba(255,255,255,0.22); }
+
+  /* layers */
+  .grad { position:absolute; top:0; left:0; right:0; height:var(--toph); background:#a98bd8 url("assets/onboarding-bg.jpg") center/cover no-repeat; transition:height .55s cubic-bezier(.65,0,.35,1); z-index:0; }
+  .gfxwrap { position:absolute; top:0; left:0; right:0; height:var(--toph); overflow:hidden; z-index:1; transition:height .55s cubic-bezier(.65,0,.35,1); }
+  .gfx { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; opacity:0; pointer-events:none; transition:opacity .3s ease, transform .45s cubic-bezier(.4,0,.2,1); }
+  .gfx.on { opacity:1; pointer-events:auto; }
+  .gfx.gtop { align-items:flex-start; padding-top:40px; }
+  .gfx.gtop .mockwin { width:460px; }
+  .panelwrap { position:absolute; left:0; right:0; bottom:0; top:var(--toph); background:var(--c-bg); border-top:1px solid rgba(0,0,0,0.05); overflow:hidden; transition:top .55s cubic-bezier(.65,0,.35,1); z-index:2; }
+  .panel { position:absolute; inset:0; padding:24px; display:flex; flex-direction:column; opacity:0; pointer-events:none; transition:opacity .3s ease; }
+  .panel.on { opacity:1; pointer-events:auto; }
+
+  .h { color:var(--c-text); font-size:24px; font-weight:600; line-height:32px; margin:0; letter-spacing:-1px; }
+  .body { color:var(--c-muted); font-size:14px; font-weight:400; line-height:20px; margin:4px 0 0; max-width:592px; }
+  .check-row { display:flex; align-items:center; gap:8px; margin-top:16px; }
+  .check { width:16px; height:16px; border-radius:4px; border:1px solid var(--check-border); background:var(--check-bg); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .check svg { width:10px; height:10px; stroke:var(--check-fg); }
+  .check-row span { color:var(--c-muted); font-size:14px; line-height:20px; }
+  .btns { display:flex; gap:8px; margin-top:auto; }
+  .btn { font-family:inherit; font-size:14px; font-weight:400; line-height:20px; padding:10px 16px; border-radius:8px; border:none; cursor:pointer; transition:opacity .15s, transform .1s; }
+  .btn:active { transform:scale(.97); }
+  .btn-primary { background:var(--c-btn-bg); color:var(--c-btn-fg); }
+  .btn-secondary { background:var(--c-btn2-bg); color:var(--c-btn2-fg); }
+  .btn:hover { opacity:.88; }
+
+  .list { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
+  .li { display:flex; align-items:center; gap:10px; color:var(--c-text); font-size:13px; line-height:18px; }
+  .li.muted { color:var(--c-muted); }
+  .dotmark { width:14px; height:14px; border-radius:50%; background:var(--check-bg); color:var(--check-fg); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .dotmark svg { width:8px; height:8px; stroke:var(--check-fg); }
+  .dotpend { width:14px; height:14px; border-radius:50%; border:1.4px solid var(--check-border); flex-shrink:0; }
+  .spin { width:13px; height:13px; border:1.6px solid var(--check-border); border-top-color:var(--c-text); border-radius:50%; animation:sp .8s linear infinite; flex-shrink:0; }
+  @keyframes sp { to{transform:rotate(360deg)} }
+
+  .logo svg { width:120px; height:auto; display:block; }
+  .finder-item { display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .finder-item .flabel { color:#fff; font-size:15px; font-weight:500; line-height:18px; padding:1.5px 7px; letter-spacing:-0.1px; text-shadow:0 1px 3px rgba(0,0,0,0.35); }
+  .macfolder-lg { width:90px; height:90px; object-fit:contain; display:block; filter:drop-shadow(0 5px 11px rgba(0,0,0,0.22)); }
+  .loc { display:flex; align-items:center; gap:12px; background:var(--c-field-bg); border:0.5px solid var(--c-field-border); border-radius:10px; padding:12px 14px; margin-top:18px; }
+  .loc .mf { width:40px; height:40px; object-fit:contain; flex-shrink:0; display:block; }
+  .loc .grow { flex:1; min-width:0; }
+  .loc .lt { color:var(--c-text); font-size:14px; font-weight:600; line-height:18px; }
+  .loc .lb { color:var(--c-muted); font-size:12px; line-height:16px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .loc .lb .sep { opacity:.45; margin:0 4px; }
+  .choose { font-family:inherit; font-size:13px; font-weight:400; color:var(--c-text); background:var(--c-choose-bg); border:0.5px solid var(--c-choose-border); border-radius:6px; padding:5px 14px; cursor:pointer; box-shadow:var(--c-choose-shadow); white-space:nowrap; transition:filter .12s; }
+  .choose:hover { filter:brightness(0.97); }
+  .dark .choose:hover { filter:brightness(1.25); }
+  .prog { position:relative; width:120px; height:120px; }
+  .prog svg { width:120px; height:120px; transform:rotate(-90deg); }
+  .ptrack { fill:none; stroke:rgba(255,255,255,0.28); stroke-width:5; }
+  .pbar { fill:none; stroke:#fff; stroke-width:5; stroke-linecap:round; }
+  .ppct { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-size:15px; font-weight:400; letter-spacing:-0.3px; text-shadow:0 1px 4px rgba(0,0,0,0.25); }
+  .bigcheck { width:84px; height:84px; display:block; }
+
+  .mn { font-family:ui-monospace,"SF Mono",Menlo,Monaco,monospace; }
+  .mockwin { width:440px; background:#fff; border-radius:15px; box-shadow:0 0 0 1px rgba(0,0,0,0.1), 0 24px 60px -16px rgba(0,0,0,0.5); overflow:hidden; color:#000; flex-shrink:0; }
+  .mockbar { position:relative; display:flex; align-items:center; gap:6px; padding:9px 12px; border-bottom:1px solid rgba(0,0,0,0.07); }
+  .mockbar i { width:9px; height:9px; border-radius:50%; }
+  .mockbar .tt { position:absolute; left:50%; transform:translateX(-50%); font-size:11px; font-weight:500; color:rgba(0,0,0,0.45); }
+  .mchip { display:inline-flex; align-items:center; gap:4px; border:1px solid rgba(0,0,0,0.1); border-radius:7px; padding:3px 8px; font-size:11px; color:rgba(0,0,0,0.7); }
+  .mthread { padding:24px 15px 0; display:flex; flex-direction:column; gap:12px; }
+  .mthread.tight { padding-top:14px; gap:9px; }
+  .mbubble { align-self:flex-end; background:#efefee; border-radius:10px; padding:10px 12px; font-size:13px; color:#000; max-width:82%; }
+  .mockwin.chat { display:flex; flex-direction:column; min-height:344px; }
+  .mockwin.chat .mockbar { padding:11px 13px; gap:9px; }
+  .mockwin.chat .mockbar i { width:14px; height:14px; border:0.5px solid rgba(0,0,0,0.1); }
+  .mockwin.chat .mthread { flex:1; }
+  .mrow { display:flex; align-items:flex-start; gap:8px; font-size:12px; }
+  .mrow .l { color:rgba(0,0,0,0.5); }
+  .mcheck { width:16px; height:16px; border-radius:50%; background:rgba(41,201,105,0.15); color:#1aa64f; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .mspin2 { width:16px; height:16px; border-radius:50%; background:rgba(0,0,0,0.06); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .mspin2 i { display:block; width:9px; height:9px; border:1.4px solid rgba(0,0,0,0.2); border-top-color:rgba(0,0,0,0.5); border-radius:50%; animation:sp .8s linear infinite; }
+  .mcomposer { display:flex; align-items:center; justify-content:space-between; border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:9px 12px; font-size:13px; color:rgba(0,0,0,0.35); }
+  @keyframes caret { 50%{opacity:0} }
+
+  .dots { display:flex; gap:7px; }
+  .dots i { width:7px; height:7px; border-radius:50%; background:var(--dot); cursor:pointer; transition:background .2s, width .2s; }
+  .dots i.on { background:var(--dot-on); width:18px; border-radius:4px; }
+
+  /* macOS menu bar (handoff at step 4) */
+  .menubar { position:fixed; top:0; left:0; right:0; height:24px; display:flex; align-items:center; justify-content:space-between; padding:0 11px; font-size:13px; color:rgba(0,0,0,0.82); background:rgba(246,246,248,0.62); backdrop-filter:blur(22px) saturate(180%); -webkit-backdrop-filter:blur(22px) saturate(180%); border-bottom:0.5px solid rgba(0,0,0,0.07); z-index:40; opacity:0; transform:translateY(-100%); transition:opacity .3s ease, transform .45s cubic-bezier(.4,0,.2,1); pointer-events:none; }
+  .menubar.show { opacity:1; transform:translateY(0); }
+  .dark .menubar { color:rgba(255,255,255,0.9); background:rgba(30,30,32,0.55); border-bottom-color:rgba(255,255,255,0.08); }
+  .mb-left { display:flex; align-items:center; gap:15px; }
+  .mb-right { display:flex; align-items:center; gap:13px; }
+  .mb-apple { font-size:14px; line-height:1; }
+  .mb-app { font-weight:600; }
+  .mb-menu { opacity:0.82; }
+  .mb-right svg { display:block; }
+  .mb-hq svg { height:10px; width:auto; display:block; opacity:0.9; }
+  .mb-clock { font-variant-numeric:tabular-nums; }
+
+  /* sync popover — native NSPopover vibrancy, follows light/dark */
+  .mbpop {
+    --pop-bg:rgba(250,250,252,0.82); --pop-text:#1d1d1f; --pop-muted:rgba(0,0,0,0.5);
+    --pop-border:rgba(0,0,0,0.1); --pop-divider:rgba(0,0,0,0.08); --pop-hover:rgba(0,0,0,0.055);
+    --pop-icon:rgba(0,0,0,0.5); --pop-highlight:rgba(255,255,255,0.7); --pop-shadow:0 22px 55px rgba(20,22,40,0.22);
+    --pop-accent:#1d1d1f; --pop-acc-fg:#fff;
+    position:fixed; top:30px; right:10px; width:296px; border-radius:12px; overflow:hidden; color:var(--pop-text);
+    background:var(--pop-bg); backdrop-filter:blur(32px) saturate(1.7); -webkit-backdrop-filter:blur(32px) saturate(1.7);
+    border:0.5px solid var(--pop-border); box-shadow:var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
+    z-index:39; opacity:0; transform:translateY(-12px) scale(0.97); transform-origin:top right;
+    transition:opacity .35s ease, transform .42s cubic-bezier(.34,1.18,.64,1); pointer-events:none;
+  }
+  .dark .mbpop {
+    --pop-bg:rgba(38,38,40,0.72); --pop-text:#fff; --pop-muted:rgba(255,255,255,0.5);
+    --pop-border:rgba(255,255,255,0.14); --pop-divider:rgba(255,255,255,0.1); --pop-hover:rgba(255,255,255,0.08);
+    --pop-icon:rgba(255,255,255,0.55); --pop-highlight:rgba(255,255,255,0.26); --pop-shadow:0 24px 60px rgba(0,0,0,0.55);
+    --pop-accent:#fff; --pop-acc-fg:#111113;
+  }
+  .mbpop.show { opacity:1; transform:translateY(0) scale(1); }
+  .mbp-head { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:0.5px solid var(--pop-divider); }
+  .mbp-mark { flex:1; min-width:0; display:flex; align-items:center; color:var(--pop-text); }
+  .mbp-mark svg { height:14px; width:auto; opacity:0.92; }
+  .mbp-icon { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:7px; border:none; background:transparent; color:var(--pop-icon); cursor:pointer; transition:background .12s, color .12s; }
+  .mbp-icon:hover { background:var(--pop-hover); color:var(--pop-text); }
+  .mbp-sync { display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 13px; border:none; border-radius:8px; background:var(--pop-accent); color:var(--pop-acc-fg); font-family:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:filter .12s; box-shadow:0 1px 2px rgba(0,0,0,0.18); }
+  .mbp-sync:hover { filter:brightness(1.07); }
+  .mbp-status { display:flex; align-items:center; gap:10px; padding:11px 14px 12px; }
+  .mbp-status .gd { width:8px; height:8px; border-radius:50%; background:#34c759; box-shadow:0 0 7px rgba(52,199,89,0.55); flex-shrink:0; }
+  .mbp-s1 { color:var(--pop-text); font-size:13px; font-weight:500; }
+  .mbp-s2 { color:var(--pop-muted); font-size:11px; margin-left:auto; }
+  .mbp-sec { padding:6px; border-top:0.5px solid var(--pop-divider); }
+  .mbp-lab { color:var(--pop-muted); font-size:10px; font-weight:600; letter-spacing:.5px; text-transform:uppercase; padding:6px 8px 4px; }
+  .mbp-co { display:flex; align-items:center; gap:10px; padding:4px 8px; border-radius:7px; }
+  .mbp-co:hover { background:var(--pop-hover); }
+  .mbp-co .av { width:20px; height:20px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:600; color:#fff; flex-shrink:0; }
+  .mbp-co .nm { flex:1; min-width:0; display:flex; align-items:center; gap:7px; color:var(--pop-text); font-size:13px; }
+  .mbp-co .who { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .mbp-co .tag { flex-shrink:0; font-size:9.5px; font-weight:600; padding:1px 6px; border-radius:5px; background:var(--pop-hover); color:var(--pop-muted); letter-spacing:.2px; }
+  .mbp-co .sti { width:20px; height:20px; border-radius:6px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .mbp-co .sti svg { width:12px; height:12px; display:block; flex-shrink:0; }
+  .mbp-co .sti.on { background:rgba(52,199,89,0.16); color:#1f9d4d; }
+  .dark .mbp-co .sti.on { background:rgba(52,199,89,0.22); color:#41d870; }
+  .mbp-foot { padding:7px 12px 12px; border-top:0.5px solid var(--pop-divider); }
+  .mbp-open { width:100%; height:30px; border:0.5px solid var(--pop-border); border-radius:8px; background:var(--pop-hover); color:var(--pop-text); font-family:inherit; font-size:12.5px; cursor:pointer; transition:filter .12s; }
+  .mbp-open:hover { filter:brightness(0.96); }
+</style>
+</head>
+<body>
+<h1 class="sr-only">HQ desktop onboarding prototype with animated screen transitions: gradient top with graphic, content below, light/dark toggle.</h1>
+
+<div class="toggle">
+  <button id="t-light" class="on" onclick="mode('light')">Light</button>
+  <button id="t-dark" onclick="mode('dark')">Dark</button>
+</div>
+
+<div class="scaler">
+<div class="window">
+
+  <div class="grad"></div>
+
+  <div class="gfxwrap">
+    <!-- 0 welcome -->
+    <div class="gfx on" data-g="0">
+      <div class="logo"><svg viewBox="0 0 280 161" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8175H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z" fill="white"/><path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0638C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z" fill="white"/></svg></div>
+    </div>
+    <!-- 1 location: folder + label -->
+    <div class="gfx" data-g="1">
+      <div class="finder-item">
+        <img class="macfolder-lg" src="assets/folder-icon.png" alt="folder">
+        <span class="flabel">HQ</span>
+      </div>
+    </div>
+    <!-- 2 setup: progress ring -->
+    <div class="gfx" data-g="2">
+      <div class="prog">
+        <svg viewBox="0 0 120 120"><circle class="ptrack" cx="60" cy="60" r="52"/><circle class="pbar" id="pbar" cx="60" cy="60" r="52"/></svg>
+        <span class="ppct" id="ppct">0%</span>
+      </div>
+    </div>
+    <!-- 3 done: check -->
+    <div class="gfx" data-g="3">
+      <svg class="bigcheck" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
+        <defs><mask id="checkmask"><rect width="96" height="96" fill="white"/><path d="M35 49 L44.5 58.5 L63 38" fill="none" stroke="black" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></mask></defs>
+        <circle cx="48" cy="48" r="45" fill="#ffffff" mask="url(#checkmask)"/>
+      </svg>
+    </div>
+    <!-- 4 trust mockup -->
+    <div class="gfx gtop" data-g="4">
+      <div class="mockwin">
+        <div class="mockbar"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i><span class="tt">Claude Code</span></div>
+        <div style="padding:13px; display:flex; flex-direction:column; gap:10px;">
+          <div style="border:1px solid rgba(0,0,0,0.08); background:#fafafa; border-radius:10px; padding:11px;">
+            <div style="font-size:12px; color:rgba(0,0,0,0.6);">Do you trust the files in <span class="mn" style="color:rgba(0,0,0,0.85); font-weight:500;">~/hq</span>?</div>
+            <div class="mn" style="margin-top:8px; display:flex; flex-direction:column; gap:4px; font-size:12px;">
+              <div style="border:1px solid rgba(43,127,255,0.3); background:rgba(43,127,255,0.08); border-radius:6px; padding:6px 9px; color:rgba(0,0,0,0.85);">❯ 1. Yes, trust this workspace</div>
+              <div style="padding:6px 9px; color:rgba(0,0,0,0.4);">2. No, don't trust</div>
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; margin-top:8px;">
+            <span class="mchip"><svg viewBox="0 0 14 14" width="11" height="11" fill="none"><rect x="1.5" y="2" width="11" height="7.5" rx="1" stroke="currentColor" stroke-width="1.1"/><path d="M5 12h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>Local</span>
+            <span class="mchip"><svg viewBox="0 0 14 14" width="11" height="11" fill="none"><path d="M1.5 3.6c0-.6.5-1 1-1H6l1.2 1.4H11.5c.6 0 1 .5 1 1v4.6c0 .6-.4 1-1 1h-9c-.5 0-1-.4-1-1V3.6Z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>hq</span>
+            <span class="mchip"><svg viewBox="0 0 14 14" width="11" height="11" fill="none"><circle cx="4" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.1"/><circle cx="4" cy="10.5" r="1.6" stroke="currentColor" stroke-width="1.1"/><circle cx="10" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.1"/><path d="M4 5v4M10 5v1.5c0 1.5-1 2-2.5 2.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>main<span style="margin:0 3px; color:rgba(0,0,0,0.2);">|</span><span style="width:9px; height:9px; border-radius:2px; background:rgba(0,0,0,0.25); display:inline-block;"></span>worktree</span>
+          </div>
+          <div style="display:flex; align-items:center; border:1px solid rgba(0,0,0,0.12); border-radius:11px; padding:10px 13px;"><span class="mn" style="font-size:13px; color:rgba(0,0,0,0.4);">/setup</span><svg viewBox="0 0 16 16" width="14" height="14" fill="none" style="margin-left:auto; color:rgba(0,0,0,0.3);"><path d="M12.5 4.5V9H5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 6.5 5 9l2.5 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px;"><span style="display:flex; align-items:center; gap:9px;"><span style="background:rgba(202,165,61,0.16); color:#9a7a1c; border-radius:5px; padding:2px 7px; font-weight:500;">Auto</span><svg viewBox="0 0 14 14" width="12" height="12" fill="none" style="color:rgba(0,0,0,0.4);"><path d="M7 3.5v7M3.5 7h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><svg viewBox="0 0 14 14" width="12" height="12" fill="none" style="color:rgba(0,0,0,0.4);"><rect x="5" y="1.5" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.1"/><path d="M3 7a4 4 0 0 0 8 0M7 11v1.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg></span><span style="display:flex; gap:10px; color:rgba(0,0,0,0.5);"><span>Opus 4.8</span><span>High</span></span></div>
+        </div>
+      </div>
+    </div>
+    <!-- 5 settings zoom -->
+    <div class="gfx" data-g="5">
+      <div class="mockwin" style="padding:40px 48px; display:flex; align-items:center; justify-content:center;">
+        <div style="position:relative; display:flex; align-items:center; gap:28px;">
+          <span style="background:rgba(202,165,61,0.16); color:#9a7a1c; border-radius:9px; padding:8px 16px; font-size:21px; font-weight:500;">Auto</span>
+          <span style="font-size:21px; letter-spacing:-0.4px; color:rgba(0,0,0,0.75);">Opus 4.8</span>
+          <span style="background:rgba(0,0,0,0.07); border-radius:8px; padding:6px 12px; font-size:21px; letter-spacing:-0.4px; color:rgba(0,0,0,0.85);">High</span>
+          <svg width="22" height="28" viewBox="0 0 17 22" fill="none" style="position:absolute; right:0; bottom:0; transform:translate(18%,42%); filter:drop-shadow(0 1px 1.5px rgba(0,0,0,0.35));"><path d="M2 1.5 2 16.8 6.1 12.9 8.8 19 11.2 17.9 8.5 11.9 13.8 11.6Z" fill="#1d1d1f" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/></svg>
+        </div>
+      </div>
+    </div>
+    <!-- 6 /setup zoom -->
+    <div class="gfx" data-g="6">
+      <div class="mockwin" style="padding:34px 48px; display:flex; align-items:center;">
+        <div style="display:flex; align-items:center; width:100%; border:1px solid rgba(0,0,0,0.14); border-radius:16px; padding:20px 24px;">
+          <span class="mn" style="font-size:28px; font-weight:700; letter-spacing:-0.5px; color:#000;">/setup</span>
+          <span style="display:inline-block; width:2px; height:26px; background:rgba(0,0,0,0.8); margin-left:3px; animation:caret 1s step-end infinite;"></span>
+          <svg viewBox="0 0 16 16" width="22" height="22" fill="none" style="margin-left:auto; color:rgba(0,0,0,0.3);"><path d="M12.5 4.5V9H5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.5 6.5 5 9l2.5 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+      </div>
+    </div>
+    <!-- 7 handoff chat -->
+    <div class="gfx gtop" data-g="7">
+      <div class="mockwin chat">
+        <div class="mockbar"><i style="background:#ff736a"></i><i style="background:#febc2e"></i><i style="background:#19c332"></i><span class="tt">Claude Code</span></div>
+        <div class="mthread">
+          <div class="mrow"><span class="mcheck"><svg viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.2 4 7.2 8 2.8"/></svg></span><div class="mn"><span style="font-weight:500;">Setup complete</span> <span class="l">7 questions · workspace configured</span></div></div>
+          <div class="mbubble mn">/handoff</div>
+          <div class="mrow"><span class="mspin2"><i></i></span><div class="mn"><span style="font-weight:500;">/handoff</span> <span class="l">saving everything to HQ memory…</span></div></div>
+        </div>
+        <div style="padding:13px 15px 15px;"><div class="mcomposer"><span>Type / for commands</span><span>↑</span></div></div>
+      </div>
+    </div>
+    <!-- 8 build chat -->
+    <div class="gfx gtop" data-g="8">
+      <div class="mockwin chat">
+        <div class="mockbar"><i style="background:#ff736a"></i><i style="background:#febc2e"></i><i style="background:#19c332"></i><span class="tt">Claude Code</span></div>
+        <div class="mthread tight">
+          <div class="mbubble mn">/brainstorm</div>
+          <p style="font-size:13px; margin:0; color:#000;">What are we building? Tell me the goal.</p>
+          <div class="mbubble"><span class="mn">/startwork acme</span> Build the Q3 dashboard</div>
+          <div class="mrow"><span class="mcheck"><svg viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.2 4 7.2 8 2.8"/></svg></span><div class="mn"><span style="font-weight:500;">/startwork</span> <span class="l">loaded acme context · on it</span></div></div>
+        </div>
+        <div style="padding:13px 15px 15px;"><div class="mcomposer"><span>Type / for commands</span><span>↑</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panelwrap">
+    <!-- 0 welcome -->
+    <div class="panel on" data-p="0">
+      <h2 class="h">Welcome to HQ</h2>
+      <p class="body">One home for your whole team and every AI tool you use. Your knowledge, your best work, and your way of doing things all in one place, getting better over time.</p>
+      <div class="check-row">
+        <span class="check"><svg viewBox="0 0 12 12" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2.5,6.5 5,9 9.5,3.5"/></svg></span>
+        <span>Share anonymous usage data to help make HQ better</span>
+      </div>
+      <div class="btns">
+        <button class="btn btn-primary" onclick="go(1)">Log in with Google</button>
+        <button class="btn btn-secondary" onclick="go(1)">Log in with Microsoft</button>
+      </div>
+    </div>
+    <!-- 1 location -->
+    <div class="panel" data-p="1">
+      <h2 class="h">Choose where HQ lives</h2>
+      <p class="body">It’s just one folder. It sits on your machine and stays in sync everywhere you work.</p>
+      <div class="loc">
+        <img class="mf" src="assets/folder-icon.png" alt="folder">
+        <div class="grow">
+          <div class="lt">HQ</div>
+          <div class="lb">Macintosh HD<span class="sep">›</span>Users<span class="sep">›</span>lizzie<span class="sep">›</span>Desktop</div>
+        </div>
+        <button class="choose">Choose…</button>
+      </div>
+      <div class="btns" style="justify-content:space-between;"><button class="btn btn-secondary" onclick="go(0)">Back</button><button class="btn btn-primary" onclick="go(2)">Install</button></div>
+    </div>
+    <!-- 2 setup -->
+    <div class="panel" data-p="2">
+      <h2 class="h">Getting your HQ ready</h2>
+      <div class="list">
+        <div class="li muted" id="su0"><span class="st dotpend"></span><span class="lt">Laying the groundwork</span></div>
+        <div class="li muted" id="su1"><span class="st dotpend"></span><span class="lt">Building your workspace</span></div>
+        <div class="li muted" id="su2"><span class="st dotpend"></span><span class="lt">Bringing in your AI workers and workflows</span></div>
+        <div class="li muted" id="su3"><span class="st dotpend"></span><span class="lt">Making it yours</span></div>
+        <div class="li muted" id="su4"><span class="st dotpend"></span><span class="lt">Syncing across your devices</span></div>
+      </div>
+      <div class="btns" style="margin-top:auto;"><button class="btn btn-secondary" onclick="go(1)">Back</button></div>
+    </div>
+    <!-- 3 done -->
+    <div class="panel" data-p="3">
+      <h2 class="h">HQ is ready</h2>
+      <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
+      <div class="btns" style="margin-top:auto;">
+        <button class="btn btn-primary" onclick="go(4)">Open in Claude Code</button>
+        <button class="btn btn-secondary" onclick="go(4)">Open in Codex</button>
+      </div>
+    </div>
+    <!-- 4 trust -->
+    <div class="panel" data-p="4">
+      <h2 class="h">Trust your workspace</h2>
+      <p class="body">Claude Code will open with your hq folder selected and /setup ready to run. Choose “Yes, trust this workspace.” Just check that hq is still the folder it’s pointing at.</p>
+      <div class="btns" style="margin-top:auto; justify-content:space-between;"><button class="btn btn-secondary" onclick="go(3)">Back</button><button class="btn btn-primary" onclick="go(5)">Continue</button></div>
+    </div>
+    <!-- 5 settings -->
+    <div class="panel" data-p="5">
+      <h2 class="h">Dial in your settings</h2>
+      <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
+      <div class="btns" style="margin-top:auto; justify-content:space-between;"><button class="btn btn-secondary" onclick="go(4)">Back</button><button class="btn btn-primary" onclick="go(6)">Continue</button></div>
+    </div>
+    <!-- 6 /setup -->
+    <div class="panel" data-p="6">
+      <h2 class="h">Press enter to run /setup</h2>
+      <p class="body">Hit ⏎ in the message box to start setup.</p>
+      <div class="btns" style="margin-top:auto; justify-content:space-between;"><button class="btn btn-secondary" onclick="go(5)">Back</button><button class="btn btn-primary" onclick="go(7)">Continue</button></div>
+    </div>
+    <!-- 7 handoff -->
+    <div class="panel" data-p="7">
+      <h2 class="h">Answer, then run /handoff</h2>
+      <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
+      <div class="btns" style="margin-top:auto; justify-content:space-between;"><button class="btn btn-secondary" onclick="go(6)">Back</button><button class="btn btn-primary" onclick="go(8)">Continue</button></div>
+    </div>
+    <!-- 8 build -->
+    <div class="panel" data-p="8">
+      <h2 class="h">Open a fresh session and build</h2>
+      <p class="body">Start with “/brainstorm” to get going. Working on a specific company? Send “/startwork acme” and describe what you want. Then it’s the same rhythm every time: start work, handoff, repeat.</p>
+      <div class="btns" style="margin-top:auto; justify-content:space-between;"><button class="btn btn-secondary" onclick="go(7)">Back</button><button class="btn btn-primary" onclick="go(0)">Done</button></div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<div class="menubar" id="menubar">
+  <div class="mb-left">
+    <span class="mb-apple"><svg width="13" height="15" viewBox="0 0 14 17" fill="currentColor"><path d="M11.6 9.04c-.02-1.85 1.51-2.74 1.58-2.78-.86-1.26-2.2-1.43-2.68-1.45-1.14-.12-2.23.67-2.8.67-.58 0-1.47-.65-2.42-.64-1.24.02-2.39.72-3.03 1.83-1.29 2.24-.33 5.55.93 7.37.62.89 1.35 1.89 2.31 1.85.93-.04 1.28-.6 2.4-.6 1.12 0 1.43.6 2.41.58 1-.02 1.63-.91 2.24-1.8.71-1.03 1-2.03 1.02-2.08-.02-.01-1.95-.75-1.97-2.97zM9.76 3.5c.51-.62.86-1.48.76-2.34-.74.03-1.64.49-2.17 1.11-.47.55-.89 1.43-.78 2.27.83.06 1.67-.42 2.19-1.04z"/></svg></span>
+    <span class="mb-app">HQ</span>
+    <span class="mb-menu">File</span>
+    <span class="mb-menu">Edit</span>
+    <span class="mb-menu">View</span>
+    <span class="mb-menu">Window</span>
+    <span class="mb-menu">Help</span>
+  </div>
+  <div class="mb-right">
+    <svg width="22" height="13" viewBox="0 0 26 13" fill="none"><rect x="1" y="2.5" width="20" height="8" rx="2.3" stroke="currentColor" stroke-width="1" opacity="0.55"/><rect x="2.6" y="4" width="14" height="5" rx="1" fill="currentColor"/><path d="M23 5v3c1.1-.3 1.1-2.7 0-3z" fill="currentColor" opacity="0.55"/></svg>
+    <svg width="17" height="13" viewBox="0 0 17 13" fill="none"><path d="M2 4.6a10 10 0 0 1 13 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.6 7.3a6.2 6.2 0 0 1 7.8 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8.5" cy="10.2" r="1.3" fill="currentColor"/></svg>
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.2" stroke="currentColor" stroke-width="1.4"/><path d="M9.2 9.2 12.6 12.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    <svg width="15" height="14" viewBox="0 0 16 15" fill="none"><rect x="1.5" y="2" width="13" height="4.4" rx="2.2" stroke="currentColor" stroke-width="1.1"/><rect x="1.5" y="8.6" width="13" height="4.4" rx="2.2" stroke="currentColor" stroke-width="1.1"/><circle cx="10.5" cy="4.2" r="1.1" fill="currentColor"/><circle cx="5.5" cy="10.8" r="1.1" fill="currentColor"/></svg>
+    <span class="mb-hq"><svg viewBox="0 0 280 161" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8175H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z" fill="currentColor"/><path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0638C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z" fill="currentColor"/></svg></span>
+    <span class="mb-clock">Tue 9:41 AM</span>
+  </div>
+</div>
+<div class="mbpop" id="mbpop">
+  <div class="mbp-head">
+    <span class="mbp-mark"><svg viewBox="0 0 280 161" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8175H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z" fill="currentColor"/><path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0638C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z" fill="currentColor"/></svg></span>
+    <button class="mbp-icon" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+    <button class="mbp-sync"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v5h-5"/></svg>Sync</button>
+  </div>
+  <div class="mbp-status">
+    <span class="gd"></span>
+    <span class="mbp-s1">All synced</span>
+    <span class="mbp-s2">Last sync · just now</span>
+  </div>
+  <div class="mbp-sec">
+    <div class="mbp-lab">Workspaces</div>
+    <div class="mbp-co"><span class="nm"><span class="who">Lizzie Liu</span><span class="tag">Personal</span></span><span class="sti on"><svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5 6 10.5 11 4"/></svg></span></div>
+    <div class="mbp-co"><span class="nm"><span class="who">Indigo</span></span><span class="sti on"><svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5 6 10.5 11 4"/></svg></span></div>
+    <div class="mbp-co"><span class="nm"><span class="who">LiveRecover</span></span><span class="sti on"><svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5 6 10.5 11 4"/></svg></span></div>
+  </div>
+  <div class="mbp-foot"><button class="mbp-open">Open desktop view</button></div>
+</div>
+
+<div class="dots">
+  <i class="on" onclick="go(0)"></i>
+  <i onclick="go(1)"></i>
+  <i onclick="go(2)"></i>
+  <i onclick="go(3)"></i>
+  <i onclick="go(4)"></i>
+  <i onclick="go(5)"></i>
+  <i onclick="go(6)"></i>
+  <i onclick="go(7)"></i>
+  <i onclick="go(8)"></i>
+</div>
+
+<script>
+let cur = 0;
+let setupTimers=[]; let setupRaf=null;
+function clearSetup(){ setupTimers.forEach(clearTimeout); setupTimers=[]; if(setupRaf){ cancelAnimationFrame(setupRaf); setupRaf=null; } }
+function setStep(i,state){
+  const row=document.getElementById('su'+i); if(!row) return;
+  const m=row.querySelector('.st');
+  row.classList.toggle('muted', state==='pending');
+  if(state==='active'){ m.className='st spin'; m.innerHTML=''; }
+  else if(state==='done'){ m.className='st dotmark'; m.innerHTML='<svg viewBox="0 0 12 12" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2.5,6.5 5,9 9.5,3.5"/></svg>'; }
+  else { m.className='st dotpend'; m.innerHTML=''; }
+}
+function runSetup(){
+  clearSetup();
+  [0,1,2,3,4].forEach(i=>setStep(i,'pending'));
+  const bar=document.getElementById('pbar'), txt=document.getElementById('ppct');
+  const CIRC=2*Math.PI*52;
+  bar.style.strokeDasharray=CIRC;
+  const setP=v=>{ bar.style.strokeDashoffset=CIRC*(1-v/100); txt.textContent=Math.round(v)+'%'; };
+  setP(0);
+  const start=performance.now(), dur=4900;
+  const ease=t=>1-Math.pow(1-t,2);
+  function tick(now){
+    const t=Math.min(1,(now-start)/dur);
+    setP(ease(t)*100);
+    if(t<1) setupRaf=requestAnimationFrame(tick);
+  }
+  setupRaf=requestAnimationFrame(tick);
+  const at=(ms,fn)=>setupTimers.push(setTimeout(fn,ms));
+  at(150,  ()=>setStep(0,'active'));
+  at(1100, ()=>{setStep(0,'done'); setStep(1,'active');});
+  at(2050, ()=>{setStep(1,'done'); setStep(2,'active');});
+  at(3000, ()=>{setStep(2,'done'); setStep(3,'active');});
+  at(3950, ()=>{setStep(3,'done'); setStep(4,'active');});
+  at(4850, ()=>setStep(4,'done'));
+  at(5200, ()=>go(3));
+}
+
+const $g = i => document.querySelector('.gfx[data-g="'+i+'"]');
+const $p = i => document.querySelector('.panel[data-p="'+i+'"]');
+
+function resetMorphArtifacts(){
+  const logo=document.querySelector('.gfx[data-g="0"] .logo');
+  if(logo) logo.style.cssText='';
+  const f=document.querySelector('.gfx[data-g="1"] .macfolder-lg');
+  const l=document.querySelector('.gfx[data-g="1"] .flabel');
+  if(f){ f.style.transition=''; f.style.opacity=''; }
+  if(l){ l.style.transition=''; l.style.opacity=''; }
+}
+
+function fadeInGfx(nG){
+  if(!nG) return;
+  nG.style.transition='none'; nG.style.transform='';
+  void nG.offsetWidth; nG.style.transition='';
+  nG.classList.add('on');
+}
+function slideGfx(pG,nG,dir){
+  const off = 70*dir;
+  if(pG){ pG.classList.remove('on'); pG.style.transform='translateX('+(-off)+'px)'; }
+  if(nG){
+    nG.style.transition='none'; nG.style.transform='translateX('+off+'px)'; nG.classList.remove('on');
+    void nG.offsetWidth;
+    nG.style.transition=''; nG.classList.add('on'); nG.style.transform='translateX(0)';
+  }
+}
+// Measure the transform that maps the logo box exactly onto the label box.
+function flipTo(logo,label){
+  const s=logo.getBoundingClientRect(), d=label.getBoundingClientRect();
+  const scale=d.width/s.width;
+  const tx=(d.left+d.width/2)-(s.left+s.width/2);
+  const ty=(d.top+d.height/2)-(s.top+s.height/2);
+  return 'translate('+tx+'px,'+ty+'px) scale('+scale+')';
+}
+function morphForward(g0,g1){
+  const logo=g0.querySelector('.logo');
+  const folder=g1.querySelector('.macfolder-lg');
+  const label=g1.querySelector('.flabel');
+  g1.classList.add('on');
+  folder.style.transition='none'; folder.style.opacity='0';
+  label.style.transition='none'; label.style.opacity='0';
+  void g1.offsetWidth;
+  const tf=flipTo(logo,label);            // exact landing on the real label box
+  folder.style.transition='opacity .5s ease'; folder.style.opacity='1';
+  logo.style.transformOrigin='center center';
+  logo.style.transition='transform .55s cubic-bezier(.4,0,.2,1)';
+  logo.style.transform=tf;
+  g0.classList.add('on');
+  setupTimers.push(setTimeout(()=>{        // co-located, same size → cross-fade is invisible
+    logo.style.transition='opacity .22s ease'; logo.style.opacity='0';
+    label.style.transition='opacity .22s ease'; label.style.opacity='1';
+    setupTimers.push(setTimeout(()=>{ g0.classList.remove('on'); }, 240));
+  }, 540));
+}
+function morphBack(g1,g0){
+  const logo=g0.querySelector('.logo');
+  const label=g1.querySelector('.flabel');
+  const tf=flipTo(logo,label);            // logo's natural box → label box (start point)
+  g0.classList.add('on');
+  logo.style.transformOrigin='center center';
+  logo.style.transition='none'; logo.style.transform=tf; logo.style.opacity='0';
+  void logo.offsetWidth;
+  logo.style.transition='transform .5s cubic-bezier(.4,0,.2,1), opacity .28s ease';
+  logo.style.transform=''; logo.style.opacity='1';
+  g1.classList.remove('on');
+}
+
+let txToken=0;
+const FADE_OUT=320;  // matches the .3s opacity fade-out before the next fades in
+function go(next){
+  if(next===cur) return;
+  clearSetup();
+  resetMorphArtifacts();
+  const prev=cur; cur=next;
+  const tok=++txToken;
+
+  // gradient stretch (200 ↔ 240 at the 3↔4 boundary)
+  document.querySelector('.window').style.setProperty('--toph', next>=4 ? '240px' : '200px');
+
+  // dots
+  document.querySelectorAll('.dots i').forEach((d,k)=>d.classList.toggle('on', k===next));
+
+  const pP=$p(prev), nP=$p(next), pG=$g(prev), nG=$g(next);
+  const slide = (prev>=4 && next>=4);
+
+  // menubar handoff lives on step 4 (Done) only — hide it whenever we leave
+  const mb=document.getElementById('menubar'), mp=document.getElementById('mbpop');
+  if(next!==3){ mb.classList.remove('show'); mp.classList.remove('show'); }
+
+  // 1) fade the current content + graphic OUT first
+  if(pP) pP.classList.remove('on');
+  if(!slide && pG) pG.classList.remove('on');
+  if(slide) slideGfx(pG,nG, next>prev?1:-1);  // slides move simultaneously (not a fade)
+
+  // 2) once they're gone, fade the next IN
+  setupTimers.push(setTimeout(()=>{
+    if(tok!==txToken) return;            // a newer transition superseded this one
+    if(nP) nP.classList.add('on');
+    if(!slide) fadeInGfx(nG);
+    if(next===2) runSetup();
+    if(next===3){                        // install→resident handoff: menubar, then popover
+      mb.classList.add('show');
+      setupTimers.push(setTimeout(()=>{ if(tok===txToken) mp.classList.add('show'); }, 300));
+    }
+  }, FADE_OUT));
+}
+function mode(m){
+  document.documentElement.classList.toggle('dark', m==='dark');
+  document.getElementById('t-dark').classList.toggle('on', m==='dark');
+  document.getElementById('t-light').classList.toggle('on', m==='light');
+}
+</script>
+</body>
+</html>
