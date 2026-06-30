@@ -57,7 +57,11 @@ changes worth discussing:
 2. **Sync** button is black/white (not accent blue).
 
 ## Open questions for review
-- Do the post-handoff steps belong in the native app at all, or only as an
-  in-Claude-Code `/setup` walkthrough + docs?
+- The post-handoff steps (Trust → `/setup` → `/handoff` → build) are kept on
+  purpose — they guide users through the setup they do **inside Claude Code**.
+  The question is whether the native-app → Claude-Code boundary is clear enough
+  as drawn, or if those 5 steps should be marked harder (e.g. an "in Claude
+  Code" badge) so it's unmistakable they happen in Claude Code, not the
+  installer window.
 - Should `initial-sync` ("Starting cloud sync") be a visible setup substep?
 - Menubar popover: ship appearance-aware, or keep dark-only?
