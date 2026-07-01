@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "hq-installer"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
