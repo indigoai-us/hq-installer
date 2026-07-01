@@ -1082,6 +1082,39 @@ mod deps_tests {
     }
 
     #[test]
+    fn test_settings_json_with_env_path_preserves_key_order() {
+        // Without serde_json's preserve_order feature the rewrite alphabetizes
+        // every key, turning one changed line into whole-file drift for hq
+        // rescue's three-way merge on later /update-hq runs.
+        let template = r#"{
+  "model": "opus",
+  "autoMemoryEnabled": false,
+  "env": { "ZETA": "1", "MAX_THINKING_TOKENS": "31999" },
+  "hooks": {},
+  "permissions": {}
+}"#;
+        let updated = settings_json_with_env_path(template, "/a:/b").unwrap();
+        let order: Vec<usize> = [
+            "\"model\"",
+            "\"autoMemoryEnabled\"",
+            "\"env\"",
+            "\"hooks\"",
+            "\"permissions\"",
+        ]
+        .iter()
+        .map(|k| updated.find(*k).expect("key present"))
+        .collect();
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "top-level key order must be preserved, got:\n{updated}"
+        );
+        assert!(
+            updated.find("\"ZETA\"").unwrap() < updated.find("\"MAX_THINKING_TOKENS\"").unwrap(),
+            "env key order must be preserved, got:\n{updated}"
+        );
+    }
+
+    #[test]
     fn test_settings_json_with_env_path_rejects_corrupt_documents() {
         assert!(
             settings_json_with_env_path("not json", "/a").is_err(),

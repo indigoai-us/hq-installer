@@ -1134,7 +1134,10 @@ pub async fn configure_claude_settings_path(
     let staged = unique_sibling_path(&settings_path, "pathfix")?;
     std::fs::write(&staged, &updated)
         .map_err(|e| format!("failed to stage {}: {e}", staged.display()))?;
-    atomic_replace_file(&staged, &settings_path)?;
+    if let Err(e) = atomic_replace_file(&staged, &settings_path) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
 
     let msg = format!(
         "[path] wrote managed toolchain PATH into {}",
