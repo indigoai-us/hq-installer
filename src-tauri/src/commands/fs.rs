@@ -283,12 +283,15 @@ fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
             };
             let kind = if use_copy { "file" } else { "dir" };
             fallback.map_err(|fallback_err| {
-                // Even the no-admin fallback could not recover (e.g. a file
-                // symlink whose target has not been extracted yet). Tag the
-                // message so the wizard offers the Developer Mode flow.
+                // BOTH paths failed: the privileged symlink AND the no-admin
+                // fallback (e.g. a file symlink whose target has not been
+                // extracted yet). Spell out both so the failure is unambiguous,
+                // and keep the PRIVILEGE_ERROR_TAG prefix so the wizard still
+                // offers the Developer Mode flow.
                 format!(
-                    "{PRIVILEGE_ERROR_TAG}: cannot create {kind} link {link_path:?} → {win_target:?} \
-                     without Developer Mode or administrator rights (fallback failed: {fallback_err})"
+                    "{PRIVILEGE_ERROR_TAG}: could not create {kind} link {link_path:?} → {win_target:?}. \
+                     The primary symlink requires Developer Mode or administrator rights (not held), \
+                     and the no-admin {kind} fallback also failed: {fallback_err}"
                 )
             })
         }
@@ -353,10 +356,22 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
     // discipline used elsewhere in HQ's skill linking.
     fs::create_dir_all(&abs_target)
         .map_err(|e| format!("failed to create junction target dir {abs_target:?}: {e}"))?;
+    // `mklink` is a cmd.exe BUILTIN, so cmd itself parses its arguments — a path
+    // with forward-slash separators makes cmd read the first `/segment` as a
+    // SWITCH. A link path like `C:/Users/<name>/hq/.agents/skills` then fails
+    // with "Invalid switch - Users", which blocked the no-admin junction
+    // fallback for any Windows install path that reached mklink in `/` form.
+    // Both arguments must use backslash separators (never mistaken for a
+    // switch). `abs_target` is already backslash-normalized by
+    // `lexical_absolute`; the link path was passed raw — normalize it here too.
+    // Rust's `Command::arg` additionally double-quotes any argument containing
+    // spaces, so paths like `C:\Users\John Doe\hq` stay intact.
+    let link_arg = link_path.to_string_lossy().replace('/', "\\");
+    let target_arg = abs_target.to_string_lossy().replace('/', "\\");
     let out = Command::new("cmd")
         .args(["/C", "mklink", "/J"])
-        .arg(link_path)
-        .arg(&abs_target)
+        .arg(&link_arg)
+        .arg(&target_arg)
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("failed to spawn mklink: {e}"))?;
@@ -370,7 +385,7 @@ fn create_junction(target: &Path, link_path: &Path) -> Result<(), String> {
             detail
         };
         return Err(format!(
-            "mklink /J {link_path:?} → {abs_target:?} failed ({}): {detail}",
+            "mklink /J {link_arg:?} → {target_arg:?} failed ({}): {detail}",
             out.status.code().unwrap_or(-1)
         ));
     }
@@ -1224,5 +1239,36 @@ mod tests {
             !fallback_uses_copy(&missing),
             "not-yet-created dir target → junction (not copy)"
         );
+    }
+
+    #[test]
+    fn create_junction_handles_forward_slash_link_path() {
+        // Regression: the mklink /J fallback received a forward-slash LINK path
+        // (e.g. C:/Users/<name>/hq/.agents/skills). cmd's mklink builtin parses
+        // the first `/segment` as a SWITCH ("Invalid switch - Users"), so the
+        // fallback always failed. The link path must be backslash-normalized
+        // before mklink sees it.
+        let dir = setup();
+        let target = dir.path().join("realdir");
+        // Build a forward-slash link path mimicking the reported C:/Users/... form.
+        let link_fwd = format!(
+            "{}/linkjunction",
+            dir.path().to_string_lossy().replace('\\', "/")
+        );
+        assert!(
+            link_fwd.contains('/'),
+            "precondition: link path must use forward slashes, got {link_fwd}"
+        );
+        let link = PathBuf::from(&link_fwd);
+
+        create_junction(&target, &link)
+            .expect("junction must be created despite a forward-slash link path");
+
+        // Junction exists (reports is_symlink() on Windows) and resolves to the
+        // real target dir — a write through the link lands in `target`.
+        let meta = fs::symlink_metadata(&link).expect("stat link");
+        assert!(meta.file_type().is_symlink());
+        fs::write(link.join("probe.txt"), b"ok").expect("write through junction");
+        assert!(target.join("probe.txt").exists());
     }
 }
