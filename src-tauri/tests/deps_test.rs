@@ -10,11 +10,11 @@
 #[cfg(test)]
 mod deps_tests {
     use hq_installer_lib::commands::deps::{
-        cancel_install, check_dep_in, compute_path_counts, extended_search_path,
-        extended_search_path_in, format_install_error, format_path_log, format_shell_probe_log,
-        is_deps_debug_enabled, is_macos_git_shim, is_shell_path_configured, managed_git_env_in,
-        managed_tool_paths_in, node_dist_arch_for, register_cancel_handle, shell_path_block,
-        shell_profile_path_in, ShellProbeOutcome,
+        cancel_install, check_dep_in, composed_settings_env_path, compute_path_counts,
+        extended_search_path, extended_search_path_in, format_install_error, format_path_log,
+        format_shell_probe_log, is_deps_debug_enabled, is_macos_git_shim, is_shell_path_configured,
+        managed_git_env_in, managed_tool_paths_in, node_dist_arch_for, register_cancel_handle,
+        settings_json_with_env_path, shell_path_block, shell_profile_path_in, ShellProbeOutcome,
     };
     use serial_test::serial;
     use std::fs;
@@ -975,6 +975,125 @@ mod deps_tests {
         assert!(
             block.contains("$HOME/"),
             "block should use $HOME for portability, not an absolute path"
+        );
+    }
+
+    // ── configure_claude_settings_path internals ────────────────────────────
+    //
+    // Regression tests for the day-one qmd PATH gap: the hq-core template
+    // shipped a system-dirs-only env.PATH in .claude/settings.json, Claude
+    // Code applies it literally to every hook/subagent shell, and the
+    // installer put qmd only in the managed toolchain — so fresh installs
+    // couldn't resolve qmd until setup.sh re-snapshotted PATH on first
+    // Claude startup.
+
+    #[test]
+    fn test_composed_settings_env_path_puts_toolchain_first() {
+        let home = TempDir::new().unwrap();
+        let composed = composed_settings_env_path(home.path(), "", None);
+        let first: Vec<&str> = composed.split(':').take(3).collect();
+        let expected = managed_tool_paths_in(home.path());
+        assert_eq!(
+            first,
+            expected.iter().map(String::as_str).collect::<Vec<_>>(),
+            "managed toolchain dirs must lead the composed PATH"
+        );
+    }
+
+    #[test]
+    fn test_composed_settings_env_path_keeps_login_and_existing_dedupes() {
+        let home = TempDir::new().unwrap();
+        let composed = composed_settings_env_path(
+            home.path(),
+            "/opt/homebrew/bin:/Users/u/.nvm/versions/node/v22.0.0/bin",
+            Some("/opt/homebrew/bin:/usr/bin:/custom/template/bin"),
+        );
+        let segs: Vec<&str> = composed.split(':').collect();
+        assert!(
+            segs.contains(&"/Users/u/.nvm/versions/node/v22.0.0/bin"),
+            "login-shell dirs survive: {composed}"
+        );
+        assert!(
+            segs.contains(&"/custom/template/bin"),
+            "template-provided dirs survive: {composed}"
+        );
+        assert_eq!(
+            segs.iter().filter(|s| **s == "/opt/homebrew/bin").count(),
+            1,
+            "duplicates collapse to first occurrence: {composed}"
+        );
+    }
+
+    #[test]
+    fn test_composed_settings_env_path_has_system_baseline_when_probe_empty() {
+        // GUI launch without SHELL → login-shell probe returns "" and the
+        // template may ship no env.PATH at all. The composed value must still
+        // be a usable PATH (bash, jq, system tools).
+        let home = TempDir::new().unwrap();
+        let composed = composed_settings_env_path(home.path(), "", None);
+        for required in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+            assert!(
+                composed.split(':').any(|s| s == required),
+                "baseline dir {required} missing from: {composed}"
+            );
+        }
+        assert!(
+            !composed.split(':').any(|s| s.is_empty()),
+            "no empty segments: {composed}"
+        );
+    }
+
+    #[test]
+    fn test_settings_json_with_env_path_overwrites_stale_template_path() {
+        // The exact shape the hq-core template shipped — a hardcoded
+        // homebrew/system PATH with no toolchain dirs.
+        let template = r#"{
+  "env": {
+    "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "MAX_THINKING_TOKENS": "31999"
+  },
+  "permissions": { "deny": ["Read(~/.ssh/**)"] }
+}"#;
+        let updated = settings_json_with_env_path(template, "/toolchain/bin:/usr/bin").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(
+            doc["env"]["PATH"].as_str().unwrap(),
+            "/toolchain/bin:/usr/bin",
+            "env.PATH must be replaced"
+        );
+        assert_eq!(
+            doc["env"]["MAX_THINKING_TOKENS"].as_str().unwrap(),
+            "31999",
+            "sibling env keys preserved"
+        );
+        assert_eq!(
+            doc["permissions"]["deny"][0].as_str().unwrap(),
+            "Read(~/.ssh/**)",
+            "unrelated top-level keys preserved"
+        );
+    }
+
+    #[test]
+    fn test_settings_json_with_env_path_creates_env_when_absent() {
+        let updated = settings_json_with_env_path(r#"{"model": "opus"}"#, "/a:/b").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(doc["env"]["PATH"].as_str().unwrap(), "/a:/b");
+        assert_eq!(doc["model"].as_str().unwrap(), "opus");
+    }
+
+    #[test]
+    fn test_settings_json_with_env_path_rejects_corrupt_documents() {
+        assert!(
+            settings_json_with_env_path("not json", "/a").is_err(),
+            "invalid JSON must not be silently rewritten"
+        );
+        assert!(
+            settings_json_with_env_path("[1,2]", "/a").is_err(),
+            "non-object root must not be silently rewritten"
+        );
+        assert!(
+            settings_json_with_env_path(r#"{"env": "oops"}"#, "/a").is_err(),
+            "non-object env must not be silently rewritten"
         );
     }
 }

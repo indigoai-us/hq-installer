@@ -371,6 +371,25 @@ export function SetupProgress({ installPath, onNext }: SetupProgressProps) {
       /* non-fatal */
     }
 
+    // Write the managed-toolchain PATH into the scaffolded
+    // .claude/settings.json (and re-ensure the shell-profile block). Claude
+    // Code's env block does literal assignment, so without this a fresh
+    // install's hooks/subagents can't find qmd/hq/node until setup.sh
+    // re-snapshots PATH on first Claude startup. Runs on every pass —
+    // including reinstalls where every dep short-circuits as already
+    // installed — and never blocks the stage.
+    try {
+      const pathMsg = await invoke<string>("configure_claude_settings_path", {
+        hqPath: installPath,
+      });
+      appendLog("deps", pathMsg);
+    } catch (err) {
+      appendLog(
+        "deps",
+        `[warn] PATH configuration failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     if (!summary.allRequiredOk) {
       const failed = summary.results.filter(
         (r) => !r.optional && r.status === "failed",
