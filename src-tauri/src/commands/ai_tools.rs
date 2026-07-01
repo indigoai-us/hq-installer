@@ -86,8 +86,14 @@ fn unix_probe_command(binary: &str, deterministic_test_path: bool) -> Command {
     };
     let quoted = shell_single_quote(binary);
     let mut command = Command::new(shell);
+    // Production probes use a login shell (-l) so the CLI resolves through the
+    // same PATH a fresh terminal would get. Deterministic test probes must NOT:
+    // on macOS a login shell sources /etc/profile, whose path_helper rebuilds
+    // PATH from /etc/paths(.d) and clobbers the caller's PATH override — so a
+    // real CLI on a system path leaks into "not found" tests.
+    let flag = if deterministic_test_path { "-c" } else { "-lc" };
     command.args([
-        "-lc",
+        flag,
         &format!("command -v {quoted} >/dev/null 2>&1 && {quoted} --version"),
     ]);
     command

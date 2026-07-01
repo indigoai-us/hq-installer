@@ -1075,6 +1075,51 @@ describe("SetupProgress orchestrator (setup-progress.tsx) — US-004", () => {
     });
   });
 
+  // ── Claude settings.json PATH configuration (deps stage) ────────────────
+  //
+  // Regression: fresh installs put qmd/hq/node only in the managed toolchain,
+  // but the scaffolded .claude/settings.json shipped a literal env.PATH with
+  // no toolchain dirs — Claude hooks/subagents couldn't find qmd until
+  // setup.sh re-snapshotted PATH on first Claude startup. The deps stage now
+  // asks the backend to write the composed PATH on every pass.
+
+  describe("Claude settings PATH configuration", () => {
+    it("invokes configure_claude_settings_path with the install path after deps", async () => {
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith("configure_claude_settings_path", {
+          hqPath: "/tmp/hq",
+        }),
+      );
+    });
+
+    it("still configures PATH when a required dep failed (reinstall heal path)", async () => {
+      setDepsFailNode();
+      render(<SetupProgress installPath="/tmp/hq" onNext={vi.fn()} />);
+      await waitFor(() =>
+        expect(mockInvoke).toHaveBeenCalledWith("configure_claude_settings_path", {
+          hqPath: "/tmp/hq",
+        }),
+      );
+    });
+
+    it("treats a PATH configuration failure as non-fatal — setup still completes", async () => {
+      const base = buildInvokeMock();
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "configure_claude_settings_path") {
+          throw new Error("settings.json locked");
+        }
+        return base(command);
+      });
+      const onNext = vi.fn();
+      render(<SetupProgress installPath="/tmp/hq" onNext={onNext} />);
+      await waitFor(() => expect(onNext).toHaveBeenCalledTimes(1), {
+        timeout: 5000,
+      });
+    });
+  });
+
   // ── 5. UI policy — no purple/indigo monochrome ──────────────────────────
 
   describe("UI policy", () => {
