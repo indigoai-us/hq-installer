@@ -25,6 +25,9 @@ use winreg::enums::*;
 use winreg::RegKey;
 
 #[cfg(windows)]
+use crate::commands::deps::extended_search_path;
+
+#[cfg(windows)]
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 #[cfg(windows)]
 const SW_SHOWNORMAL: i32 = 1;
@@ -383,8 +386,13 @@ pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> 
 #[cfg(windows)]
 fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
     let escaped = powershell_single_quote_escape(path);
+    let search_path = extended_search_path();
 
-    if let Ok(wt_path) = which::which("wt.exe").or_else(|_| which::which("wt")) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let wt = which::which_in("wt.exe", Some(&search_path), &cwd)
+        .or_else(|_| which::which_in("wt", Some(&search_path), &cwd));
+
+    if let Ok(wt_path) = wt {
         // wt.exe -d '<path>' powershell -NoExit -Command <binary>
         // The -d flag tells Windows Terminal to cd into the directory
         // before running the command — equivalent to mac's `osascript`
@@ -399,6 +407,7 @@ fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
                 "-Command",
                 binary,
             ])
+            .env("PATH", &search_path)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| ())
@@ -409,6 +418,7 @@ fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
         let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; {binary}");
         Command::new("powershell.exe")
             .args(["-NoProfile", "-NoExit", "-Command", &ps_cmd])
+            .env("PATH", &search_path)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| ())

@@ -1105,6 +1105,14 @@ mod windows_tests {
         handle: &str,
         spawn: SpawnArgs,
     ) -> (Vec<String>, Vec<String>, ExitInfo, Result<(), String>) {
+        run_to_completion_with_path(handle, spawn, &test_path())
+    }
+
+    fn run_to_completion_with_path(
+        handle: &str,
+        spawn: SpawnArgs,
+        search_path: &str,
+    ) -> (Vec<String>, Vec<String>, ExitInfo, Result<(), String>) {
         let stdout = Arc::new(Mutex::new(Vec::<String>::new()));
         let stderr = Arc::new(Mutex::new(Vec::<String>::new()));
         let exit: ExitInfo = Arc::new(Mutex::new(None));
@@ -1113,7 +1121,7 @@ mod windows_tests {
         let stderr_c = stderr.clone();
         let exit_c = exit.clone();
 
-        let res = run_process_impl(handle, &spawn, &test_path(), move |ev| match ev {
+        let res = run_process_impl(handle, &spawn, search_path, move |ev| match ev {
             ProcessEvent::Stdout(line) => stdout_c.lock().unwrap().push(line),
             ProcessEvent::Stderr(line) => stderr_c.lock().unwrap().push(line),
             ProcessEvent::Exit { code, success } => {
@@ -1165,6 +1173,35 @@ mod windows_tests {
         let (_, _, _, res) = run_to_completion(&handle, args);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("command not found"));
+    }
+
+    #[test]
+    fn qmd_cmd_resolves_with_pathext_and_receives_augmented_path() {
+        let root = tempfile::tempdir().expect("tmpdir");
+        let tool_dir = tempfile::tempdir().expect("tool tmpdir");
+        let qmd_cmd = tool_dir.path().join("qmd.cmd");
+        std::fs::write(&qmd_cmd, b"@echo off\r\necho PATH=%PATH%\r\n").unwrap();
+
+        let search_path = format!("{};{}", tool_dir.path().display(), test_path());
+        let handle = format!("test-{}", Uuid::new_v4());
+        let args = SpawnArgs {
+            program: "qmd".into(),
+            args: vec![],
+            cwd: None,
+            env: None,
+            install_root: root.path().to_string_lossy().into_owned(),
+        };
+
+        let (stdout, _stderr, exit, res) = run_to_completion_with_path(&handle, args, &search_path);
+        assert!(res.is_ok(), "run_process_impl failed: {:?}", res.err());
+        assert_eq!(*exit.lock().unwrap(), Some((Some(0), true)));
+
+        let joined = stdout.join("\n").to_lowercase();
+        let tool_dir_lower = tool_dir.path().to_string_lossy().to_lowercase();
+        assert!(
+            joined.contains(&tool_dir_lower),
+            "child PATH should include qmd.cmd directory; stdout was {joined:?}"
+        );
     }
 
     #[test]

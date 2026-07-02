@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+#[cfg(windows)]
+use crate::commands::deps::extended_search_path;
 use crate::commands::launch;
 
 const CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
@@ -104,6 +106,7 @@ fn windows_probe_command(binary: &str) -> Command {
     let comspec = std::env::var_os("COMSPEC").unwrap_or_else(|| OsString::from("cmd.exe"));
     let mut command = Command::new(comspec);
     command.args(["/C", &format!("{binary} --version")]);
+    command.env("PATH", extended_search_path());
     command
 }
 
