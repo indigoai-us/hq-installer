@@ -3715,6 +3715,10 @@ fn write_qmd_bash_shim() -> Result<(), String> {
 
 #[cfg(windows)]
 fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
+    if qmd_resolves_in_prefix(prefix) {
+        return Ok(());
+    }
+
     let bin_candidates = [
         prefix
             .join("node_modules")
@@ -3742,6 +3746,12 @@ fn write_qmd_bash_shim_in(prefix: &Path) -> Result<(), String> {
     );
     std::fs::write(&cmd_path, body).map_err(|e| format!("write {cmd_path:?}: {e}"))?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn qmd_resolves_in_prefix(prefix: &Path) -> bool {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    which::which_in("qmd", Some(prefix.to_string_lossy().as_ref()), cwd).is_ok()
 }
 
 #[cfg(windows)]
@@ -4224,6 +4234,16 @@ mod windows_tests {
     }
 
     #[test]
+    fn qmd_postinstall_accepts_cmd_shim_from_npm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qmd_prefix = tmp.path().join("npm-prefix");
+        std::fs::create_dir_all(&qmd_prefix).unwrap();
+        std::fs::write(qmd_prefix.join("qmd.cmd"), b"@echo off\r\necho qmd\r\n").unwrap();
+
+        write_qmd_bash_shim_in(&qmd_prefix).expect("qmd.cmd should count as installed");
+    }
+
+    #[test]
     fn hq_cli_pack_install_patch_rewrites_rsync_once() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("pack-install.js");
@@ -4271,6 +4291,25 @@ mod windows_tests {
         assert!(
             lower.contains("indigohq") && lower.contains("toolchain"),
             "PATH should include the managed toolchain dir"
+        );
+    }
+
+    #[test]
+    fn extended_search_path_contains_managed_node_dirs_exactly() {
+        let entries: Vec<String> = extended_search_path()
+            .split(';')
+            .map(|e| e.to_lowercase())
+            .collect();
+        let node = managed_node_bin().to_string_lossy().to_lowercase();
+        let npm = managed_npm_bin().to_string_lossy().to_lowercase();
+
+        assert!(
+            entries.iter().any(|e| e == &node),
+            "PATH should include the managed node dir"
+        );
+        assert!(
+            entries.iter().any(|e| e == &npm),
+            "PATH should include the managed npm prefix dir"
         );
     }
 
