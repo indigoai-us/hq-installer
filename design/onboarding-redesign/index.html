@@ -329,9 +329,12 @@
     <div class="panel" data-p="3">
       <h2 class="h">HQ is ready</h2>
       <p class="body">HQ now lives in your menubar and keeps everything in sync. Open it in your favorite AI tool to start working.</p>
-      <div class="btns" style="margin-top:auto;">
-        <button class="btn btn-primary" onclick="go(4)">Open in Claude Code</button>
-        <button class="btn btn-secondary" onclick="go(4)">Open in Codex</button>
+      <div class="btns" style="margin-top:auto; justify-content:space-between;">
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-secondary" onclick="go(4)">Open in Claude Code</button>
+          <button class="btn btn-secondary" onclick="go(4)">Open in Codex</button>
+        </div>
+        <button class="btn btn-primary" onclick="go(4)">Continue</button>
       </div>
     </div>
     <!-- 4 trust -->
